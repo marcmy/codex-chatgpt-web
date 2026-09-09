@@ -116,15 +116,16 @@ test("packaged launcher owns a detached checksummed updater for every release pl
   assert.doesNotMatch(worker, /backup/i);
 });
 
-test("CI packages and smoke-launches on macOS, Windows, and Linux", () => {
+test("CI packages and smoke-launches on Windows only while releases cover all desktop platforms", () => {
   const ci = fs.readFileSync(path.join(repositoryRoot, ".github", "workflows", "ci.yml"), "utf8");
   const release = fs.readFileSync(path.join(repositoryRoot, ".github", "workflows", "release.yml"), "utf8");
-  assert.match(ci, /macos-15, ubuntu-latest, windows-latest/);
+  assert.match(ci, /runs-on:\s*windows-latest/);
+  assert.doesNotMatch(ci, /macos-15|macos-15-intel|ubuntu-latest/);
   assert.match(ci, /bun run app:package/);
   assert.match(ci, /bun run app:smoke/);
-  assert.match(ci, /prepare-linux-libnotify\.sh/);
-  assert.match(ci, /prepare-linux-appimage-tools\.cjs/);
-  assert.match(ci, /archlinux:base/);
+  assert.doesNotMatch(ci, /prepare-linux-libnotify\.sh/);
+  assert.doesNotMatch(ci, /prepare-linux-appimage-tools\.cjs/);
+  assert.doesNotMatch(ci, /archlinux:base/);
   assert.match(ci, /prepare-windows-baseline-bun\.ps1 -Version 1\.4\.0/);
   for (const runner of ["macos-15", "macos-15-intel", "ubuntu-latest", "windows-latest"]) {
     assert.match(release, new RegExp(runner));
