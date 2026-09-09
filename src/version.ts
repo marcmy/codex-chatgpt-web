@@ -1,1 +1,1 @@
-export const VERSION = "5.0.4-steering.1";
+export const VERSION = "5.0.6-steering.1";
