@@ -13,7 +13,7 @@ jobs:
   verify-windows:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Validate launcher installer with Windows PowerShell 5.1
         shell: powershell
