@@ -59,3 +59,11 @@ jobs:
 
       - name: Smoke packaged app
         run: bun run app:smoke
+
+      - name: Upload Windows artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: codex-web-gpt-windows
+          path: launcher/artifacts/*
+          if-no-files-found: error
+          compression-level: 0
