@@ -30,8 +30,10 @@ export interface BrokerToolResult {
 
 interface PendingInvocation {
   request: BrokerToolRequest;
-  resolve: (result: BrokerToolResult) => void;
-  reject: (error: Error) => void;
+  retainResult: boolean;
+  result?: BrokerToolResult;
+  consumed?: boolean;
+  waiters: Set<SafeWaiter<BrokerToolResult>>;
 }
 
 interface ToolWaiter {
@@ -86,6 +88,10 @@ interface TurnChannel {
   batchTimer?: ReturnType<typeof setTimeout>;
 }
 
+function pendingInvocationCount(channel: TurnChannel): number {
+  return [...channel.invocations.values()].filter(invocation => !invocation.consumed).length;
+}
+
 interface BrokerRequest {
   id: string;
   method:
@@ -93,6 +99,8 @@ interface BrokerRequest {
     | "resolve"
     | "release"
     | "invoke"
+    | "collect_invocation"
+    | "consume_invocation"
     | "owner_status"
     | "owner_register"
     | "owner_register_safe"
@@ -428,9 +436,11 @@ export class TurnBroker implements TurnBrokerOwner {
     if (!channel.deliveredCallIds.delete(callId)) {
       throw new Error(`tool call was completed before it was delivered: ${callId}`);
     }
-    channel.invocations.delete(callId);
-    console.info(`[chatgpt-web] broker trace=${channel.traceId} completed call=${callId.slice(0, 17)} pending=${channel.invocations.size}`);
-    invocation.resolve(result);
+    invocation.result = structuredClone(result);
+    if (!invocation.retainResult) channel.invocations.delete(callId);
+    const pending = pendingInvocationCount(channel);
+    console.info(`[chatgpt-web] broker trace=${channel.traceId} completed call=${callId.slice(0, 17)} pending=${pending}`);
+    this.resolveSafeWaiters(invocation.waiters, structuredClone(result));
   }
 
   beginCompletionFence(token: string): number | undefined {
@@ -438,7 +448,9 @@ export class TurnBroker implements TurnBrokerOwner {
     const channel = this.channels.get(token);
     if (!channel) throw new Error("turn token is invalid or expired");
     if (channel.completionCommitted) return channel.completionRevision;
-    if (channel.activities.size > 0 || channel.invocations.size > 0) return undefined;
+    if (channel.activities.size > 0 || pendingInvocationCount(channel) > 0) {
+      return undefined;
+    }
     return channel.activityRevision;
   }
 
@@ -452,7 +464,7 @@ export class TurnBroker implements TurnBrokerOwner {
     if (channel.completionCommitted) return channel.completionRevision === revision;
     if (channel.activityRevision !== revision
       || channel.activities.size > 0
-      || channel.invocations.size > 0) return false;
+      || pendingInvocationCount(channel) > 0) return false;
     channel.completionCommitted = true;
     channel.completionRevision = revision;
     console.info(
@@ -486,9 +498,10 @@ export class TurnBroker implements TurnBrokerOwner {
     for (const callId of queued) {
       const invocation = channel.invocations.get(callId);
       if (!invocation) continue;
-      channel.invocations.delete(callId);
+      if (!invocation.retainResult) channel.invocations.delete(callId);
       channel.compactionDeliveryCount += 1;
-      invocation.resolve(structuredClone(queuedResult));
+      invocation.result = structuredClone(queuedResult);
+      this.resolveSafeWaiters(invocation.waiters, structuredClone(queuedResult));
     }
     if (queued.length > 0) {
       console.info(
@@ -557,8 +570,9 @@ export class TurnBroker implements TurnBrokerOwner {
     }
     if (safe.state === "revoked") throw new Error("Zero Risk turn is already terminal");
     if (safe.state !== "running") throw new Error("Zero Risk turn has not started");
-    if (channel.invocations.size > 0) {
-      throw new Error(`Zero Risk turn cannot complete with ${channel.invocations.size} pending Codex tool invocation(s)`);
+    const pendingInvocations = pendingInvocationCount(channel);
+    if (pendingInvocations > 0) {
+      throw new Error(`Zero Risk turn cannot complete with ${pendingInvocations} pending Codex tool invocation(s)`);
     }
     if (channel.activities.size > 0) {
       throw new Error(`Zero Risk turn cannot complete with ${channel.activities.size} active Codex MCP request(s)`);
@@ -877,7 +891,7 @@ export class TurnBroker implements TurnBrokerOwner {
     if (!request || typeof request !== "object" || typeof request.id !== "string" || request.id.length === 0 || request.id.length > 256) {
       throw new Error("turn broker request id is invalid");
     }
-    if (!["claim", "resolve", "release", "invoke", "owner_status", "owner_register", "owner_register_safe", "owner_update", "owner_safe_sent", "owner_next", "owner_complete", "owner_completion_fence_begin", "owner_completion_fence_commit", "owner_wait_retirement", "owner_revoke", "owner_safe_wait_start", "owner_safe_wait_completion", "owner_request_compaction", "owner_compaction_delivery_count", "safe_start", "safe_complete", "activity_complete", "submit_compaction_handoff"].includes(request.method)) {
+    if (!["claim", "resolve", "release", "invoke", "collect_invocation", "consume_invocation", "owner_status", "owner_register", "owner_register_safe", "owner_update", "owner_safe_sent", "owner_next", "owner_complete", "owner_completion_fence_begin", "owner_completion_fence_commit", "owner_wait_retirement", "owner_revoke", "owner_safe_wait_start", "owner_safe_wait_completion", "owner_request_compaction", "owner_compaction_delivery_count", "safe_start", "safe_complete", "activity_complete", "submit_compaction_handoff"].includes(request.method)) {
       throw new Error("turn broker method is invalid");
     }
   }
@@ -1102,6 +1116,26 @@ export class TurnBroker implements TurnBrokerOwner {
     }
     if (request.method === "resolve") return { environment: binding.channel.environment };
     this.assertSafeHarnessRunning(binding.channel);
+    if (request.method === "collect_invocation" || request.method === "consume_invocation") {
+      const callId = request.callId;
+      if (typeof callId !== "string" || !/^call_[A-Za-z0-9_-]{16,128}$/.test(callId)) {
+        throw new Error("tool invocation id is invalid");
+      }
+      const invocation = binding.channel.invocations.get(callId);
+      if (!invocation) throw new Error(`tool invocation is not pending: ${callId}`);
+      if (request.method === "consume_invocation") {
+        if (!invocation.result) throw new Error(`tool invocation result is not ready: ${callId}`);
+        const duplicate = invocation.consumed === true;
+        invocation.consumed = true;
+        const pending = pendingInvocationCount(binding.channel);
+        console.info(
+          `[chatgpt-web] broker trace=${binding.channel.traceId} consumed call=${callId.slice(0, 17)} pending=${pending}`,
+        );
+        return { consumed: true, duplicate };
+      }
+      if (invocation.result) return structuredClone(invocation.result);
+      return this.waitForSafeState(invocation.waiters, socketSignal, "tool invocation wait aborted");
+    }
     if (binding.channel.compactionRequested) {
       const result = binding.channel.compactionResult;
       if (!result) throw new Error("Codex context compaction control result is unavailable");
@@ -1114,21 +1148,27 @@ export class TurnBroker implements TurnBrokerOwner {
 
     const wireName = request.wireName?.trim();
     if (!wireName) throw new Error("wire tool name is required");
-    const callId = opaqueId("call");
+    const callId = request.callId ?? opaqueId("call");
+    if (!/^call_[A-Za-z0-9_-]{16,128}$/.test(callId)) throw new Error("tool invocation id is invalid");
+    if (binding.channel.invocations.has(callId)) throw new Error(`tool invocation id is already in use: ${callId}`);
     const toolRequest: BrokerToolRequest = {
       callId,
       wireName,
       freeform: request.freeform === true,
       ...(request.freeform === true ? { input: request.input ?? "" } : { arguments: request.arguments ?? {} }),
     };
-    return new Promise<BrokerToolResult>((resolveInvoke, rejectInvoke) => {
-      binding.channel.invocations.set(callId, { request: toolRequest, resolve: resolveInvoke, reject: rejectInvoke });
-      binding.channel.queuedCallIds.push(callId);
-      console.info(
-        `[chatgpt-web] broker trace=${binding.channel.traceId} queued call=${callId.slice(0, 17)} tool=${wireName} waiters=${binding.channel.waiters.size}`,
-      );
-      this.scheduleToolWaiters(binding.channel);
-    });
+    const invocation: PendingInvocation = {
+      request: toolRequest,
+      retainResult: request.callId !== undefined,
+      waiters: new Set(),
+    };
+    binding.channel.invocations.set(callId, invocation);
+    binding.channel.queuedCallIds.push(callId);
+    console.info(
+      `[chatgpt-web] broker trace=${binding.channel.traceId} queued call=${callId.slice(0, 17)} tool=${wireName} waiters=${binding.channel.waiters.size}`,
+    );
+    this.scheduleToolWaiters(binding.channel);
+    return this.waitForSafeState(invocation.waiters, socketSignal, "tool invocation wait aborted");
   }
 
   private takeQueued(channel: TurnChannel): BrokerToolRequest[] {
@@ -1175,7 +1215,9 @@ export class TurnBroker implements TurnBrokerOwner {
       waiter.reject(error);
     }
     channel.waiters.clear();
-    for (const invocation of channel.invocations.values()) invocation.reject(error);
+    for (const invocation of channel.invocations.values()) {
+      this.rejectSafeWaiters(invocation.waiters, error);
+    }
     channel.invocations.clear();
     channel.queuedCallIds = [];
     channel.deliveredCallIds.clear();

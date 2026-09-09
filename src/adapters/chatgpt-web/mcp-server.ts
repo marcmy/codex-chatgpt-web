@@ -24,6 +24,7 @@ const BRIDGE_TOOL_NAMES = new Set([
   "codex_view_image",
   "codex_tool_inventory",
   "codex_tool_call",
+  "codex_tool_result",
   "codex_turn_complete",
 ]);
 
@@ -38,10 +39,11 @@ const jsonArgumentsSchema = z.record(z.string(), z.unknown()).default({});
 // Match Codex's default wait interval while returning before the MCP invocation deadline.
 export const CHATGPT_WEB_AGENT_WAIT_POLL_MS = 30_000;
 const AGENT_WAIT_TRANSPORT_RULE = `ChatGPT Web transport rule: wait for exactly ${CHATGPT_WEB_AGENT_WAIT_POLL_MS / 1_000} seconds per call, matching the Codex default, then release the MCP channel so spawned Web agents can use their own tools. A wait timeout is not task completion; check agent progress and wait again if needed. Keep the native tool's declared arguments.`;
-// The OpenAI tunnel currently owns a two-minute command-response deadline. The local MCP server
-// must settle first so an abandoned native tool call is returned as an MCP error instead of
-// letting the tunnel tear down and poison its long-lived stdio transport.
+// The OpenAI tunnel currently owns a two-minute command-response deadline. Keep each broker wait
+// below that boundary so a slow or approval-gated native action can return a deferred handle
+// before the tunnel tears down, then resume through codex_tool_result.
 export const CHATGPT_WEB_MCP_INVOCATION_TIMEOUT_MS = 90_000;
+const CHATGPT_WEB_MCP_RESULT_COLLECTION_GRACE_MS = 1_000;
 
 const ZERO_RISK_MCP_INSTRUCTIONS = [
   "For each pasted Codex Web GPT request, begin with codex_turn_start using the request_id in its request block.",
@@ -49,6 +51,8 @@ const ZERO_RISK_MCP_INSTRUCTIONS = [
   "When the task is finished, send the complete answer with codex_turn_complete.",
   "If a tool returns an error, report that error instead of changing the request_id.",
 ].join(" ");
+
+const DEFERRED_RESULT_INSTRUCTION = "If a Codex tool returns status=pending, do not retry the original action. Call codex_tool_result with the same turn reference and invocation_id until it returns the completed result.";
 
 function turnReferenceInput(contract: ChatGptMcpContract): Record<string, z.ZodString> {
   return contract === "safe"
@@ -210,7 +214,7 @@ export function chatGptMcpInvocationTimeout(
 ): number {
   const remaining = environment.expiresAt === undefined
     ? CHATGPT_WEB_MCP_INVOCATION_TIMEOUT_MS
-    : Math.max(1, environment.expiresAt - now);
+    : Math.max(1, environment.expiresAt - now - CHATGPT_WEB_MCP_RESULT_COLLECTION_GRACE_MS);
   return Math.min(CHATGPT_WEB_MCP_INVOCATION_TIMEOUT_MS, remaining);
 }
 
@@ -448,7 +452,11 @@ export async function runChatGptMcpServer(options: {
   const contract = options.contract ?? "native";
   const server = new McpServer(
     { name: contract === "safe" ? "codex-safe" : "codex-native", version: VERSION },
-    contract === "safe" ? { instructions: ZERO_RISK_MCP_INSTRUCTIONS } : undefined,
+    {
+      instructions: contract === "safe"
+        ? `${ZERO_RISK_MCP_INSTRUCTIONS} ${DEFERRED_RESULT_INSTRUCTION}`
+        : DEFERRED_RESULT_INSTRUCTION,
+    },
   );
 
   const claimTurn = async (
@@ -550,17 +558,38 @@ export async function runChatGptMcpServer(options: {
     signal?: AbortSignal,
   ) => {
     const timeoutMs = chatGptMcpInvocationTimeout(bound);
+    const callId = `call_${randomBytes(24).toString("base64url")}`;
     try {
       const response = await callTurnBroker<BrokerToolResult>(options.brokerSocketPath, {
         method: "invoke",
         bindingId,
+        callId,
         wireName: wireName(tool),
         freeform: tool.freeform === true,
         ...(tool.freeform ? { input: payload.input ?? "" } : { arguments: payload.arguments ?? {} }),
       }, timeoutMs, signal);
+      await callTurnBroker(options.brokerSocketPath, {
+        method: "consume_invocation",
+        bindingId,
+        callId,
+      });
       return asMcpResult(response);
     } catch (error) {
-      // A cancelled/timed-out MCP request no longer has a consumer for the native result. Revoke
+      if (error instanceof TurnBrokerTimeoutError) {
+        const toolName = wireName(tool);
+        console.error(
+          `[chatgpt-web-mcp] ${toolName} is still pending after ${timeoutMs}ms; preserved invocation=${callId.slice(0, 17)}`,
+        );
+        return result({
+          status: "pending",
+          code: "codex_tool_pending",
+          tool: toolName,
+          invocation_id: callId,
+          retryable: true,
+          message: `Codex tool ${toolName} is still waiting, possibly for user approval. Call codex_tool_result with invocation_id=${callId}; do not retry the original action.`,
+        });
+      }
+      // A cancelled or failed MCP request no longer has a consumer for the native result. Revoke
       // the whole turn capability so the broker drops the pending invocation and every later call
       // from that abandoned ChatGPT response fails explicitly against its retired binding.
       try {
@@ -574,22 +603,62 @@ export async function runChatGptMcpServer(options: {
           "Codex Native invocation failed and its abandoned broker binding could not be retired",
         );
       }
-      if (error instanceof TurnBrokerTimeoutError) {
-        const toolName = wireName(tool);
-        console.error(
-          `[chatgpt-web-mcp] ${toolName} did not complete within ${timeoutMs}ms; retired its turn binding`,
-        );
-        return result({
-          code: "codex_tool_timeout",
-          tool: toolName,
-          timeout_ms: timeoutMs,
-          retryable: false,
-          message: `Codex tool ${toolName} did not complete before the MCP transport deadline. The current turn binding was retired; do not retry it in this ChatGPT response.`,
-        }, true);
-      }
       throw error;
     }
   };
+
+  server.registerTool(
+    "codex_tool_result",
+    {
+      title: "Collect a pending Codex tool result",
+      description: DEFERRED_RESULT_INSTRUCTION,
+      inputSchema: {
+        ...turnReferenceInput(contract),
+        invocation_id: z.string().regex(/^call_[A-Za-z0-9_-]{16,128}$/),
+      },
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    },
+    async (input, extra) => withClaimedTurn(
+      "codex_tool_result",
+      turnReference(contract, input),
+      extra,
+      async claimed => {
+        const timeoutMs = chatGptMcpInvocationTimeout(claimed.environment);
+        try {
+          const response = await callTurnBroker<BrokerToolResult>(options.brokerSocketPath, {
+            method: "collect_invocation",
+            bindingId: claimed.bindingId,
+            callId: input.invocation_id,
+          }, timeoutMs, extra.signal);
+          await callTurnBroker(options.brokerSocketPath, {
+            method: "consume_invocation",
+            bindingId: claimed.bindingId,
+            callId: input.invocation_id,
+          });
+          return asMcpResult(response);
+        } catch (error) {
+          if (error instanceof TurnBrokerTimeoutError) {
+            return result({
+              status: "pending",
+              code: "codex_tool_pending",
+              invocation_id: input.invocation_id,
+              retryable: true,
+              message: `The Codex tool is still waiting, possibly for user approval. Call codex_tool_result again with invocation_id=${input.invocation_id}.`,
+            });
+          }
+          try {
+            await callTurnBroker(options.brokerSocketPath, {
+              method: "release",
+              bindingId: claimed.bindingId,
+            });
+          } catch (releaseError) {
+            throw new AggregateError([error, releaseError], "Pending Codex invocation failed and its turn binding could not be retired");
+          }
+          throw error;
+        }
+      },
+    ),
+  );
 
   const invokeNestedNative = (
     bindingId: string,
