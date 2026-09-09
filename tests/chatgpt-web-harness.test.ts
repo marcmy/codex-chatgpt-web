@@ -386,12 +386,14 @@ describe("ChatGPT outer-native harness v4", () => {
     const worker = ChatGptBrowserWorker.forProvider(provider);
     const originalRun = worker.run.bind(worker);
     const preparedPrompts: string[] = [];
+    const preparedImageCounts: number[] = [];
     const conversationKeys: string[] = [];
     const tokens: string[] = [];
     let browserMessages = 0;
     (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = async turn => {
       const prepared = browserMessages === 0 ? await turn.prepare() : await turn.prepareResume!();
       preparedPrompts.push(prepared.text);
+      preparedImageCounts.push(prepared.images.length);
       conversationKeys.push(turn.conversationKey!);
       const token = prepared.text.match(/turn_token (turn_[A-Za-z0-9_-]+)/)?.[1];
       if (!token) throw new Error("retained message prompt has no current turn token");
@@ -403,14 +405,28 @@ describe("ChatGPT outer-native harness v4", () => {
       return answer;
     };
 
+    const retainedImageUrl = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAE0lEQVR4nGP4z8DwHwwZGP6DAQBJyAn3FGMynQAAAABJRU5ErkJggg==";
     const first = rawWireRequest(environmentXml);
+    first.context.messages[0]!.content = [
+      { type: "text", text: "Inspect the project" },
+      { type: "image", imageUrl: retainedImageUrl, detail: "high" },
+    ];
     const second = parsed();
     second.context.messages = [
-      { role: "user", content: "Inspect the project", timestamp: 2 },
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "Inspect the project" },
+          { type: "image", imageUrl: retainedImageUrl, detail: "high" },
+        ],
+        timestamp: 2,
+      },
       { role: "assistant", content: [{ type: "text", text: "First retained answer" }], timestamp: 3 },
       { role: "user", content: "Continue in the same repository", timestamp: 4 },
     ];
     const firstRaw = first._rawBody as { input: unknown[] };
+    const firstUserRaw = firstRaw.input.at(-1) as { content: unknown[] };
+    firstUserRaw.content.push({ type: "input_image", image_url: retainedImageUrl, detail: "high" });
     second._rawBody = {
       prompt_cache_key: "thread_test_123",
       client_metadata: {
@@ -444,6 +460,7 @@ describe("ChatGPT outer-native harness v4", () => {
       expect(conversationKeys[0]).toBe(chatGptConversationKey(first, chatGptWebExecutionNamespace(provider))!);
       expect(conversationKeys[1]).toBe(conversationKeys[0]);
       expect(tokens[1]).not.toBe(tokens[0]);
+      expect(preparedImageCounts).toEqual([1, 0]);
       expect(preparedPrompts[0]).toContain("Inspect the project");
       expect(preparedPrompts[1]).toContain("Continue in the same repository");
       expect(preparedPrompts[1]).not.toContain("First retained answer");
