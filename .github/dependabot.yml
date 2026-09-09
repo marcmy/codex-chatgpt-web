@@ -10,6 +10,11 @@ updates:
       # Bun's runtime and type package are intentionally pinned in lockstep.
       # packageManager is not managed by Dependabot, so update both manually.
       - dependency-name: "@types/bun"
+      # MCP SDK v1.30.0's Zod compatibility types currently reject Zod 4.5+
+      # even though 4.4.3 typechecks in this repo. Revisit when the SDK is upgraded.
+      - dependency-name: "zod"
+        versions:
+          - ">= 4.5.0, < 5"
     groups:
       routine-dependencies:
         patterns:
