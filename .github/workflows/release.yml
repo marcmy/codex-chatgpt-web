@@ -74,7 +74,7 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: Compress-Archive -Path launcher/build/runtime/* -DestinationPath "${{ matrix.runtime_asset }}"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: release-${{ matrix.runner }}
           path: |

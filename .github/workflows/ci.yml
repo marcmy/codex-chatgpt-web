@@ -62,7 +62,7 @@ jobs:
         run: bun run app:smoke
 
       - name: Upload Windows artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: codex-web-gpt-windows
           path: launcher/artifacts/*
