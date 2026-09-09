@@ -285,6 +285,7 @@ describe("Zero Risk public MCP ABI", () => {
         "codex_exec",
         "codex_tool_call",
         "codex_tool_inventory",
+        "codex_tool_result",
         "codex_turn_complete",
         "codex_turn_start",
         "codex_view_image",

@@ -249,6 +249,75 @@ test("turn broker tokens do not expire while their browser turn is still alive",
   }
 });
 
+test("a timed-out tool transport preserves its result for later collection", async () => {
+  const root = mkdtempSync(join(tmpdir(), "cgw-broker-deferred-result-"));
+  const socketPath = defaultBrokerEndpoint(root);
+  const broker = TurnBroker.forSocket(socketPath);
+  const callId = "call_deferred_result_1234567890";
+  let token: string | undefined;
+  try {
+    const registered = await broker.register({
+      cwd: root,
+      roots: [root],
+      writableRoots: [root],
+      sandboxPolicy: { type: "dangerFullAccess" },
+      tools: [],
+    });
+    token = registered;
+    const claimed = await callTurnBroker<{ bindingId: string; activityId: string }>(socketPath, {
+      method: "claim",
+      token: registered,
+    });
+    const firstWait = expect(callTurnBroker(socketPath, {
+      method: "invoke",
+      bindingId: claimed.bindingId,
+      callId,
+      wireName: "exec_command",
+      arguments: { cmd: "approved later" },
+    }, 100)).rejects.toThrow("timed out");
+    const [request] = await broker.nextToolBatch(registered);
+    expect(request).toMatchObject({ callId, wireName: "exec_command" });
+    await firstWait;
+
+    expect(broker.beginCompletionFence(registered)).toBeUndefined();
+    broker.completeTool(registered, callId, { content: [{ type: "text", text: "approved" }] });
+    const result = await callTurnBroker<{ content: Array<{ text: string }> }>(socketPath, {
+      method: "collect_invocation",
+      bindingId: claimed.bindingId,
+      callId,
+    });
+    expect(result.content[0]?.text).toBe("approved");
+    const consumed = await callTurnBroker<{ consumed: boolean; duplicate: boolean }>(socketPath, {
+      method: "consume_invocation",
+      bindingId: claimed.bindingId,
+      callId,
+    });
+    expect(consumed).toEqual({ consumed: true, duplicate: false });
+    const replayed = await callTurnBroker<{ content: Array<{ text: string }> }>(socketPath, {
+      method: "collect_invocation",
+      bindingId: claimed.bindingId,
+      callId,
+    });
+    expect(replayed.content[0]?.text).toBe("approved");
+    const duplicate = await callTurnBroker<{ consumed: boolean; duplicate: boolean }>(socketPath, {
+      method: "consume_invocation",
+      bindingId: claimed.bindingId,
+      callId,
+    });
+    expect(duplicate).toEqual({ consumed: true, duplicate: true });
+    await callTurnBroker(socketPath, {
+      method: "activity_complete",
+      token: registered,
+      activityId: claimed.activityId,
+    });
+    expect(broker.beginCompletionFence(registered)).toBeNumber();
+  } finally {
+    if (token) broker.revoke(token);
+    await broker.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("turn broker revokes only channels owned by the closed browser trace", async () => {
   const root = mkdtempSync(join(tmpdir(), "cgw-broker-targeted-"));
   const socketPath = defaultBrokerEndpoint(root);

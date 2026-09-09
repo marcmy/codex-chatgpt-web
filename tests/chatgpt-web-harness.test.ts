@@ -2260,9 +2260,13 @@ describe("ChatGPT outer-native harness v4", () => {
       freeform: false,
       arguments: { cmd: "sleep 30" },
     }, 10_000);
+    const invocationOutcome = invocation.then(
+      () => new Error("pending invocation unexpectedly resolved"),
+      error => error instanceof Error ? error : new Error(String(error)),
+    );
     await broker.nextToolBatch(token);
     broker.revoke(token);
-    await expect(invocation).rejects.toThrow("revoked");
+    expect((await invocationOutcome).message).toContain("revoked");
     await expect(callTurnBroker(socketPath, { method: "resolve", bindingId: claimed.bindingId }))
       .rejects.toThrow("has already finished");
     await broker.close();
@@ -2729,6 +2733,7 @@ describe("ChatGPT outer-native harness v4", () => {
         "codex_exec",
         "codex_tool_call",
         "codex_tool_inventory",
+        "codex_tool_result",
         "codex_view_image",
         "codex_write_stdin",
       ]);
@@ -2743,7 +2748,7 @@ describe("ChatGPT outer-native harness v4", () => {
       // ChatGPT caches the complete tools/list contract under a connector identity.
       // An intentional hash change therefore requires an explicit connector refresh or identity migration.
       expect(createHash("sha256").update(canonicalJson(publicConnectorAbi)).digest("hex"))
-        .toBe("5cb59b378c7d1939e260a2b4a60f58e22da31208fe09c2cc17a2cf31eb5ff3ad");
+        .toBe("32cf67647a96478c6435bb0e068c73b3e3407454c183398733f171fa2a902235");
       for (const tool of listed.tools) {
         const properties = tool.inputSchema.properties as Record<string, unknown>;
         expect(properties.turn_token).toEqual({ type: "string", minLength: 20, maxLength: 256 });
@@ -2785,6 +2790,12 @@ describe("ChatGPT outer-native harness v4", () => {
         destructiveHint: true,
         idempotentHint: false,
         openWorldHint: true,
+      });
+      expect(listed.tools.find(tool => tool.name === "codex_tool_result")?.annotations).toMatchObject({
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
       });
 
       const firstExec = call("codex_exec", {
@@ -3319,7 +3330,7 @@ describe("ChatGPT outer-native harness v4", () => {
 
     try {
       expect(chatGptMcpInvocationTimeout(environment)).toBe(CHATGPT_WEB_MCP_INVOCATION_TIMEOUT_MS);
-      expect(chatGptMcpInvocationTimeout({ ...environment, expiresAt: 1_500 }, 1_000)).toBe(500);
+      expect(chatGptMcpInvocationTimeout({ ...environment, expiresAt: 2_500 }, 1_000)).toBe(500);
       await client.connect(transport);
       const abort = new AbortController();
       const abandoned = client.callTool({
@@ -3360,7 +3371,7 @@ describe("ChatGPT outer-native harness v4", () => {
     }
   }, 10_000);
 
-  test("a native tool deadline returns an explicit MCP timeout instead of a transport failure", async () => {
+  test("a native tool deadline returns a deferred handle that collects the eventual result", async () => {
     const socketPath = brokerTestEndpoint(`cgw-h3-mcp-timeout-${process.pid}-${Date.now()}`);
     const broker = TurnBroker.forSocket(socketPath);
     const environment = extractChatGptTurnEnvironment(parsed(environmentXml));
@@ -3368,7 +3379,6 @@ describe("ChatGPT outer-native harness v4", () => {
       { name: "exec_command", description: "Run a Codex command", parameters: { type: "object" } },
     ];
     let timedOutToken: string | undefined;
-    let replacementToken: string | undefined;
     const transport = new StdioClientTransport({
       command: process.execPath,
       args: ["src/cli.ts", "mcp", "--broker-socket", socketPath],
@@ -3382,52 +3392,39 @@ describe("ChatGPT outer-native harness v4", () => {
       // Start the short capability deadline only after the MCP child is connected. Charging stdio
       // process startup made this deadline test depend on host load instead of the broker timeout.
       const activeTimedOutToken = await broker.register(environment, 1_500, "timeout-turn");
-      const activeReplacementToken = await broker.register(environment, undefined, "replacement-turn");
       timedOutToken = activeTimedOutToken;
-      replacementToken = activeReplacementToken;
       const timedOut = client.callTool({
         name: "codex_exec",
         arguments: { turn_token: activeTimedOutToken, cmd: "slow external MCP call" },
       });
       const [request] = await broker.nextToolBatch(activeTimedOutToken);
       expect(request).toMatchObject({ wireName: "exec_command" });
-      const externalProgress = new ChatGptExternalTurnProgress();
-      const toolBatchRevision = externalProgress.recordToolBatch(1, 1_000);
-      const toolBoundary = externalProgress.waitForToolBatchObservation(toolBatchRevision);
-      const pendingAdapterBatch = toolBoundary.then(() => request);
-      const pendingAdapterBatchOutcome = pendingAdapterBatch.then(
-        value => ({ type: "value" as const, value }),
-        error => ({ type: "error" as const, error: error instanceof Error ? error : new Error(String(error)) }),
-      );
-      const retirement = broker.waitForRetirement(activeTimedOutToken).then(() => {
-        externalProgress.retire(new Error("MCP invocation retired its turn binding"));
-      });
 
       const timeoutResult = await timedOut;
-      expect(timeoutResult.isError).toBe(true);
+      expect(timeoutResult.isError).not.toBe(true);
       expect(timeoutResult.structuredContent).toMatchObject({
-        code: "codex_tool_timeout",
+        status: "pending",
+        code: "codex_tool_pending",
         tool: "exec_command",
-        retryable: false,
+        invocation_id: request!.callId,
+        retryable: true,
       });
-      expect(JSON.stringify(timeoutResult.content)).toContain("did not complete before the MCP transport deadline");
-      await retirement;
-      expect(externalProgress.snapshot().activeToolCalls).toBe(0);
-      expect(chatGptExternalToolCallsAreInFlight(externalProgress.snapshot())).toBeFalse();
-      const batchOutcome = await pendingAdapterBatchOutcome;
-      expect(batchOutcome.type).toBe("error");
-      if (batchOutcome.type !== "error") throw new Error("retired tool batch crossed its browser boundary");
-      expect(batchOutcome.error.message).toContain("retired its turn binding");
-      expect(() => externalProgress.recordToolResult()).toThrow("retired its turn binding");
+      expect(JSON.stringify(timeoutResult.content)).toContain("codex_tool_result");
 
-      await expect(callTurnBroker(socketPath, { method: "claim", token: activeTimedOutToken }))
-        .rejects.toThrow("already finished");
-      expect(() => broker.completeTool(activeTimedOutToken, request!.callId, toolResult({ output: "late" })))
-        .toThrow("turn token is invalid or expired");
+      broker.completeTool(activeTimedOutToken, request!.callId, toolResult({ output: "approved later" }));
+      const collected = await client.callTool({
+        name: "codex_tool_result",
+        arguments: {
+          turn_token: activeTimedOutToken,
+          invocation_id: request!.callId,
+        },
+      });
+      expect(collected.isError).not.toBe(true);
+      expect(collected.structuredContent).toEqual({ output: "approved later" });
 
       const inventory = await client.callTool({
         name: "codex_tool_inventory",
-        arguments: { turn_token: activeReplacementToken, query: "exec_command", include_schema: false },
+        arguments: { turn_token: activeTimedOutToken, query: "exec_command", include_schema: false },
       });
       expect(inventory.structuredContent).toMatchObject({
         total: 1,
@@ -3436,7 +3433,6 @@ describe("ChatGPT outer-native harness v4", () => {
     } finally {
       await client.close().catch(() => {});
       if (timedOutToken) broker.revoke(timedOutToken);
-      if (replacementToken) broker.revoke(replacementToken);
       await broker.close();
     }
   }, 10_000);
