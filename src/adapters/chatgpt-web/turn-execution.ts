@@ -10,6 +10,7 @@ import {
 } from "./environment";
 import { MAX_CHATGPT_BROWSER_TABS } from "./concurrency";
 import type { ChatGptExternalTurnProgress } from "./turn-progress";
+import type { ChatGptSteeringInstruction } from "./steering";
 
 function awaitWithAbort<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
   if (!signal) return promise;
@@ -284,6 +285,7 @@ export class ChatGptTurnSession {
   private attachedConversationKey: string | undefined;
   private tail: Promise<void> = Promise.resolve();
   private capabilityRetirementScheduled = false;
+  private readonly pendingSteeringInstructions: ChatGptSteeringInstruction[] = [];
   private readonly rounds = new Map<string, {
     events: AdapterEvent[];
     reasoning: string[];
@@ -297,7 +299,7 @@ export class ChatGptTurnSession {
     readonly ownerKey?: string,
     readonly nativeTurnId?: string,
     readonly nativeThreadId?: string,
-    readonly instruction?: string,
+    public instruction?: string,
   ) {
     this.attachedConversationKey = runtime.conversationKey;
     this.physicalSettlement = runtime.physicalSettlement.then(
@@ -334,6 +336,29 @@ export class ChatGptTurnSession {
 
   outstanding(): BrokerToolRequest[] {
     return [...this.outstandingById.values()];
+  }
+
+  adoptSteeringInstruction(instruction: string, text: string): void {
+    if (this.instruction === instruction) return;
+    this.instruction = instruction;
+    if (!this.pendingSteeringInstructions.some(candidate => candidate.instruction === instruction)) {
+      this.pendingSteeringInstructions.push({ instruction, text });
+    }
+    this.touch();
+  }
+
+  pendingSteering(): ChatGptSteeringInstruction[] {
+    return this.pendingSteeringInstructions.map(instruction => ({ ...instruction }));
+  }
+
+  markSteeringDelivered(instructions: readonly ChatGptSteeringInstruction[]): void {
+    if (instructions.length === 0) return;
+    const delivered = new Set(instructions.map(instruction => instruction.instruction));
+    for (let index = this.pendingSteeringInstructions.length - 1; index >= 0; index -= 1) {
+      if (delivered.has(this.pendingSteeringInstructions[index]!.instruction)) {
+        this.pendingSteeringInstructions.splice(index, 1);
+      }
+    }
   }
 
   settledOutcome(): ChatGptBrowserOutcome | undefined {
@@ -499,6 +524,11 @@ export class ChatGptTurnSessions {
   private readonly retirements = new Map<string, Promise<void>>();
   private readonly ownerRetirements = new Map<string, Promise<void>>();
   private readonly conversationRetirements = new Map<string, Promise<void>>();
+  private readonly supersededExecutions = new Map<string, {
+    error: Error;
+    traceId?: string;
+    touchedAt: number;
+  }>();
 
   constructor(
     private readonly ttlMs = 30 * 60_000,
@@ -515,6 +545,11 @@ export class ChatGptTurnSessions {
     instruction?: string,
   ): ChatGptTurnSession {
     this.prune();
+    const superseded = this.supersededExecutions.get(key);
+    if (superseded) {
+      superseded.touchedAt = Date.now();
+      throw superseded.error;
+    }
     const existing = this.entries.get(key);
     if (existing) {
       if (existing.supersededError) throw existing.supersededError;
@@ -544,9 +579,15 @@ export class ChatGptTurnSessions {
     nativeTurnId?: string,
     nativeThreadId?: string,
     instruction?: ChatGptInstructionLineage,
+    steeringText?: string,
   ): Promise<ChatGptTurnSession> {
     for (;;) {
       if (signal?.aborted) throw new DOMException("ChatGPT web turn aborted", "AbortError");
+      const superseded = this.supersededExecutions.get(key);
+      if (superseded) {
+        superseded.touchedAt = Date.now();
+        throw superseded.error;
+      }
       const existing = this.entries.get(key);
       if (existing) {
         if (existing.supersededError) throw existing.supersededError;
@@ -566,6 +607,31 @@ export class ChatGptTurnSessions {
         if (ownedSession.isActive() && instruction && ownedSession.instruction
           && instruction.current !== ownedSession.instruction) {
           if (!instruction.predecessors.has(ownedSession.instruction)) throw chatGptTurnSupersededError();
+          const sameNativeTurn = nativeTurnId !== undefined
+            && ownedSession.nativeTurnId === nativeTurnId
+            && (nativeThreadId === undefined || ownedSession.nativeThreadId === nativeThreadId);
+          if (sameNativeTurn
+            && ownedSession.runtime.mode === "tools"
+            && ownedSession.outstanding().length > 0
+            && steeringText !== undefined) {
+            // A native Steer that arrives while ChatGPT is blocked on a Codex Native tool already
+            // has an in-band continuation channel: the pending MCP result. Keep the browser/model
+            // execution alive, move canonical ownership to the newer execution key, and tombstone
+            // the previous key so late retries cannot resurrect the superseded instruction.
+            const reason = chatGptTurnSupersededError();
+            this.entries.delete(ownedKey);
+            this.supersededExecutions.set(ownedKey, {
+              error: reason,
+              ...(ownedSession.traceId ? { traceId: ownedSession.traceId } : {}),
+              touchedAt: Date.now(),
+            });
+            ownedSession.adoptSteeringInstruction(instruction.current, steeringText);
+            this.entries.set(key, ownedSession);
+            console.info(
+              `[chatgpt-web] browser trace=${ownedSession.traceId ?? "unknown"} continued in-place for native steering`,
+            );
+            return ownedSession;
+          }
           // Native steering can return the old tool result and a new instruction in one request.
           // Waiting for the old browser here deadlocks before that result can be consumed. Retire
           // its capability and rebuild from the complete canonical history, including that result.
@@ -731,6 +797,7 @@ export class ChatGptTurnSessions {
     for (const [key, session] of this.entries) this.beginRetirement(key, session);
     this.entries.clear();
     this.conversationHeads.clear();
+    this.supersededExecutions.clear();
     return cancelled;
   }
 
@@ -771,6 +838,9 @@ export class ChatGptTurnSessions {
   }
 
   cancelledError(traceId: string): Error | undefined {
+    for (const superseded of this.supersededExecutions.values()) {
+      if (superseded.traceId === traceId) return superseded.error;
+    }
     for (const session of this.entries.values()) {
       if (session.traceId !== traceId) continue;
       if (session.supersededError) return session.supersededError;
@@ -790,6 +860,9 @@ export class ChatGptTurnSessions {
 
   private prune(): void {
     const cutoff = Date.now() - this.ttlMs;
+    for (const [key, superseded] of this.supersededExecutions) {
+      if (superseded.touchedAt < cutoff) this.supersededExecutions.delete(key);
+    }
     for (const [key, session] of this.entries) {
       if (session.isActive() || session.lastUsedAt() >= cutoff) continue;
       session.cancel();

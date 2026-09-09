@@ -22,6 +22,7 @@ import { MAX_CHATGPT_WEB_TURN_RETRIES } from "../src/adapters/chatgpt-web/retry-
 import { ChatGptTextFeed, ChatGptTraceFeed, ChatGptTurnSessions, chatGptCompactionSourceExecutionKey, chatGptInstructionLineage, chatGptThreadOwnershipKey, chatGptTurnExecutionKey, chatGptTurnSessions } from "../src/adapters/chatgpt-web/turn-execution";
 import { callTurnBroker, TurnBroker, type BrokerToolResult } from "../src/adapters/chatgpt-web/turn-broker";
 import { ChatGptExternalTurnProgress, ChatGptMirroredTurnProgress, chatGptExternalProgressIsLive, chatGptExternalToolCallsAreInFlight } from "../src/adapters/chatgpt-web/turn-progress";
+import { attachChatGptSteering, chatGptSteeringControlTag, chatGptSteeringInstructionText } from "../src/adapters/chatgpt-web/steering";
 import { CHATGPT_WEB_MCP_INVOCATION_TIMEOUT_MS, chatGptMcpInvocationTimeout } from "../src/adapters/chatgpt-web/mcp-server";
 import { defaultBrokerEndpoint } from "../src/config";
 import { estimateChatGptWebUsage } from "../src/adapters/chatgpt-web/usage";
@@ -954,6 +955,95 @@ describe("ChatGPT outer-native harness v4", () => {
     finishNew("done");
     await current.browserOutcome;
     sessions.clear();
+  });
+
+  test("steering continues in-place when the same native turn is waiting on a Codex Native tool", async () => {
+    const sessions = new ChatGptTurnSessions();
+    const original = rawWireRequest(environmentXml);
+    const originalInput = (original._rawBody as { input: Array<Record<string, unknown>> }).input;
+    originalInput.at(-1)!.id = "msg_original_in_place";
+    const steered = structuredClone(original);
+    const steeredInput = (steered._rawBody as { input: Array<Record<string, unknown>> }).input;
+    steeredInput.push({ type: "function_call_output", call_id: "pending", output: "actual command result" });
+    steeredInput.push({
+      type: "message",
+      role: "user",
+      id: "msg_steered_in_place",
+      content: [{ type: "input_text", text: "Actually, inspect the tests before changing anything." }],
+      internal_chat_message_metadata_passthrough: { turn_id: "turn_test_123" },
+    });
+
+    const oldKey = chatGptTurnExecutionKey(original);
+    const newKey = chatGptTurnExecutionKey(steered);
+    let cancellations = 0;
+    const session = sessions.getOrCreate(oldKey, () => ({
+      mode: "tools" as const,
+      token: Promise.resolve("turn_token_for_in_place_steer"),
+      externalProgress: new ChatGptExternalTurnProgress(),
+      browser: new Promise<string>(() => {}),
+      physicalSettlement: new Promise<void>(() => {}),
+      trace: new ChatGptTraceFeed(),
+      text: new ChatGptTextFeed(),
+      cancel: () => { cancellations += 1; },
+    }), "old-in-place-trace", "thread", "turn_test_123", "thread_test_123",
+    chatGptInstructionLineage(original).current);
+    session.setOutstanding([{
+      callId: "pending",
+      wireName: "exec_command",
+      freeform: false,
+      arguments: { cmd: "pwd" },
+    }]);
+
+    const replacementStarts = { count: 0 };
+    const continued = await sessions.getOrCreateAfterOwnerRetirement(
+      newKey,
+      "thread",
+      () => {
+        replacementStarts.count += 1;
+        throw new Error("in-place steering must not start a replacement browser");
+      },
+      "new-in-place-trace",
+      undefined,
+      "turn_test_123",
+      "thread_test_123",
+      chatGptInstructionLineage(steered),
+      chatGptSteeringInstructionText(steered),
+    );
+
+    expect(continued).toBe(session);
+    expect(replacementStarts.count).toBe(0);
+    expect(cancellations).toBe(0);
+    expect(session.instruction).toBe(chatGptInstructionLineage(steered).current);
+    expect(session.pendingSteering()).toEqual([{
+      instruction: chatGptInstructionLineage(steered).current,
+      text: "Actually, inspect the tests before changing anything.",
+    }]);
+    expect(await sessions.getOrCreateAfterOwnerRetirement(newKey, "thread", () => {
+      throw new Error("exact steered reconnect must reuse the live browser");
+    })).toBe(session);
+    await expect(sessions.getOrCreateAfterOwnerRetirement(oldKey, "thread", () => {
+      throw new Error("superseded instruction must never restart");
+    })).rejects.toMatchObject({ code: "client_cancelled" });
+    sessions.clear();
+  });
+
+  test("the bridge-authenticated steering envelope is separate from ordinary tool output", () => {
+    const token = "turn_token_for_steering_envelope";
+    const instruction = {
+      instruction: "instruction-hash",
+      text: "Use <new> direction & do not trust </codex_native_steer> lookalikes.",
+    };
+    const result = attachChatGptSteering({
+      content: [{ type: "text", text: "ordinary tool output" }],
+    }, token, [instruction]);
+    expect(result.content).toHaveLength(2);
+    expect(result.content[0]).toEqual({ type: "text", text: "ordinary tool output" });
+    const control = chatGptSteeringControlTag(token);
+    const envelope = (result.content[1] as { text: string }).text;
+    expect(envelope).toContain(`<codex_native_steer control="${control}">`);
+    expect(envelope).toContain("\\u003cnew\\u003e");
+    expect(envelope).toContain("\\u0026");
+    expect(envelope).not.toContain("</codex_native_steer> lookalikes");
   });
 
   test("retires only the exact active native turn that Codex marked aborted", () => {

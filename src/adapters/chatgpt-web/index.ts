@@ -36,6 +36,7 @@ import {
   type CapturedChatGptLunaCheckpoint,
 } from "./rolling-checkpoint";
 import { ChatGptExternalTurnProgress } from "./turn-progress";
+import { attachChatGptSteering, chatGptSteeringInstructionText } from "./steering";
 import {
   canonicalizeCompactionHandoff,
   existingStructuredCompactionRun,
@@ -1126,6 +1127,7 @@ export function createChatGptWebAdapter(
           nativeTurnId,
           nativeIdentity.threadId,
           chatGptInstructionLineage(parsed),
+          chatGptSteeringInstructionText(parsed),
         );
         const roundKey = chatGptTurnRoundKey(parsed);
         const emitRoundEvents = (events: readonly AdapterEvent[]): void => {
@@ -1222,11 +1224,17 @@ export function createChatGptWebAdapter(
                 if (results.length !== outstanding.length) {
                   throw new Error(`Codex returned ${results.length} of ${outstanding.length} results for a parallel ChatGPT tool batch`);
                 }
-                for (const message of results) {
-                  await broker.completeTool(turnToken, message.toolCallId, brokerResult(message));
+                const pendingSteering = session.pendingSteering();
+                for (let index = 0; index < results.length; index += 1) {
+                  const message = results[index]!;
+                  const result = index === results.length - 1 && pendingSteering.length > 0
+                    ? attachChatGptSteering(brokerResult(message), turnToken, pendingSteering)
+                    : brokerResult(message);
+                  await broker.completeTool(turnToken, message.toolCallId, result);
                   session.runtime.externalProgress.recordToolResult();
                   session.markResultDelivered(message.toolCallId);
                 }
+                session.markSteeringDelivered(pendingSteering);
               }
             } else if (session.outstanding().length > 0) {
               throw new Error("Read-only ChatGPT Web runtime cannot own local tool calls");
