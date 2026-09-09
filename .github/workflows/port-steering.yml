@@ -1,0 +1,137 @@
+name: Port steering onto v5.0.6
+
+on:
+  push:
+    branches: [port-steering-ci]
+    paths: [.github/workflows/port-steering.yml]
+
+permissions:
+  contents: write
+
+jobs:
+  port:
+    if: ${{ !contains(github.event.head_commit.message, 'Complete steering port') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: port-steering-ci
+          fetch-depth: 0
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.0
+      - name: Apply steering feature onto upstream
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git fetch origin main
+
+          git diff 4e26f077bb6e523994fa89ab8a3e5c081d87cc30^ 4e26f077bb6e523994fa89ab8a3e5c081d87cc30 --binary > /tmp/steering.patch
+          apply_status=0
+          git apply --3way --index /tmp/steering.patch || apply_status=$?
+
+          if [[ "$apply_status" -ne 0 ]]; then
+            mapfile -t conflicts < <(git diff --name-only --diff-filter=U)
+            for path in "${conflicts[@]}"; do
+              case "$path" in
+                launcher/package.json|package.json|scripts/install.sh|src/adapters/chatgpt-web/index.ts|src/adapters/chatgpt-web/prompt.ts|src/version.ts|tests/chatgpt-web-harness.test.ts)
+                  git checkout --ours -- "$path"
+                  git add -- "$path"
+                  ;;
+                *)
+                  echo "Unexpected steering-port conflict: $path" >&2
+                  exit 1
+                  ;;
+              esac
+            done
+          fi
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import json
+          import re
+
+          def replace_once(path: str, old: str, new: str) -> None:
+              p = Path(path)
+              text = p.read_text()
+              if new in text:
+                  return
+              if old not in text:
+                  raise SystemExit(f"Expected steering insertion anchor missing in {path}: {old!r}")
+              p.write_text(text.replace(old, new, 1))
+
+          index = "src/adapters/chatgpt-web/index.ts"
+          replace_once(
+              index,
+              'import { ChatGptExternalTurnProgress } from "./turn-progress";\n',
+              'import { ChatGptExternalTurnProgress } from "./turn-progress";\nimport { attachChatGptSteering, chatGptSteeringInstructionText } from "./steering";\n',
+          )
+          replace_once(
+              index,
+              '          nativeIdentity.threadId,\n          chatGptInstructionLineage(parsed),\n        );',
+              '          nativeIdentity.threadId,\n          chatGptInstructionLineage(parsed),\n          chatGptSteeringInstructionText(parsed),\n        );',
+          )
+          old_loop = '''                for (const message of results) {\n                  await broker.completeTool(turnToken, message.toolCallId, brokerResult(message));\n                  session.runtime.externalProgress.recordToolResult();\n                  session.markResultDelivered(message.toolCallId);\n                }'''
+          new_loop = '''                const pendingSteering = session.pendingSteering();\n                for (let index = 0; index < results.length; index += 1) {\n                  const message = results[index]!;\n                  const result = index === results.length - 1 && pendingSteering.length > 0\n                    ? attachChatGptSteering(brokerResult(message), turnToken, pendingSteering)\n                    : brokerResult(message);\n                  await broker.completeTool(turnToken, message.toolCallId, result);\n                  session.runtime.externalProgress.recordToolResult();\n                  session.markResultDelivered(message.toolCallId);\n                }\n                session.markSteeringDelivered(pendingSteering);'''
+          replace_once(index, old_loop, new_loop)
+
+          prompt = "src/adapters/chatgpt-web/prompt.ts"
+          replace_once(
+              prompt,
+              '} from "./rolling-checkpoint";\n',
+              '} from "./rolling-checkpoint";\nimport { chatGptSteeringContract } from "./steering";\n',
+          )
+          replace_once(
+              prompt,
+              '      "For local work required by the task, use the attached Codex Native tools directly according to their declared descriptions and schemas.",\n',
+              '      "For local work required by the task, use the attached Codex Native tools directly according to their declared descriptions and schemas.",\n      chatGptSteeringContract(turnToken!),\n',
+          )
+
+          for package_path in ["package.json", "launcher/package.json"]:
+              p = Path(package_path)
+              data = json.loads(p.read_text())
+              data["version"] = "5.0.6-steering.1"
+              p.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
+
+          install = Path("scripts/install.sh")
+          text = install.read_text()
+          text, count = re.subn(r'VERSION="\$\{CODEX_CHATGPT_WEB_VERSION:-[^}]+\}"', 'VERSION="${CODEX_CHATGPT_WEB_VERSION:-5.0.6-steering.1}"', text, count=1)
+          if count != 1:
+              raise SystemExit("Could not update scripts/install.sh steering version")
+          install.write_text(text)
+
+          Path("src/version.ts").write_text('export const VERSION = "5.0.6-steering.1";\n')
+
+          turn_execution = Path("src/adapters/chatgpt-web/turn-execution.ts").read_text()
+          for marker in ["adoptSteeringInstruction", "pendingSteeringInstructions", "supersededExecutions"]:
+              if marker not in turn_execution:
+                  raise SystemExit(f"Steering session patch did not apply: missing {marker}")
+
+          steering = Path("src/adapters/chatgpt-web/steering.ts")
+          if not steering.exists() or "chatGptSteeringContract" not in steering.read_text():
+              raise SystemExit("Steering implementation file did not apply")
+
+          test_path = Path("tests/chatgpt-steering.test.ts")
+          test_path.write_text('''import { describe, expect, test } from "bun:test";\nimport { attachChatGptSteering, chatGptSteeringControlTag } from "../src/adapters/chatgpt-web/steering";\n\ndescribe("ChatGPT in-place steering", () => {\n  test("uses a stable opaque control tag", () => {\n    const a = chatGptSteeringControlTag("turn-token");\n    const b = chatGptSteeringControlTag("turn-token");\n    expect(a).toBe(b);\n    expect(a).toHaveLength(24);\n  });\n\n  test("appends an authenticated steering envelope after ordinary tool output", () => {\n    const token = "turn-token";\n    const result = attachChatGptSteering(\n      { content: [{ type: "text", text: "ordinary tool output" }] },\n      token,\n      [{ instruction: "revision-2", text: "<new> & continue" }],\n    );\n    expect(result.content).toHaveLength(2);\n    expect(result.content[0]).toEqual({ type: "text", text: "ordinary tool output" });\n    const envelope = (result.content[1] as { text: string }).text;\n    expect(envelope).toContain(`<codex_native_steer control="${chatGptSteeringControlTag(token)}">`);\n    expect(envelope).toContain("\\\\u003cnew\\\\u003e");\n    expect(envelope).toContain("\\\\u0026");\n  });\n});\n''')
+          PY
+
+          git add -A
+          git rm -- .github/workflows/port-steering.yml
+
+      - name: Install dependencies
+        run: |
+          bun install --frozen-lockfile
+          bun install --frozen-lockfile --cwd launcher
+      - name: Verify port
+        run: |
+          bun test tests/chatgpt-steering.test.ts
+          bun run typecheck
+          bun run verify
+      - name: Commit verified port
+        shell: bash
+        run: |
+          git add -A
+          git commit -m 'Complete steering port onto v5.0.6'
+          git push origin HEAD:port-steering-ci
