@@ -90,6 +90,7 @@ const install = Bun.spawnSync([process.execPath, "install", "--production", "--f
 if (install.exitCode !== 0) {
   throw new Error(`Runtime dependencies failed to install: ${install.stderr.toString() || install.stdout.toString()}`);
 }
+rmSync(join(appDir, "node_modules", ".cache"), { recursive: true, force: true });
 const bunName = process.platform === "win32" ? "bun.exe" : "bun";
 cpSync(embeddedBunExecutable(), join(runtimeDir, bunName));
 if (process.platform !== "win32") chmodSync(join(runtimeDir, bunName), 0o755);
