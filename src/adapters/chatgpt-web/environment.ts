@@ -132,6 +132,28 @@ export function hasCurrentChatGptEnvironmentContext(parsed: CodexParsedRequest):
   return false;
 }
 
+/** True only when a current-tagged environment is replayed before later model/tool output. */
+export function hasReplayedCurrentChatGptEnvironmentContext(parsed: CodexParsedRequest): boolean {
+  const turnId = extractChatGptTurnIdentity(parsed).turnId;
+  if (!turnId) return false;
+  const body = record(parsed._rawBody);
+  const input = Array.isArray(body?.input) ? body.input : [];
+  let laterGeneratedOutput = false;
+  for (let index = input.length - 1; index >= 0; index -= 1) {
+    const item = record(input[index]);
+    if (!item) continue;
+    if ((item.type === "message" && item.role === "assistant")
+      || item.type === "function_call" || item.type === "custom_tool_call"
+      || item.type === "reasoning" || item.type === "compaction") {
+      laterGeneratedOutput = true;
+      continue;
+    }
+    if (item.type !== "message" || item.role !== "user" || itemTurnId(item) !== turnId) continue;
+    if (/<\/?environment_context\b/i.test(rawMessageText(item)) && laterGeneratedOutput) return true;
+  }
+  return false;
+}
+
 export interface ChatGptUnattributedEnvironmentMessage {
   id: string;
   content: unknown;
@@ -286,8 +308,8 @@ export function isChatGptCompactionContinuation(parsed: CodexParsedRequest): boo
     && isAcceptedCompactionContinuation(parsed, identity, revision);
 }
 
-/** Parse a claim only: the caller must compare it with this turn's native rollout authority. */
-export function extractChatGptContinuationEnvironmentClaim(parsed: CodexParsedRequest): ChatGptTurnEnvironment {
+/** Parse a current-turn claim only; the caller must authenticate it against trusted authority. */
+export function extractChatGptCurrentEnvironmentClaim(parsed: CodexParsedRequest): ChatGptTurnEnvironment {
   const turnId = extractChatGptTurnIdentity(parsed).turnId;
   const body = record(parsed._rawBody);
   const updates = (Array.isArray(body?.input) ? body.input : []).flatMap(value => {
@@ -304,7 +326,7 @@ export function extractChatGptContinuationEnvironmentClaim(parsed: CodexParsedRe
       return /^<environment_context>[\s\S]*<\/environment_context>$/.test(text) ? [text] : [];
     });
   });
-  if (updates.length !== 1) throw new Error("Compaction continuation requires one current native environment claim");
+  if (updates.length !== 1) throw new Error("ChatGPT web requires one current native environment claim");
   return parseChatGptEnvironmentText(parsed, updates[0]!);
 }
 

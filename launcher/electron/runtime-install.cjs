@@ -7,6 +7,27 @@ const { runtimeBundlePaths } = require("./runtime-command.cjs");
 const DEFAULT_SOURCE_WAIT_TIMEOUT_MS = 30_000;
 const DEFAULT_SOURCE_WAIT_INTERVAL_MS = 50;
 const SHA256_PATTERN = /^[a-f0-9]{64}$/;
+const TRANSIENT_WINDOWS_CLEANUP_ERRORS = new Set(["EBUSY", "EPERM", "EACCES", "ENOTEMPTY"]);
+
+function removeCommittedPreviousRuntime(
+  directory,
+  {
+    platform = process.platform,
+    remove = fs.rmSync,
+  } = {},
+) {
+  try {
+    remove(directory, {
+      recursive: true,
+      force: true,
+      ...(platform === "win32" ? { maxRetries: 8, retryDelay: 100 } : {}),
+    });
+    return true;
+  } catch (error) {
+    if (platform === "win32" && TRANSIENT_WINDOWS_CLEANUP_ERRORS.has(error?.code)) return false;
+    throw error;
+  }
+}
 
 function comparePaths(left, right) {
   return left < right ? -1 : left > right ? 1 : 0;
@@ -274,7 +295,10 @@ function ensurePackagedRuntime({ app, coreHome, resourcesPath }) {
       throw error;
     }
     if (previousMoved) {
-      fs.rmSync(previous, { recursive: true, force: true });
+      // The replacement is already validated and authoritative here. Windows can keep an old
+      // runtime DLL/executable locked briefly after its owner exits; failure to delete that stale
+      // backup must not turn a successful runtime commit into a launcher startup failure.
+      removeCommittedPreviousRuntime(previous);
       previousMoved = false;
     }
   } finally {
