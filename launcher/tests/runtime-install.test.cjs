@@ -351,3 +351,37 @@ test("packaged runtime replaces stale files when a release is refreshed under th
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("packaged runtime startup survives a transient Windows lock while retiring the previous bundle", {
+  skip: process.platform !== "win32",
+}, () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-web-gpt-runtime-locked-previous-"));
+  const resourcesPath = runtimeFixture(root, "0.2.0");
+  const coreHome = path.join(root, "core-home");
+  const app = { isPackaged: true, getVersion: () => "0.2.0" };
+  const originalRemove = fs.rmSync;
+  try {
+    const installed = ensurePackagedRuntime({ app, coreHome, resourcesPath });
+    const source = path.join(resourcesPath, "runtime");
+    fs.writeFileSync(path.join(source, "app", "cli.js"), "new cli");
+    writeRuntimeManifest(source);
+
+    let blockedPrevious = null;
+    fs.rmSync = (target, options) => {
+      if (typeof target === "string" && target.includes(".previous-")) {
+        blockedPrevious = target;
+        const error = new Error("old runtime is still locked");
+        error.code = "EPERM";
+        throw error;
+      }
+      return originalRemove(target, options);
+    };
+
+    assert.equal(ensurePackagedRuntime({ app, coreHome, resourcesPath }), installed);
+    assert.match(blockedPrevious, /\.previous-/);
+    assert.equal(fs.readFileSync(path.join(installed, "app", "cli.js"), "utf8"), "new cli");
+  } finally {
+    fs.rmSync = originalRemove;
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
