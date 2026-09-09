@@ -88,6 +88,24 @@ describe("trusted current Codex environment envelope", () => {
     });
   });
 
+  test("decodes exactly one layer of XML entities in trusted paths", () => {
+    const literalEntityRoot = resolve(root, "literal&lt;segment&amp;value");
+    const encodedRoot = literalEntityRoot
+      .replaceAll("&", "&amp;");
+    const escapedEnvironment = `<environment_context>
+  <cwd>${encodedRoot}</cwd>
+  <filesystem><workspace_roots><root>${encodedRoot}</root></workspace_roots>${dangerFullAccessProfileXml}</filesystem>
+</environment_context>`;
+
+    expect(extractChatGptTurnEnvironment(currentWire({
+      workspace: literalEntityRoot,
+      environmentXml: escapedEnvironment,
+    }))).toMatchObject({
+      cwd: literalEntityRoot,
+      roots: [literalEntityRoot],
+    });
+  });
+
   test("recovers the primary cwd from a Codex 0.150 filesystem-only multi-folder diff", () => {
     const primary = resolve(root, "workspace-primary");
     const additional = resolve(root, "workspace-additional");

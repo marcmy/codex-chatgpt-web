@@ -76,6 +76,29 @@ test("proxies official /models auth and query, then appends the fixed ChatGPT We
   }
 });
 
+test("does not expose non-Error throw details from native model failures", async () => {
+  const response = await modelsRequest(
+    new Request("http://127.0.0.1:17841/v1/models", {
+      headers: { authorization: "Bearer codex-oauth-token" },
+    }),
+    defaultConfig("full"),
+    async () => {
+      throw {
+        toString: () => "Error: internal failure\n    at C:\\private\\server.ts:42:7",
+      };
+    },
+  );
+
+  expect(response.status).toBe(502);
+  expect(await response.json()).toMatchObject({
+    error: {
+      message: "Native models request failed",
+      type: "server_error",
+      code: "upstream_server_error",
+    },
+  });
+});
+
 test("Luna-only account exposes no paid ChatGPT Web routes", async () => {
   const config = defaultConfig("browser-only");
   config.solAvailable = false;

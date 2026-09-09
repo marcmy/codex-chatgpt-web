@@ -17,6 +17,7 @@ const {
   BrowserHost,
   IDLE_BROWSER_URL,
   isChatGptCloudflareChallengeResponse,
+  isChatGptOrigin,
   isTemporaryChatUrl,
   loadCommittedBrowserSurface,
   MANUAL_COMPACTION_SUBMIT_TIMEOUT_MS,
@@ -28,6 +29,15 @@ const {
 test("manual prompt handoff keeps ordinary turns at thirty seconds and compaction at two minutes", () => {
   assert.equal(MANUAL_SUBMIT_TIMEOUT_MS, 30_000);
   assert.equal(MANUAL_COMPACTION_SUBMIT_TIMEOUT_MS, 120_000);
+});
+
+test("ChatGPT origin checks reject lookalike hosts", () => {
+  assert.equal(isChatGptOrigin("https://chatgpt.com/?temporary-chat=true"), true);
+  assert.equal(isChatGptOrigin("https://chatgpt.com/c/example?foo=bar#answer"), true);
+  assert.equal(isChatGptOrigin("https://chatgpt.com.evil.example/"), false);
+  assert.equal(isChatGptOrigin("https://chatgpt.com@evil.example/"), false);
+  assert.equal(isChatGptOrigin("http://chatgpt.com/"), false);
+  assert.equal(isChatGptOrigin("not a url"), false);
 });
 
 test("Electron and Bun agree on the exact launcher idle surface", () => {
