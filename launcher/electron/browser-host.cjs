@@ -1475,7 +1475,11 @@ class BrowserHost {
       }
       tab.view.setBounds(bounds);
     }
-    tab.view.setVisible(visible || tab.status === "running");
+    // Retained automatic tabs must stay drawable while idle. Electron collapses a hidden
+    // WebContentsView renderer to 0x0, and re-enabling device emulation after that collapse is not
+    // sufficient to make the next Playwright lease operational reliably. Keep the retained view
+    // attached offscreen; endTurn() still enables background throttling while it is idle.
+    tab.view.setVisible(true);
   }
 
   presentPrimaryView(visible) {
