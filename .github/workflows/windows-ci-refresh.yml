@@ -6,6 +6,7 @@ on:
     paths:
       - package.json
       - launcher/package.json
+      - launcher/tests/packaging-contract.test.cjs
       - .github/workflows/ci.yml
       - .github/workflows/windows-ci-refresh.yml
 
