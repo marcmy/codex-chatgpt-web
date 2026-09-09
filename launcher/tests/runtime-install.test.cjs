@@ -121,6 +121,78 @@ test("packaged runtime is installed once into a durable versioned directory", ()
   }
 });
 
+test("unchanged packaged runtime startup uses metadata stamps instead of rereading runtime contents", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-web-gpt-runtime-fast-start-"));
+  const resourcesPath = runtimeFixture(root);
+  const coreHome = path.join(root, "core-home");
+  const app = { isPackaged: true, getVersion: () => "0.2.0" };
+  const originalRead = fs.readFileSync;
+  try {
+    const installed = ensurePackagedRuntime({ app, coreHome, resourcesPath });
+    const contentReads = [];
+    fs.readFileSync = (filePath, ...args) => {
+      const resolved = path.resolve(String(filePath));
+      if (resolved.startsWith(`${path.resolve(resourcesPath, "runtime")}${path.sep}`)
+        || resolved.startsWith(`${path.resolve(installed)}${path.sep}`)) {
+        if (path.basename(resolved) !== "manifest.json") contentReads.push(resolved);
+      }
+      return originalRead(filePath, ...args);
+    };
+
+    assert.equal(ensurePackagedRuntime({ app, coreHome, resourcesPath }), installed);
+    assert.deepEqual(contentReads, []);
+  } finally {
+    fs.readFileSync = originalRead;
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("launcher startup reuses a validated durable runtime without walking packaged source payloads", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-web-gpt-runtime-source-skip-"));
+  const resourcesPath = runtimeFixture(root);
+  const coreHome = path.join(root, "core-home");
+  const app = { isPackaged: true, getVersion: () => "0.2.0" };
+  const source = path.resolve(resourcesPath, "runtime");
+  const originalLstat = fs.lstatSync;
+  try {
+    const installed = ensurePackagedRuntime({ app, coreHome, resourcesPath });
+    fs.lstatSync = (filePath, ...args) => {
+      const resolved = path.resolve(String(filePath));
+      const packagedHelper = path.join(source, "app", "browser-helper.cjs");
+      if (resolved.startsWith(`${source}${path.sep}`) && resolved !== packagedHelper) {
+        throw new Error(`packaged source payload was walked during fast startup: ${resolved}`);
+      }
+      return originalLstat(filePath, ...args);
+    };
+
+    assert.equal(
+      await waitForPackagedRuntimeSource({ app, resourcesPath, coreHome, timeoutMs: 100 }),
+      source,
+    );
+    assert.equal(ensurePackagedRuntime({ app, coreHome, resourcesPath }), installed);
+  } finally {
+    fs.lstatSync = originalLstat;
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("metadata stamp mismatch falls back to full validation and repairs same-size corruption", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-web-gpt-runtime-fast-start-corrupt-"));
+  const resourcesPath = runtimeFixture(root);
+  const coreHome = path.join(root, "core-home");
+  const app = { isPackaged: true, getVersion: () => "0.2.0" };
+  try {
+    const installed = ensurePackagedRuntime({ app, coreHome, resourcesPath });
+    const dependency = path.join(installed, "app", "node_modules", "zod", "v4", "index.js");
+    fs.writeFileSync(dependency, "bad-v4");
+
+    assert.equal(ensurePackagedRuntime({ app, coreHome, resourcesPath }), installed);
+    assert.equal(fs.readFileSync(dependency, "utf8"), "zod-v4");
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("packaged runtime installation rejects a platform or version mismatch", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-web-gpt-runtime-mismatch-"));
   const resourcesPath = runtimeFixture(root, "0.1.0");

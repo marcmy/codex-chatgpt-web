@@ -903,7 +903,7 @@ async function start() {
   }
   app.on("second-instance", () => showMainWindow());
 
-  await waitForPackagedRuntimeSource({ app, resourcesPath: process.resourcesPath });
+  await waitForPackagedRuntimeSource({ app, resourcesPath: process.resourcesPath, coreHome: CORE_HOME });
   let installedRuntimeRoot = null;
   let runtimeRootResolved = false;
   const runtimeRootProvider = () => {
