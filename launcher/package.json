@@ -22,19 +22,19 @@
     "start": "electron ."
   },
   "dependencies": {
-    "motion": "^12.42.2",
+    "motion": "^13.2.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
   },
   "devDependencies": {
-    "@types/node": "^22.10.2",
+    "@types/node": "^26.4.1",
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.7",
-    "@vitejs/plugin-react": "^5.2.0",
-    "electron": "41.10.7",
+    "@vitejs/plugin-react": "^6.1.1",
+    "electron": "44.2.0",
     "electron-builder": "^26.8.1",
-    "typescript": "^5.9.3",
-    "vite": "^6.0.0"
+    "typescript": "^7.0.2",
+    "vite": "^8.2.2"
   },
   "overrides": {
     "@xmldom/xmldom": "0.8.15",
