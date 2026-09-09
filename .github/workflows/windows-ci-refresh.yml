@@ -1,0 +1,84 @@
+name: Refresh Windows CI and Hono
+
+on:
+  push:
+    branches: [fix/windows-only-ci-hono]
+    paths:
+      - package.json
+      - .github/workflows/ci.yml
+      - .github/workflows/windows-ci-refresh.yml
+
+permissions:
+  contents: write
+
+jobs:
+  refresh-and-verify:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: fix/windows-only-ci-hono
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.0
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.26.x"
+          cache: false
+
+      - name: Refresh lockfile
+        shell: pwsh
+        run: bun install
+
+      - name: Install launcher dependencies
+        shell: pwsh
+        run: bun install --frozen-lockfile --cwd launcher
+
+      - name: Validate Windows PowerShell 5.1 installer
+        shell: powershell
+        run: |
+          if ($PSVersionTable.PSVersion.Major -ne 5) {
+            throw "Expected Windows PowerShell 5.1, got $($PSVersionTable.PSVersion)"
+          }
+          $source = Get-Content scripts/install-launcher.ps1 -Raw
+          [void][scriptblock]::Create($source)
+          if ($source.Contains("IsPathFullyQualified")) {
+            throw "The Windows PowerShell 5.1 installer cannot use the .NET Core-only IsPathFullyQualified API"
+          }
+          if (-not [Environment]::Is64BitOperatingSystem) {
+            throw "The Windows CI runner must be 64-bit"
+          }
+
+      - name: Prepare AVX2-independent Windows runtime
+        shell: pwsh
+        run: ./scripts/prepare-windows-baseline-bun.ps1 -Version 1.4.0 -GitHubEnv $env:GITHUB_ENV
+
+      - name: Lint GitHub Actions
+        shell: pwsh
+        run: |
+          $files = Get-ChildItem .github/workflows/*.yml | ForEach-Object { $_.FullName }
+          go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.7 -config-file .github/actionlint.yaml $files
+
+      - name: Verify
+        shell: pwsh
+        run: bun run verify
+
+      - name: Package Windows app
+        shell: pwsh
+        run: bun run app:package
+
+      - name: Smoke packaged app
+        shell: pwsh
+        run: bun run app:smoke
+
+      - name: Commit verified dependency refresh
+        shell: pwsh
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm .github/workflows/windows-ci-refresh.yml
+          git add bun.lock package.json .github/workflows/ci.yml
+          git commit -m "Use Windows-only CI and update Hono"
+          git push origin HEAD:fix/windows-only-ci-hono
