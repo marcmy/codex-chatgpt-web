@@ -6,6 +6,10 @@ updates:
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 5
+    ignore:
+      # Bun's runtime and type package are intentionally pinned in lockstep.
+      # packageManager is not managed by Dependabot, so update both manually.
+      - dependency-name: "@types/bun"
     groups:
       routine-dependencies:
         patterns:
@@ -13,11 +17,6 @@ updates:
         update-types:
           - "minor"
           - "patch"
-      major-dependencies:
-        patterns:
-          - "*"
-        update-types:
-          - "major"
 
   - package-ecosystem: "bun"
     directory: "/launcher"
@@ -31,11 +30,6 @@ updates:
         update-types:
           - "minor"
           - "patch"
-      major-launcher-dependencies:
-        patterns:
-          - "*"
-        update-types:
-          - "major"
 
   - package-ecosystem: "github-actions"
     directory: "/"
@@ -49,8 +43,3 @@ updates:
         update-types:
           - "minor"
           - "patch"
-      major-actions:
-        patterns:
-          - "*"
-        update-types:
-          - "major"
