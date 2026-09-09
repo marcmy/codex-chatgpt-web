@@ -5,7 +5,11 @@ import {
 } from "../../chatgpt-web-models";
 import { estimateTokens } from "../../lib/token-estimate";
 import type { CodexParsedRequest } from "../../types";
-import { resolveChatGptWebModelMode, type ChatGptWebCapabilities } from "./model";
+import {
+  CHATGPT_WEB_MODEL_ID,
+  resolveChatGptWebModelMode,
+  type ChatGptWebCapabilities,
+} from "./model";
 import {
   compileChatGptWebPrompt as compileChatGptWebPromptCore,
   formatChatGptWebMultipartCommit,
@@ -38,14 +42,14 @@ function multipartCompactionFitsAvailableMessages(
     const text = final
       ? formatChatGptWebMultipartCommit(multipart, transactionId)
       : formatChatGptWebMultipartStage(payload, transactionId, index + 1, multipart.parts.length).text;
-    const limits = resolveChatGptWebTransportLimits(parsed.modelId, effort, capabilities);
+    const limits = resolveChatGptWebTransportLimits(CHATGPT_WEB_MODEL_ID, effort, capabilities);
     const messageBudget = resolveChatGptWebMessageTokenBudget(
-      parsed.modelId,
+      CHATGPT_WEB_MODEL_ID,
       effort,
       capabilities,
       final ? imageTokens : 0,
     );
-    const messageTokens = estimateTokens(text, parsed.modelId);
+    const messageTokens = estimateTokens(text, CHATGPT_WEB_MODEL_ID);
     return messageTokens <= messageBudget
       && (limits.browserMessageTokenLimit === undefined || messageTokens <= limits.browserMessageTokenLimit)
       && (limits.browserComposerCharLimit === undefined || text.length <= limits.browserComposerCharLimit);
