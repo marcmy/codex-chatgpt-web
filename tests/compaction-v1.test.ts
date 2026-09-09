@@ -47,6 +47,54 @@ test("v1 compaction keeps only the newest ten structured images without copying 
   expect(retained.at(-1)?.content.at(-1)).toMatchObject({ detail: "high" });
 });
 
+test("v1 recompaction does not carry already-checkpointed images into another browser epoch", () => {
+  const oldImage = "data:image/png;base64,old-screenshot";
+  const newImage = "data:image/png;base64,new-screenshot";
+  const input = [
+    {
+      type: "message",
+      role: "user",
+      id: "old-image-message",
+      metadata: { source: "old-turn" },
+      content: [
+        { type: "input_text", text: "Old screenshot request" },
+        { type: "input_image", image_url: oldImage, detail: "high" },
+      ],
+    },
+    {
+      type: "message",
+      role: "user",
+      content: [{ type: "input_text", text: `${SUMMARY_PREFIX}\nPrevious visual checkpoint` }],
+    },
+    {
+      type: "message",
+      role: "user",
+      id: "new-image-message",
+      metadata: { source: "new-turn" },
+      content: [
+        { type: "input_text", text: "New screenshot request" },
+        { type: "input_image", image_url: newImage, detail: "high" },
+      ],
+    },
+  ];
+
+  const extracted = extractCompactUserMessages(input) as Array<{
+    id?: string;
+    metadata?: { source?: string };
+    content: Array<{ type: string; text?: string; image_url?: string }>;
+  }>;
+  expect(extracted.map(item => item.id)).toEqual(["old-image-message", "new-image-message"]);
+  expect(extracted[0]!.metadata?.source).toBe("old-turn");
+  expect(extracted[0]!.content).toEqual([{ type: "input_text", text: "Old screenshot request" }]);
+  expect(extracted[1]!.content.at(-1)).toMatchObject({ type: "input_image", image_url: newImage });
+
+  const output = buildCompactV1Output(extracted, "next checkpoint");
+  const serialized = JSON.stringify(output);
+  expect(serialized).toContain("Old screenshot request");
+  expect(serialized).not.toContain(oldImage);
+  expect(serialized).toContain(newImage);
+});
+
 test("v1 compaction drops persisted one-pixel image sentinels", () => {
   const placeholder = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
   const output = buildCompactV1Output(extractCompactUserMessages([{
