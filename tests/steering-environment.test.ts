@@ -105,4 +105,40 @@ describe("trusted steering environment continuity", () => {
     });
     expect(() => store.resolve(invalidCurrentClaim)).toThrow();
   });
+
+  test("same-turn post-tool continuation accepts only an identical current-tagged environment replay", () => {
+    const store = new ChatGptThreadEnvironmentStore();
+    expect(store.resolve(currentWire()).cwd).toBe(root);
+
+    const continuation = currentWire();
+    const input = (continuation._rawBody as { input: Array<Record<string, unknown>> }).input;
+    input[0]!.internal_chat_message_metadata_passthrough = { turn_id: "turn_current" };
+    input.splice(1, 0, {
+      type: "message",
+      id: "msg_assistant_progress",
+      role: "assistant",
+      content: [{ type: "output_text", text: "Tool work is in progress." }],
+    }, {
+      type: "function_call",
+      id: "call_completed_tool",
+      call_id: "call_completed_tool",
+      name: "exec_command",
+      arguments: "{}",
+    }, {
+      type: "function_call_output",
+      id: "call_completed_tool_output",
+      call_id: "call_completed_tool",
+      output: "completed",
+    });
+
+    expect(store.resolve(continuation).cwd).toBe(root);
+
+    const changed = structuredClone(continuation);
+    const changedInput = (changed._rawBody as { input: Array<Record<string, unknown>> }).input;
+    changedInput[0]!.content = [{
+      type: "input_text",
+      text: environmentXml.replace(`<cwd>${root}</cwd>`, `<cwd>${resolve(root, "other")}</cwd>`),
+    }];
+    expect(() => store.resolve(changed)).toThrow();
+  });
 });
