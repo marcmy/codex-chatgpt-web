@@ -2086,6 +2086,7 @@ test("a later provider round reuses only its exact connector-bound conversation"
     loading: false,
     message: "Task completed",
     bootstrapReady: true,
+    deviceEmulationDirty: false,
     view: {
       webContents: {
         isDestroyed: () => false,
@@ -2127,6 +2128,7 @@ test("a later provider round reuses only its exact connector-bound conversation"
   assert.equal(tab.loading, true);
   assert.equal(tab.message, "ChatGPT is working");
   assert.equal(tab.bootstrapReady, true);
+  assert.equal(tab.deviceEmulationDirty, true);
   assert.equal(fixture.selectedTabId, tab.id);
   assert.deepEqual(throttling, [false]);
   assert.deepEqual(events, ["visible", "published", "descriptor", "browser.tab_reused"]);
