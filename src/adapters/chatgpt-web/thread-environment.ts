@@ -184,6 +184,19 @@ export class ChatGptThreadEnvironmentStore {
           return rolloutEnvironment;
         }
       }
+      // A same-thread follow-up may replay the original environment envelope as ordinary history.
+      // It is not a new authority claim. Reuse only the already trusted cache for that thread; a
+      // current environment claim still has to authenticate through the normal path below.
+      if (!hasCurrentContext) {
+        const sameThread = this.get(identity.threadId);
+        if (sameThread) return {
+          cwd: sameThread.cwd,
+          roots: sameThread.roots,
+          writableRoots: sameThread.writableRoots,
+          sandboxPolicy: sameThread.sandboxPolicy,
+          tools: parsed.context.tools ?? [],
+        };
+      }
       // Only a current native rollout can supersede an unrecognized historical envelope. Without
       // that proof, do not turn arbitrary history or an invalid update into cached authority.
       if (hasRawChatGptEnvironmentContext(parsed)) throw error;
