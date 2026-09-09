@@ -2,7 +2,6 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
-const ts = require("typescript");
 
 const launcherRoot = path.resolve(__dirname, "..");
 const repositoryRoot = path.resolve(launcherRoot, "..");
@@ -14,16 +13,7 @@ const japaneseReadme = read("README.ja.md");
 const appSource = read("launcher", "src", "App.tsx");
 
 function loadI18nModule() {
-  const source = read("launcher", "src", "i18n.ts");
-  const output = ts.transpileModule(source, {
-    compilerOptions: {
-      module: ts.ModuleKind.CommonJS,
-      target: ts.ScriptTarget.ES2023,
-    },
-  }).outputText;
-  const loaded = { exports: {} };
-  Function("module", "exports", "require", output)(loaded, loaded.exports, require);
-  return loaded.exports;
+  return require(path.join(launcherRoot, "src", "i18n.ts"));
 }
 
 function commandFences(source) {
