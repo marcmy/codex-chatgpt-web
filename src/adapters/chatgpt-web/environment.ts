@@ -644,12 +644,14 @@ function trustedEnvironmentText(parsed: CodexParsedRequest): string {
 }
 
 function decodeXmlText(value: string): string {
-  return value
-    .replaceAll("&lt;", "<")
-    .replaceAll("&gt;", ">")
-    .replaceAll("&amp;", "&")
-    .replaceAll("&quot;", "\"")
-    .replaceAll("&#39;", "'");
+  const entities: Record<string, string> = {
+    "&lt;": "<",
+    "&gt;": ">",
+    "&amp;": "&",
+    "&quot;": "\"",
+    "&#39;": "'",
+  };
+  return value.replace(/&(?:lt|gt|amp|quot|#39);/g, entity => entities[entity]!);
 }
 
 function environmentCwdMatches(text: string, preferredRoots: string[] = []): string[] {

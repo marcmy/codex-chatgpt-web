@@ -382,14 +382,14 @@ export async function modelsRequest(
   try {
     upstream = await forwardNativeCodexRequest(req, "models", fetchUpstream);
   } catch (error) {
-    return formatErrorResponse(502, "upstream_error", error instanceof Error ? error.message : String(error));
+    return formatErrorResponse(502, "upstream_error", error instanceof Error ? error.message : "Native models request failed");
   }
   if (!upstream.ok) return upstream;
   let catalog: Record<string, unknown>;
   try {
     catalog = augmentNativeModelCatalog(await upstream.json(), config, contextOverride?.());
   } catch (error) {
-    return formatErrorResponse(502, "invalid_response_error", error instanceof Error ? error.message : String(error));
+    return formatErrorResponse(502, "invalid_response_error", error instanceof Error ? error.message : "Native model catalog was invalid");
   }
   const body = JSON.stringify(catalog);
   const headers = new Headers(upstream.headers);
@@ -407,7 +407,7 @@ export async function nativeSearchRequest(
   try {
     return await forwardNativeCodexRequest(req, "alpha/search", fetchUpstream);
   } catch (error) {
-    return formatErrorResponse(502, "upstream_error", error instanceof Error ? error.message : String(error));
+    return formatErrorResponse(502, "upstream_error", error instanceof Error ? error.message : "Native search request failed");
   }
 }
 
@@ -423,7 +423,7 @@ async function nativeImagesRequest(
   try {
     return await forwardNativeCodexRequest(req, endpoint, fetchUpstream);
   } catch (error) {
-    return formatErrorResponse(502, "upstream_error", error instanceof Error ? error.message : String(error));
+    return formatErrorResponse(502, "upstream_error", error instanceof Error ? error.message : "Native image request failed");
   }
 }
 
@@ -469,13 +469,13 @@ export async function responseRequest(
       options.onTurnIdentity?.({ threadId: identity.threadId, turnId: identity.turnId });
     }
   } catch (error) {
-    return formatErrorResponse(400, "invalid_request_error", error instanceof Error ? error.message : String(error));
+    return formatErrorResponse(400, "invalid_request_error", error instanceof Error ? error.message : "Invalid Codex turn metadata");
   }
   if (typeof requestedModel === "string" && !isChatGptWebModelSlug(requestedModel)) {
     try {
       return await forwardNativeCodexRequest(nativeRequest, "responses", undefined, raw);
     } catch (error) {
-      return formatErrorResponse(502, "upstream_error", error instanceof Error ? error.message : String(error));
+      return formatErrorResponse(502, "upstream_error", error instanceof Error ? error.message : "Native responses request failed");
     }
   }
   const requestedPreviousResponseId = raw && typeof raw === "object" && !Array.isArray(raw)
@@ -492,7 +492,7 @@ export async function responseRequest(
       options.onTurnIdentity?.({ threadId: identity.threadId, turnId: identity.turnId });
     }
   } catch (error) {
-    return formatErrorResponse(400, "invalid_request_error", error instanceof Error ? error.message : String(error));
+    return formatErrorResponse(400, "invalid_request_error", error instanceof Error ? error.message : "Invalid ChatGPT Web request");
   }
   if (parsed._opaqueMultiAgentV2Payload) {
     return formatErrorResponse(
@@ -558,7 +558,7 @@ export async function responseRequest(
     // A cancelled browser session can only exist after the adapter accepted canonical native
     // turn identity and user-revision metadata. Requests without that identity have no matching
     // trace tombstone; preserve the adapter's existing strict validation/error path below.
-    const message = error instanceof Error ? error.message : String(error);
+    const message = error instanceof Error ? error.message : "ChatGPT Web turn identity validation failed";
     if (message === CHATGPT_TURN_REVISION_CONFLICT_MESSAGE) {
       // Codex can reopen an interrupted task with only refreshed developer/skill context under a
       // new turn_id. Its last human prompt still belongs to the stopped turn and must not be
@@ -691,7 +691,7 @@ export async function compactRequest(
       options.onTurnIdentity?.({ threadId: identity.threadId, turnId: identity.turnId });
     }
   } catch (error) {
-    return formatErrorResponse(400, "invalid_request_error", error instanceof Error ? error.message : String(error));
+    return formatErrorResponse(400, "invalid_request_error", error instanceof Error ? error.message : "Invalid Codex turn metadata");
   }
   if (typeof raw.model !== "string" || !raw.model) {
     return formatErrorResponse(400, "invalid_request_error", "Compaction request requires a model");
@@ -700,14 +700,14 @@ export async function compactRequest(
     try {
       return await forwardNativeCodexRequest(nativeRequest, "responses/compact", undefined, raw);
     } catch (error) {
-      return formatErrorResponse(502, "upstream_error", error instanceof Error ? error.message : String(error));
+      return formatErrorResponse(502, "upstream_error", error instanceof Error ? error.message : "Native compaction request failed");
     }
   }
   let route: ChatGptWebModelRoute;
   try {
     route = requireChatGptWebModelRoute(raw.model, config);
   } catch (error) {
-    return formatErrorResponse(400, "invalid_request_error", error instanceof Error ? error.message : String(error));
+    return formatErrorResponse(400, "invalid_request_error", error instanceof Error ? error.message : "Invalid compaction model");
   }
   if (route.backendModel === CHATGPT_WEB_LUNA_BACKEND_MODEL) {
     return formatErrorResponse(

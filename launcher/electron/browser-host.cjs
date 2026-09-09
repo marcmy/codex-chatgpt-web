@@ -168,6 +168,16 @@ function isAbortedNavigationError(error) {
   return error instanceof Error && /\bERR_ABORTED\b/.test(error.message);
 }
 
+function isChatGptOrigin(value) {
+  let parsed;
+  try {
+    parsed = new URL(value);
+  } catch {
+    return false;
+  }
+  return parsed.origin === CHATGPT_ORIGIN;
+}
+
 function isTemporaryChatUrl(value) {
   let parsed;
   try {
@@ -791,7 +801,7 @@ class BrowserHost {
       tab.url = contents.getURL();
       tab.loading = false;
       tab.rendererReady = true;
-      if (tab.url.startsWith(CHATGPT_ORIGIN)) tab.bootstrapReady = true;
+      if (isChatGptOrigin(tab.url)) tab.bootstrapReady = true;
       this.syncViewVisibility();
       if (browserInteractionModeFor(this) !== "automatic") {
         this.publishState?.(this.snapshot());
@@ -920,7 +930,7 @@ class BrowserHost {
       tab.url = contents.getURL();
       tab.loading = false;
       tab.rendererReady = true;
-      tab.bootstrapReady = tab.url.startsWith(CHATGPT_ORIGIN);
+      tab.bootstrapReady = isChatGptOrigin(tab.url);
       this.syncViewVisibility();
       this.publishState?.(this.snapshot());
     });
@@ -1218,7 +1228,7 @@ class BrowserHost {
     await sleep(this.cloudflareChallengeRecoveryDelayMs);
     if (contents.isDestroyed()) throw new Error("ChatGPT browser closed during security-check recovery");
     const url = contents.getURL();
-    if (!url.startsWith(CHATGPT_ORIGIN)) {
+    if (!isChatGptOrigin(url)) {
       throw new Error("ChatGPT security-check recovery lost its owned browser page");
     }
 
@@ -2384,7 +2394,7 @@ class BrowserHost {
         this.show();
         this.logger.info("browser.login_opened");
         const current = this.view.webContents.getURL();
-        if (!current.startsWith(CHATGPT_ORIGIN)) {
+        if (!isChatGptOrigin(current)) {
           await this.view.webContents.loadURL(TEMPORARY_CHAT_URL);
         }
         await this.probeAuthentication();
@@ -2590,7 +2600,7 @@ class BrowserHost {
       });
       return this.snapshot();
     }
-    if (!url.startsWith(CHATGPT_ORIGIN)) {
+    if (!isChatGptOrigin(url)) {
       this.setState({ status: "signed-out", message: "Sign in to ChatGPT", authenticated: false, url });
       return this.snapshot();
     }
@@ -2926,6 +2936,7 @@ module.exports = {
   CHATGPT_VIEWPORT_CSS,
   IDLE_BROWSER_URL,
   isChatGptCloudflareChallengeResponse,
+  isChatGptOrigin,
   isTemporaryChatUrl,
   loadCommittedBrowserSurface,
   MANUAL_SUBMIT_TIMEOUT_MS,
