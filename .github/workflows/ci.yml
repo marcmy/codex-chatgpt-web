@@ -13,7 +13,7 @@ jobs:
   verify-windows:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Validate launcher installer with Windows PowerShell 5.1
         shell: powershell
@@ -34,7 +34,7 @@ jobs:
         with:
           bun-version: 1.4.0
 
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
           go-version: "1.26.x"
           cache: false
@@ -62,7 +62,7 @@ jobs:
         run: bun run app:smoke
 
       - name: Upload Windows artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: codex-web-gpt-windows
           path: launcher/artifacts/*
