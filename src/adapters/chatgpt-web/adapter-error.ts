@@ -45,7 +45,15 @@ export function chatGptBrowserTabClosedError(): ChatGptWebAdapterError {
 export function chatGptTurnSupersededError(): ChatGptWebAdapterError {
   return new ChatGptWebAdapterError(
     "A newer Codex instruction superseded this ChatGPT response.",
-    { status: 499, errorType: "client_closed_request", code: "client_cancelled", retryable: false },
+    {
+      // This is a deterministic stale-execution result, not a transport disconnect. Codex treats
+      // client-cancelled streams as reconnect candidates, which can otherwise replay the obsolete
+      // round repeatedly after native steering has already installed the newer instruction.
+      status: 400,
+      errorType: "invalid_request_error",
+      code: "invalid_request_error",
+      retryable: false,
+    },
   );
 }
 

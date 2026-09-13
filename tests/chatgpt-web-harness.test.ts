@@ -957,17 +957,22 @@ describe("ChatGPT outer-native harness v4", () => {
       "new-trace", undefined, "native-turn", "native-thread", chatGptInstructionLineage(steered));
     expect(cancellations).toHaveLength(1);
     expect(starts).toBe(0);
-    expect(sessions.cancelledError("old-trace")).toMatchObject({ code: "client_cancelled" });
+    expect(sessions.cancelledError("old-trace")).toMatchObject({
+      status: 400,
+      errorType: "invalid_request_error",
+      code: "invalid_request_error",
+      retryable: false,
+    });
     cleanup();
     const current = await next;
     expect(starts).toBe(1);
     expect(await sessions.getOrCreateAfterOwnerRetirement(newKey, "thread", replacement)).toBe(current);
     await expect(sessions.getOrCreateAfterOwnerRetirement(oldKey, "thread", replacement))
-      .rejects.toMatchObject({ code: "client_cancelled" });
+      .rejects.toMatchObject({ code: "invalid_request_error" });
     // An older request without a retained entry must not preempt the newer instruction either.
     await expect(sessions.getOrCreateAfterOwnerRetirement("late-unknown-round", "thread", replacement,
       "late-trace", undefined, "native-turn", "native-thread", chatGptInstructionLineage(original)))
-      .rejects.toMatchObject({ code: "client_cancelled" });
+      .rejects.toMatchObject({ code: "invalid_request_error" });
     expect(starts).toBe(1);
     finishNew("done");
     await current.browserOutcome;
@@ -1040,7 +1045,12 @@ describe("ChatGPT outer-native harness v4", () => {
     })).toBe(session);
     await expect(sessions.getOrCreateAfterOwnerRetirement(oldKey, "thread", () => {
       throw new Error("superseded instruction must never restart");
-    })).rejects.toMatchObject({ code: "client_cancelled" });
+    })).rejects.toMatchObject({
+      status: 400,
+      errorType: "invalid_request_error",
+      code: "invalid_request_error",
+      retryable: false,
+    });
     sessions.clear();
   });
 

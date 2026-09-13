@@ -8,7 +8,7 @@ import {
   cancelStructuredCompactionNativeTurn,
   cancelStructuredCompactionTrace,
 } from "./adapters/chatgpt-web/compaction-handoff";
-import { chatGptBrowserTabClosedError } from "./adapters/chatgpt-web/adapter-error";
+import { ChatGptWebAdapterError, chatGptBrowserTabClosedError } from "./adapters/chatgpt-web/adapter-error";
 import {
   CHATGPT_TURN_REVISION_CONFLICT_MESSAGE,
   extractChatGptTurnIdentity,
@@ -571,14 +571,20 @@ export async function responseRequest(
   }
   const cancelledError = traceId ? chatGptTurnSessions.cancelledError(traceId) : undefined;
   if (cancelledError) {
-    // Codex retries unknown streamed response.failed codes. A replay after the user explicitly
-    // closed the only browser document is instead a terminal client state: repeating that exact
-    // request is invalid and must not recreate the DOM. Codex maps HTTP 400 to its non-retryable
-    // InvalidRequest category while the body preserves the real client_cancelled classification.
+    // Codex retries unknown streamed response.failed codes. A tombstoned browser execution is a
+    // terminal state: repeating that exact request must not recreate the DOM. HTTP 400 maps to the
+    // native non-retryable InvalidRequest category, while the body preserves the structured reason
+    // (for example client_cancelled for a closed tab or invalid_request_error for superseded work).
+    const errorType = cancelledError instanceof ChatGptWebAdapterError
+      ? cancelledError.errorType
+      : "client_closed_request";
+    const errorCode = cancelledError instanceof ChatGptWebAdapterError
+      ? cancelledError.code
+      : "client_cancelled";
     return new Response(JSON.stringify({
       error: {
-        type: "client_closed_request",
-        code: "client_cancelled",
+        type: errorType,
+        code: errorCode,
         message: cancelledError.message,
       },
     }), {
@@ -598,7 +604,16 @@ export async function responseRequest(
         queue.push(event);
       });
     } catch (error) {
-      const event: AdapterEvent = { type: "error", message: error instanceof Error ? error.message : String(error) };
+      const event: AdapterEvent = error instanceof ChatGptWebAdapterError
+        ? {
+          type: "error",
+          message: error.message,
+          status: error.status,
+          errorType: error.errorType,
+          code: error.code,
+          retryable: error.retryable,
+        }
+        : { type: "error", message: error instanceof Error ? error.message : String(error) };
       options.onAdapterEvent?.(event);
       queue.push(event);
     } finally {
