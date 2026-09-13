@@ -270,7 +270,7 @@ export function chatGptCompactionSourceExecutionKey(parsed: CodexParsedRequest):
     turnId: source.turnId ?? identity.turnId,
     purpose: "response",
     revision: source.content,
-    instructionId: source.itemId,
+    instructionLineage: chatGptInstructionLineage(parsed).current,
   });
 }
 
