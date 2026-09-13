@@ -115,3 +115,69 @@ test("V2 parent instructions bind the current environment without changing nativ
   const restricted = parseRequest({ ...raw, client_metadata: { "x-codex-turn-metadata": JSON.stringify({ ...metadata, sandbox: "read-only" }) } });
   expect(() => extractChatGptTurnEnvironment(restricted)).toThrow("missing cwd");
 });
+
+test("V1 send_message_to_thread delegation becomes the current subagent revision", () => {
+  const initialTurnId = "turn_child_initial";
+  const followup = "Please independently review the current uncommitted diff.";
+  const delegated = {
+    type: "function_call_output",
+    call_id: "call_parent_followup",
+    name: "send_message_to_thread",
+    namespace: "codex_app",
+    output: `<codex_delegation>\n<source_thread_id>${parentThreadId}</source_thread_id>\n<input>${followup}</input>\n</codex_delegation>`,
+    internal_chat_message_metadata_passthrough: { turn_id: childTurnId },
+  };
+  const raw = request(childThreadId, childTurnId, [
+    item("msg_initial_prompt", "user", "Review the first change.", initialTurnId),
+    item("msg_followup_environment", "user", environment, childTurnId),
+    delegated,
+  ], parentThreadId)._rawBody as Record<string, unknown>;
+  raw.model = "chatgpt-web/high";
+
+  const parsed = parseRequest(raw);
+  expect(extractChatGptTurnEnvironment(parsed).cwd).toBe(root);
+  expect(extractChatGptTurnUserRevision(parsed)).toEqual([{ type: "input_text", text: followup }]);
+  expect(chatGptTurnUserRevisionHistory(parsed).at(-1)?.itemId).toBe(delegated.call_id);
+});
+
+test("V1 delegation rejects spoofed source, provenance, envelope, and tool identity", () => {
+  const initialTurnId = "turn_child_initial";
+  const followup = "Review the second change.";
+  const valid = {
+    type: "function_call_output",
+    call_id: "call_parent_followup",
+    name: "send_message_to_thread",
+    namespace: "codex_app",
+    output: `<codex_delegation>\n<source_thread_id>${parentThreadId}</source_thread_id>\n<input>${followup}</input>\n</codex_delegation>`,
+    internal_chat_message_metadata_passthrough: { turn_id: childTurnId },
+  };
+  const parse = (delegated: Record<string, unknown>) => {
+    const raw = request(childThreadId, childTurnId, [
+      item("msg_initial_prompt", "user", "Review the first change.", initialTurnId),
+      item("msg_followup_environment", "user", environment, childTurnId),
+      delegated,
+    ], parentThreadId)._rawBody as Record<string, unknown>;
+    raw.model = "chatgpt-web/high";
+    return parseRequest(raw);
+  };
+
+  const rejected = [
+    { ...valid, output: valid.output.replace(parentThreadId, "thread_peer") },
+    { ...valid, internal_chat_message_metadata_passthrough: undefined },
+    { ...valid, output: `<codex_delegation><source_thread_id>${parentThreadId}</source_thread_id><input>${followup}` },
+    { ...valid, name: "exec_command" },
+    { ...valid, namespace: "other_app" },
+  ];
+  for (const delegated of rejected) {
+    const parsed = parse(delegated);
+    expect(() => extractChatGptTurnEnvironment(parsed)).toThrow("missing cwd");
+    expect(() => extractChatGptTurnUserRevision(parsed)).toThrow("conflicts with native Codex turn_id");
+  }
+
+  const stale = parse({
+    ...valid,
+    internal_chat_message_metadata_passthrough: { turn_id: initialTurnId },
+  });
+  expect(() => extractChatGptTurnEnvironment(stale)).toThrow("missing cwd");
+  expect(() => extractChatGptTurnUserRevision(stale)).toThrow("conflicts with native Codex turn_id");
+});

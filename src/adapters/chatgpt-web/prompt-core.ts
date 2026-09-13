@@ -6,6 +6,7 @@ import {
   resolveChatGptWebTransportLimits,
 } from "../../chatgpt-web-models";
 import { ChatGptWebAdapterError } from "./adapter-error";
+import { chatGptV1ParentDelegations } from "./environment";
 import { estimateTokens } from "../../lib/token-estimate";
 import type { CodexAssistantContentPart, CodexContentPart, CodexMessage, CodexParsedRequest } from "../../types";
 import { isOnePixelPngDataUrl, isReadableCompactionSummaryText } from "../../responses/compaction";
@@ -309,6 +310,23 @@ function messageEnvelope(
     };
   }
   return { role: message.role, content: inputContent(message.content, images, budget) };
+}
+
+function withV1DelegationSemantics(parsed: CodexParsedRequest, messages: readonly CodexMessage[]): CodexMessage[] {
+  const delegations = new Map(chatGptV1ParentDelegations(parsed).map(delegation => [delegation.callId, delegation]));
+  if (delegations.size === 0) return [...messages];
+  return messages.map(message => {
+    if (message.role !== "toolResult") return message;
+    const delegation = delegations.get(message.toolCallId);
+    if (!delegation) return message;
+    return {
+      role: "agentMessage",
+      author: delegation.author,
+      recipient: delegation.recipient,
+      content: delegation.content,
+      timestamp: message.timestamp,
+    };
+  });
 }
 
 type MultipartContextRecord =
@@ -761,7 +779,9 @@ export function compileChatGptWebPrompt(
     return { text, images };
   };
 
-  let sourceMessages = withoutSupersededModelSwitchContracts(parsed.context.messages);
+  let sourceMessages = withoutSupersededModelSwitchContracts(
+    withV1DelegationSemantics(parsed, parsed.context.messages),
+  );
   const initialMessageCount = sourceMessages.length;
   let compiled = build(sourceMessages);
   if (!parsed._compactionRequest) return compiled;
