@@ -3,10 +3,10 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { createConnection } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { chatGptWebTraceId } from "../src/adapters/chatgpt-web";
+import { chatGptWebExecutionNamespace, chatGptWebTraceId } from "../src/adapters/chatgpt-web";
 import { chatGptTurnSupersededError } from "../src/adapters/chatgpt-web/adapter-error";
 import { runStructuredCompactionOnce } from "../src/adapters/chatgpt-web/compaction-handoff";
-import { ChatGptTextFeed, ChatGptTraceFeed, chatGptTurnSessions } from "../src/adapters/chatgpt-web/turn-execution";
+import { ChatGptTextFeed, ChatGptTraceFeed, chatGptThreadOwnershipKey, chatGptTurnSessions } from "../src/adapters/chatgpt-web/turn-execution";
 import { callTurnBroker, closeTurnBrokers, RemoteTurnBroker, TurnBroker } from "../src/adapters/chatgpt-web/turn-broker";
 import { defaultBrokerEndpoint, defaultConfig, providerConfig } from "../src/config";
 import { parseRequest } from "../src/responses/parser";
@@ -1020,6 +1020,98 @@ test("a restart recovery turn without a new user instruction fails terminally in
     },
   });
   expect(adapterConstructions).toBe(0);
+});
+
+test("an aborted-turn recovery request retires the stale automatic browser before revision rejection", async () => {
+  const config = defaultConfig("browser-only");
+  const threadId = "thread_aborted_recovery_cleanup";
+  const previousTurnId = "turn_aborted_recovery_old";
+  const recoveryTurnId = "turn_aborted_recovery_new";
+  let cancellations = 0;
+  const body = {
+    model: "chatgpt-web/high",
+    stream: true,
+    client_metadata: {
+      "x-codex-turn-metadata": JSON.stringify({ thread_id: threadId, turn_id: recoveryTurnId }),
+    },
+    input: [
+      {
+        type: "message",
+        role: "user",
+        content: [{ type: "input_text", text: "Run the original task" }],
+        internal_chat_message_metadata_passthrough: { turn_id: previousTurnId },
+      },
+      {
+        type: "message",
+        role: "user",
+        content: [{ type: "input_text", text: "<turn_aborted>The previous turn was interrupted.</turn_aborted>" }],
+        internal_chat_message_metadata_passthrough: { turn_id: previousTurnId },
+      },
+      {
+        type: "message",
+        role: "developer",
+        content: [{ type: "input_text", text: "<skills_instructions>fresh skills</skills_instructions>" }],
+        internal_chat_message_metadata_passthrough: { turn_id: recoveryTurnId },
+      },
+    ],
+  };
+  const parsed = parseRequest(body);
+  const ownerKey = `${chatGptWebExecutionNamespace(providerConfig(config))}:${chatGptThreadOwnershipKey(parsed)}`;
+  let resolvePhysical!: () => void;
+  chatGptTurnSessions.clear();
+  chatGptTurnSessions.getOrCreate("aborted-recovery-old", () => ({
+    mode: "read-only",
+    browser: new Promise<string>(() => {}),
+    physicalSettlement: new Promise<void>(resolve => { resolvePhysical = resolve; }),
+    trace: new ChatGptTraceFeed(),
+    text: new ChatGptTextFeed(),
+    cancel: () => { cancellations += 1; },
+  }), "aborted-recovery-trace", ownerKey, previousTurnId, threadId);
+
+  try {
+    const response = await responseRequest(new Request("http://127.0.0.1:17841/v1/responses", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    }), config, () => {
+      throw new Error("an aborted context-only recovery turn must not construct a browser adapter");
+    });
+
+    expect(response.status).toBe(400);
+    expect((await response.json() as { error: { message: string } }).error.message)
+      .toBe("ChatGPT web current user message conflicts with native Codex turn_id metadata");
+    expect(cancellations).toBe(1);
+    expect(chatGptTurnSessions.find("aborted-recovery-old")).toBeUndefined();
+
+    let replacementStarts = 0;
+    const replacement = chatGptTurnSessions.getOrCreateAfterOwnerRetirement(
+      "aborted-recovery-replacement",
+      ownerKey,
+      () => {
+        replacementStarts += 1;
+        return {
+          mode: "read-only" as const,
+          browser: Promise.resolve("replacement"),
+          physicalSettlement: Promise.resolve(),
+          trace: new ChatGptTraceFeed(),
+          text: new ChatGptTextFeed(),
+          cancel: () => {},
+        };
+      },
+      "aborted-recovery-replacement-trace",
+      undefined,
+      recoveryTurnId,
+      threadId,
+    );
+    await Bun.sleep(0);
+    expect(replacementStarts).toBe(0);
+    resolvePhysical();
+    expect((await replacement).traceId).toBe("aborted-recovery-replacement-trace");
+    expect(replacementStarts).toBe(1);
+  } finally {
+    resolvePhysical?.();
+    chatGptTurnSessions.clear();
+  }
 });
 
 test.each(["alpha/search", "images/generations"])("authenticated lifecycle control aborts active %s before acknowledging cancellation", async path => {

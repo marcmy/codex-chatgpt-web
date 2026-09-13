@@ -14,6 +14,7 @@ import {
   extractChatGptTurnIdentity,
   extractCodexTurnIdentityFromBody,
   extractChatGptCompactionSourceRevision,
+  priorChatGptAbortedTurnIds,
 } from "./adapters/chatgpt-web/environment";
 import { rememberCompactionContinuation } from "./adapters/chatgpt-web/compaction-continuation";
 import { bridgeToResponsesSSE, buildResponseJSON, formatErrorResponse } from "./bridge";
@@ -548,6 +549,28 @@ export async function responseRequest(
     delete parsed.options.toolChoice;
     delete parsed.options.parallelToolCalls;
     parsed.context.messages.push({ role: "user", content: COMPACT_PROMPT, timestamp: Date.now() });
+  }
+
+  // Codex normally delivers an Interrupt hook when a native turn is stopped. A superseded or
+  // recovered task can instead arrive here with the authoritative <turn_aborted> history marker
+  // while the old automatic browser helper is still alive. Retire that exact native owner before
+  // validating the replacement revision so a stale browser cannot survive merely because the
+  // recovery request itself is rejected as malformed/stale.
+  const nativeIdentity = extractChatGptTurnIdentity(parsed);
+  if (nativeIdentity.threadId) {
+    const reason = new DOMException("Codex turn interrupted", "AbortError");
+    for (const abortedTurnId of priorChatGptAbortedTurnIds(parsed)) {
+      const cancellation = chatGptTurnSessions.cancelNativeTurn(
+        nativeIdentity.threadId,
+        abortedTurnId,
+        reason,
+      );
+      void cancellation.settlement.catch(error => {
+        console.error(
+          `[chatgpt-web] aborted-turn browser cleanup failed: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      });
+    }
   }
 
   const provider = providerConfig(config);
