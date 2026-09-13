@@ -2944,7 +2944,9 @@ test("Bigger Context fits mixed-density whole records within both token and comp
   const capabilities = { localToolsEnabled: false, solAvailable: true, proAvailable: false, experimentalBiggerContext: true };
   const dense = "a!b@c#d$e%f^g&h*".repeat(3_750);
   const sparse = "x".repeat(dense.length);
-  const whitespace = " ".repeat(450_000);
+  // Four records still exceed the 1,048,572-char Plus composer if a token-only partitioner piles
+  // them together, while keeping this tokenizer-heavy regression comfortably below the test clock.
+  const whitespace = " ".repeat(300_000);
   // Equal byte sizes must not pack two dense records into one oversized stage. Conversely,
   // token-only balancing must not leave all the low-token whitespace in one oversized composer.
   for (const contents of [

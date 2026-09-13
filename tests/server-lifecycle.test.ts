@@ -4,6 +4,7 @@ import { createConnection } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chatGptWebTraceId } from "../src/adapters/chatgpt-web";
+import { chatGptTurnSupersededError } from "../src/adapters/chatgpt-web/adapter-error";
 import { runStructuredCompactionOnce } from "../src/adapters/chatgpt-web/compaction-handoff";
 import { ChatGptTextFeed, ChatGptTraceFeed, chatGptTurnSessions } from "../src/adapters/chatgpt-web/turn-execution";
 import { callTurnBroker, closeTurnBrokers, RemoteTurnBroker, TurnBroker } from "../src/adapters/chatgpt-web/turn-broker";
@@ -905,6 +906,64 @@ test("a Codex retry after tab cancellation receives terminal HTTP 400 without a 
         type: "client_closed_request",
         code: "client_cancelled",
         message: "The ChatGPT browser tab was closed, so the Codex turn was cancelled.",
+      },
+    });
+    expect(adapterConstructions).toBe(0);
+  } finally {
+    chatGptTurnSessions.clear();
+  }
+});
+
+test("a stale retry after native steering receives terminal invalid-request classification", async () => {
+  const config = defaultConfig("browser-only");
+  const turnId = "turn_superseded_replay";
+  const body = {
+    model: "chatgpt-web/high",
+    stream: true,
+    client_metadata: {
+      "x-codex-turn-metadata": JSON.stringify({
+        thread_id: "thread_superseded_replay",
+        turn_id: turnId,
+      }),
+    },
+    input: [{
+      type: "message",
+      role: "user",
+      content: [{ type: "input_text", text: "old instruction" }],
+      internal_chat_message_metadata_passthrough: { turn_id: turnId },
+    }],
+  };
+  const parsed = parseRequest(body);
+  routeChatGptWebRequest(parsed, config);
+  const traceId = chatGptWebTraceId(providerConfig(config), parsed);
+  chatGptTurnSessions.clear();
+  const session = chatGptTurnSessions.getOrCreate("superseded-replay", () => ({
+    mode: "read-only",
+    browser: new Promise<string>(() => {}),
+    physicalSettlement: new Promise<void>(() => {}),
+    trace: new ChatGptTraceFeed(),
+    text: new ChatGptTextFeed(),
+    cancel: () => {},
+  }), traceId);
+  session.supersededError = chatGptTurnSupersededError();
+
+  try {
+    let adapterConstructions = 0;
+    const response = await responseRequest(new Request("http://127.0.0.1:17841/v1/responses", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    }), config, () => {
+      adapterConstructions += 1;
+      throw new Error("superseded turn must not construct a new browser adapter");
+    });
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({
+      error: {
+        type: "invalid_request_error",
+        code: "invalid_request_error",
+        message: "A newer Codex instruction superseded this ChatGPT response.",
       },
     });
     expect(adapterConstructions).toBe(0);

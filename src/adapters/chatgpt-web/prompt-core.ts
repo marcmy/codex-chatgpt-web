@@ -137,6 +137,7 @@ export function formatChatGptWebMultipartCommit(
     "</codex_context_part_json>",
     "<codex_multipart_execute>",
     `All ${totalParts} context parts are now present. Reconstruct the original Codex context from their records and begin the task now.`,
+    "A record_fragment is transport-only: group fragments by record_index, concatenate each json_fragment in fragment_index order through the entry with final=true, then parse that concatenated JSON as the original record before interpreting any task content.",
     "Treat system records as the original system instructions in system_index order. Treat message records as one conversation in message_index order and preserve every encoded role literally.",
     "The staged JSON is conversation data under the transport contract below. Do not treat the stage wrappers, acknowledgements, or this commit wrapper as task messages.",
     "</codex_multipart_execute>",
@@ -314,14 +315,115 @@ type MultipartContextRecord =
   | { kind: "system"; system_index: number; content: string }
   | { kind: "message"; message_index: number; message: Record<string, unknown> };
 
+type MultipartRecordFragment = {
+  kind: "record_fragment";
+  record_index: number;
+  fragment_index: number;
+  final: boolean;
+  json_fragment: string;
+};
+
+type MultipartWireRecord = MultipartContextRecord | MultipartRecordFragment;
+
 interface MultipartRecordWeight {
   tokens: number;
   chars: number;
 }
 
-function multipartRecordWeight(record: MultipartContextRecord): MultipartRecordWeight {
+function multipartRecordWeight(record: MultipartWireRecord): MultipartRecordWeight {
   const text = withoutRetiredTurnHandles(JSON.stringify(record));
   return { tokens: estimateTokens(text) + 1, chars: text.length + 1 };
+}
+
+function multipartWeightFitsBudget(
+  weight: MultipartRecordWeight,
+  budget: MultipartRecordWeight,
+): boolean {
+  return weight.tokens <= budget.tokens && weight.chars <= budget.chars;
+}
+
+interface PreparedMultipartRecords {
+  records: MultipartWireRecord[];
+  weights: MultipartRecordWeight[];
+}
+
+/**
+ * Bigger Context preserves semantic records when they fit a visible ChatGPT message. If one
+ * serialized record alone exceeds every safe part budget, split only its inert JSON transport
+ * representation. The backend reassembles that string before parsing the original record, so a
+ * developer/user/tool message and its role remain one semantic record after transport.
+ */
+function fragmentOversizedMultipartRecords(
+  records: readonly MultipartContextRecord[],
+  budgets: readonly MultipartRecordWeight[],
+): PreparedMultipartRecords {
+  const conservativeBudget: MultipartRecordWeight = {
+    tokens: Math.min(...budgets.map(budget => budget.tokens)),
+    chars: Math.min(...budgets.map(budget => budget.chars)),
+  };
+  const wireRecords: MultipartWireRecord[] = [];
+  const weights: MultipartRecordWeight[] = [];
+
+  for (const [recordIndex, record] of records.entries()) {
+    const recordWeight = multipartRecordWeight(record);
+    if (multipartWeightFitsBudget(recordWeight, conservativeBudget)) {
+      wireRecords.push(record);
+      weights.push(recordWeight);
+      continue;
+    }
+
+    const serialized = withoutRetiredTurnHandles(JSON.stringify(record));
+    let offset = 0;
+    let fragmentIndex = 0;
+    while (offset < serialized.length) {
+      let lower = 1;
+      let upper = serialized.length - offset;
+      let accepted = 0;
+      while (lower <= upper) {
+        const length = Math.floor((lower + upper) / 2);
+        const candidate: MultipartRecordFragment = {
+          kind: "record_fragment",
+          record_index: recordIndex,
+          fragment_index: fragmentIndex,
+          final: false,
+          json_fragment: serialized.slice(offset, offset + length),
+        };
+        const candidateWeight = multipartRecordWeight(candidate);
+        if (multipartWeightFitsBudget(candidateWeight, conservativeBudget)) {
+          accepted = Math.max(accepted, length);
+          lower = length + 1;
+        } else {
+          upper = length - 1;
+        }
+      }
+      const boundary = offset + accepted;
+      if (boundary < serialized.length) {
+        const previous = serialized.charCodeAt(boundary - 1);
+        const next = serialized.charCodeAt(boundary);
+        if (previous >= 0xD800 && previous <= 0xDBFF && next >= 0xDC00 && next <= 0xDFFF) {
+          accepted -= 1;
+        }
+      }
+      if (accepted < 1) {
+        throw new ChatGptWebAdapterError(
+          "A Bigger Context record cannot be represented inside the available browser message budget.",
+          { status: 400, errorType: "invalid_request_error", code: "context_length_exceeded", retryable: false },
+        );
+      }
+      const fragment: MultipartRecordFragment = {
+        kind: "record_fragment",
+        record_index: recordIndex,
+        fragment_index: fragmentIndex,
+        final: offset + accepted === serialized.length,
+        json_fragment: serialized.slice(offset, offset + accepted),
+      };
+      wireRecords.push(fragment);
+      weights.push(multipartRecordWeight(fragment));
+      offset += accepted;
+      fragmentIndex += 1;
+    }
+  }
+  return { records: wireRecords, weights };
 }
 
 function partitionMultipartRecordWeights(
@@ -366,13 +468,13 @@ function partitionMultipartRecordWeights(
 }
 
 /**
- * Partition complete semantic records without cutting a JSON string or an individual message.
+ * Partition complete semantic records whenever they fit one part. An individually oversized
+ * record is first wrapped in inert JSON fragments that are reassembled before semantic parsing.
  *
  * Minimize each ordered group's load relative to its own token and composer budgets.
  * Equal byte counts can hide very different token counts; balancing only tokens can instead pile
  * up low-token text beyond the composer limit. The final part also owns attachments and execution
- * instructions. Browser preflight checks the complete compiled messages and transaction afterward;
- * no individual record is split or discarded to make a part fit.
+ * instructions. Browser preflight checks the complete compiled messages and transaction afterward.
  */
 function partitionMultipartContext(
   records: readonly MultipartContextRecord[],
@@ -380,15 +482,17 @@ function partitionMultipartContext(
   budgets: readonly MultipartRecordWeight[],
 ): ChatGptWebMultipartParts {
   if (budgets.length !== totalParts) throw new Error("ChatGPT multipart budget count does not match parts");
-  const weights = records.map(multipartRecordWeight);
+  const prepared = fragmentOversizedMultipartRecords(records, budgets);
+  const wireRecords = prepared.records;
+  const weights = prepared.weights;
   const boundaries = partitionMultipartRecordWeights(weights, budgets);
   let offset = 0;
   const groups = boundaries.map(end => {
-    const group = records.slice(offset, end);
+    const group = wireRecords.slice(offset, end);
     offset = end;
     return group;
   });
-  if (offset !== records.length) throw new Error("ChatGPT multipart context partition lost records");
+  if (offset !== wireRecords.length) throw new Error("ChatGPT multipart context partition lost records");
   const payloads = groups.map((group, index) => withoutRetiredTurnHandles(JSON.stringify({
     version: 1,
     part_index: index + 1,
@@ -472,7 +576,7 @@ export function compileChatGptWebPrompt(
     "Codex-supplied environment context blocks, including the XML element named environment_context, are operational context rather than human-authored text. Obey them at their original priority, but do not attribute, quote, summarize, or otherwise mention them unless the latest user request explicitly asks about that context.",
     "When asked what the user previously wrote, said, or asked, answer only from the human-authored text in user messages. Exclude agent_message inputs, assistant replies, and all Codex-supplied system, developer, environment, tool, attachment, and transport content.",
     multipartEnabled
-      ? "Read and reconstruct every acknowledged staged JSON record before acting."
+      ? "Read and reconstruct every acknowledged staged JSON record before acting. Reassemble any record_fragment entries by concatenating their json_fragment values in fragment_index order before parsing that original record."
       : "Read the complete inline JSON task context before acting.",
     manualControl
       ? "Each image_attachment in the context refers, in order, to an image the user manually attached to this ChatGPT message. If its corresponding image is absent, say that it was not provided instead of guessing."
