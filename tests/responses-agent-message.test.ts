@@ -82,6 +82,39 @@ test("multipart Web context emits the same agent_message envelope", () => {
   });
 });
 
+test("V1 send_message_to_thread delegation emits the same agent_message semantics", () => {
+  const parsed = parseRequest({
+    model: CHATGPT_WEB_MODEL_ID,
+    stream: true,
+    client_metadata: {
+      "x-codex-turn-metadata": JSON.stringify({
+        request_kind: "turn",
+        thread_id: "thread_child",
+        turn_id: "turn_child",
+        parent_thread_id: "thread_parent",
+        agent_name: "/root/reviewer",
+        subagent_kind: "thread_spawn",
+      }),
+    },
+    input: [{
+      type: "function_call_output",
+      call_id: "call_parent_followup",
+      name: "send_message_to_thread",
+      namespace: "codex_app",
+      output: "<codex_delegation>\n<source_thread_id>thread_parent</source_thread_id>\n<input>Review the second file.</input>\n</codex_delegation>",
+      internal_chat_message_metadata_passthrough: { turn_id: "turn_child" },
+    }],
+  });
+
+  const messages = inlineMessages(compileChatGptWebPrompt(parsed, capabilities, turnToken).text);
+  expect(messages).toEqual([{
+    role: "agent_message",
+    author: "/root",
+    recipient: "/root/reviewer",
+    content: "Review the second file.",
+  }]);
+});
+
 test("ordinary user messages do not gain agent metadata", () => {
   const messages = inlineMessages(compileChatGptWebPrompt(request(), capabilities, turnToken).text);
   expect(messages[1]).not.toHaveProperty("author");

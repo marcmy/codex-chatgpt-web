@@ -46,6 +46,14 @@ export interface ChatGptTurnUserRevision {
   itemId?: string;
 }
 
+export interface ChatGptV1ParentDelegation {
+  callId: string;
+  content: string;
+  turnId: string;
+  author: string;
+  recipient: string;
+}
+
 export const CHATGPT_TURN_REVISION_CONFLICT_MESSAGE =
   "ChatGPT web current user message conflicts with native Codex turn_id metadata";
 
@@ -189,12 +197,72 @@ function contextualUserMessage(value: Record<string, unknown>): boolean {
     || text === OPAQUE_COMPACTION_NOTE;
 }
 
-/** V2 delivers tasks as agent_message; only this child's direct parent can revise its task. */
+/** Multi-agent deliveries may arrive as V2 agent_message items or V1 delegation tool outputs. */
+function v1ParentDelegation(
+  item: Record<string, unknown> | undefined,
+  metadata?: Record<string, unknown>,
+): ChatGptV1ParentDelegation | undefined {
+  if (item?.type !== "function_call_output"
+    || item.name !== "send_message_to_thread"
+    || item.namespace !== "codex_app"
+    || typeof item.call_id !== "string" || !item.call_id
+    || typeof item.output !== "string"
+    || metadata?.subagent_kind !== "thread_spawn"
+    || (metadata.request_kind !== "turn" && metadata.request_kind !== "compaction")
+    || typeof metadata.thread_id !== "string" || !metadata.thread_id
+    || typeof metadata.parent_thread_id !== "string" || !metadata.parent_thread_id
+    || metadata.thread_id === metadata.parent_thread_id) return undefined;
+  const agentName = metadata.agent_name;
+  if (typeof agentName !== "string" || !/^\/root\/(?:[^/]+\/)*[^/]+$/.test(agentName)) return undefined;
+
+  const turnId = itemTurnId(item);
+  if (!turnId) return undefined;
+  const envelope = item.output.trim().match(
+    /^<codex_delegation>\s*<source_thread_id>([^<]+)<\/source_thread_id>\s*<input>([\s\S]*?)<\/input>\s*<\/codex_delegation>$/,
+  );
+  if (!envelope) return undefined;
+  const sourceThreadId = decodeXmlText(envelope[1]!.trim());
+  if (sourceThreadId !== metadata.parent_thread_id) return undefined;
+  const input = decodeXmlText(envelope[2]!);
+  if (!input.trim()) return undefined;
+  return {
+    callId: item.call_id,
+    content: input,
+    turnId,
+    author: agentName.slice(0, agentName.lastIndexOf("/")),
+    recipient: agentName,
+  };
+}
+
+function v1ParentDelegationRevision(
+  item: Record<string, unknown> | undefined,
+  metadata?: Record<string, unknown>,
+): ChatGptTurnUserRevision | undefined {
+  const delegation = v1ParentDelegation(item, metadata);
+  return delegation ? {
+    content: [{ type: "input_text", text: delegation.content }],
+    turnId: delegation.turnId,
+    itemId: delegation.callId,
+  } : undefined;
+}
+
+export function chatGptV1ParentDelegations(parsed: CodexParsedRequest): ChatGptV1ParentDelegation[] {
+  const body = record(parsed._rawBody);
+  const input = Array.isArray(body?.input) ? body.input : [];
+  const metadata = clientTurnMetadata(parsed);
+  return input.flatMap(value => {
+    const delegation = v1ParentDelegation(record(value), metadata);
+    return delegation ? [delegation] : [];
+  });
+}
+
+/** Only this thread-spawn child's direct parent can revise its task. */
 function isUserOrParentInstruction(
   item: Record<string, unknown> | undefined,
   metadata?: Record<string, unknown>,
 ): item is Record<string, unknown> {
   if (item?.type === "message" && item.role === "user") return !contextualUserMessage(item);
+  if (v1ParentDelegationRevision(item, metadata)) return true;
   if (item?.type !== "agent_message" || typeof item.id !== "string" || !item.id
     || metadata?.subagent_kind !== "thread_spawn"
     || (metadata.request_kind !== "turn" && metadata.request_kind !== "compaction")
@@ -268,6 +336,8 @@ function latestChatGptTurnUserRevision(parsed: CodexParsedRequest, expectedTurnI
 
 function userRevision(value: unknown, expectedTurnId?: string, metadata?: Record<string, unknown>): ChatGptTurnUserRevision | undefined {
   const item = record(value);
+  const v1Delegation = v1ParentDelegationRevision(item, metadata);
+  if (v1Delegation) return v1Delegation;
   if (!isUserOrParentInstruction(item, metadata)) return undefined;
   const messageTurnId = itemTurnId(item);
   // An abort notice is contextual only when native metadata identifies its earlier turn.
