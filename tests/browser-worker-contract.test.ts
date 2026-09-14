@@ -2945,7 +2945,8 @@ test("Bigger Context fits mixed-density whole records within both token and comp
   const dense = "a!b@c#d$e%f^g&h*".repeat(3_750);
   const sparse = "x".repeat(dense.length);
   // Four records still exceed the 1,048,572-char Plus composer if a token-only partitioner piles
-  // them together, while keeping this tokenizer-heavy regression comfortably below the test clock.
+  // them together. Tokenizing this much text is intentionally expensive, especially on hosted
+  // Windows runners, so this regression gets a larger clock than ordinary unit tests.
   const whitespace = " ".repeat(300_000);
   // Equal byte sizes must not pack two dense records into one oversized stage. Conversely,
   // token-only balancing must not leave all the low-token whitespace in one oversized composer.
@@ -2989,7 +2990,7 @@ test("Bigger Context fits mixed-density whole records within both token and comp
       { stagingEffort: stagingMode.effort, maxStageMessageTokens, maxStageChars, finalMessageTokens, finalMessageChars: final.length },
     )).not.toThrow();
   }
-}, 20_000);
+}, 60_000);
 
 test("Bigger Context preflight expands only the total context ceiling and keeps each message boundary", () => {
   const plus = {
