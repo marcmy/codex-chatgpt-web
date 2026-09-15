@@ -405,6 +405,10 @@ export class LauncherBrowserHelperClient {
     if (message.type === "ready") {
       // Optional frames are sent only when the helper advertises support for them.
       this.helperFeatures = new Set(message.features ?? []);
+      console.info(
+        `[chatgpt-web] browser helper ready features=${[...this.helperFeatures].join(",") || "none"}`
+        + ` pid=${child.pid ?? "unknown"}`,
+      );
       this.readyResolve?.();
       this.readyResolve = undefined;
       this.readyReject = undefined;
@@ -440,7 +444,14 @@ export class LauncherBrowserHelperClient {
           );
           return;
         }
+        console.info(
+          `[chatgpt-web] browser turn ${message.id} phase=completion_fence_begin_received requestId=${message.requestId}`,
+        );
         void fence.begin().then(revision => {
+          console.info(
+            `[chatgpt-web] browser turn ${message.id} phase=completion_fence_begin_resolved requestId=${message.requestId}`
+            + ` revision=${revision ?? "none"}`,
+          );
           if (this.pending.get(message.id) !== pending || pending.localFailure || pending.turn.abortSignal?.aborted) return;
           return this.send({
             type: "completion_fence_begin_ack",
@@ -464,7 +475,15 @@ export class LauncherBrowserHelperClient {
           );
           return;
         }
+        console.info(
+          `[chatgpt-web] browser turn ${message.id} phase=completion_fence_commit_received requestId=${message.requestId}`
+          + ` revision=${message.revision}`,
+        );
         void fence.commit(message.revision).then(committed => {
+          console.info(
+            `[chatgpt-web] browser turn ${message.id} phase=completion_fence_commit_resolved requestId=${message.requestId}`
+            + ` committed=${committed}`,
+          );
           if (this.pending.get(message.id) !== pending || pending.localFailure || pending.turn.abortSignal?.aborted) return;
           return this.send({
             type: "completion_fence_commit_ack",
@@ -554,6 +573,7 @@ export class LauncherBrowserHelperClient {
       return;
     }
     if (message.type === "result") {
+      console.info(`[chatgpt-web] browser turn ${message.id} phase=helper_result_received textChars=${message.text.length}`);
       this.finish(message.id);
       if (pending.localFailure) pending.reject(pending.localFailure);
       else pending.resolve(message.text);
