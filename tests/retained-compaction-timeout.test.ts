@@ -95,8 +95,8 @@ test("timed-out retained compaction reports before the old browser physically re
   let browserStarts = 0;
   (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = turn => {
     browserStarts += 1;
-    expect(turn.requireRetainedConversation).toBeTrue();
     handoffStarted();
+    expect(turn.requireRetainedConversation).toBeTrue();
     return new Promise<string>(resolve => {
       const settle = () => resolve("handoff helper acknowledged cancellation");
       if (turn.abortSignal?.aborted) settle();
@@ -114,7 +114,10 @@ test("timed-out retained compaction reports before the old browser physically re
       { headers: new Headers() },
       event => events.push(event),
     );
-    await handoffReady;
+    await Promise.race([
+      handoffReady,
+      Bun.sleep(1_000).then(() => { throw new Error("retained compaction handoff did not start"); }),
+    ]);
     mock.timers.tick(26);
     await Bun.sleep(5);
 
