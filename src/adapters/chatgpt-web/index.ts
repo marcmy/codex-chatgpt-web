@@ -1045,17 +1045,21 @@ export function createChatGptWebAdapter(
                     const retainedKey = source?.conversationKey();
                     if (!retainedKey) throw error;
                     let handoffError = error instanceof Error ? error : new Error(String(error));
+                    const retirement = preserveFinalResponse
+                      ? chatGptTurnSessions.retireConversationPreservingFinalResponse(
+                        retainedKey,
+                        source!,
+                        compactedSourceExecutionKey,
+                      )
+                      : chatGptTurnSessions.retireConversationAndWait(retainedKey);
+                    // The client-facing handoff may time out before the retained browser/helper
+                    // finishes unwinding. Keep that physical retirement in the owner gate so no
+                    // competing compaction can start on top of the sick surface.
+                    retainOwnershipUntil(retirement.then(() => undefined, () => undefined));
                     try {
-                      // Operator cancellation ends the logical compaction, but cancel-all must not
-                      // acknowledge until the retained browser/helper owner has physically retired.
-                      await (preserveFinalResponse
-                        ? chatGptTurnSessions.retireConversationPreservingFinalResponse(
-                          retainedKey,
-                          source!,
-                          compactedSourceExecutionKey,
-                        )
-                        : chatGptTurnSessions.retireConversationAndWait(retainedKey));
+                      await withAbort(retirement, operationSignal);
                     } catch (retirementError) {
+                      if (operationSignal.aborted) throw retirementError;
                       handoffError = new AggregateError(
                         [handoffError, retirementError instanceof Error ? retirementError : new Error(String(retirementError))],
                         "Structured compaction failed and its retained conversation could not be retired",

@@ -87,6 +87,22 @@ console.info = diagnostic;
 console.warn = diagnostic;
 console.error = diagnostic;
 
+function diagnosticErrorChain(error: unknown, seen = new Set<unknown>()): string {
+  if (seen.has(error)) return "[cycle]";
+  if (error instanceof AggregateError) {
+    seen.add(error);
+    const nested = error.errors.map(candidate => diagnosticErrorChain(candidate, seen)).join(" | ");
+    const cause = error.cause !== undefined ? ` <- cause: ${diagnosticErrorChain(error.cause, seen)}` : "";
+    return `${error.name}: ${error.message}${nested ? ` [${nested}]` : ""}${cause}`;
+  }
+  if (error instanceof Error) {
+    seen.add(error);
+    const cause = error.cause !== undefined ? ` <- cause: ${diagnosticErrorChain(error.cause, seen)}` : "";
+    return `${error.name}: ${error.message}${cause}`;
+  }
+  return String(error);
+}
+
 const abortControllers = new Map<string, AbortController>();
 const turnProgress = new Map<string, ChatGptMirroredTurnProgress>();
 const preparedSelections = new Map<string, ReturnType<typeof createBrowserHelperPromptSelection>>();
@@ -230,6 +246,7 @@ async function run(message: RunMessage): Promise<void> {
           completionFenceRequestId += 1;
           const requestId = completionFenceRequestId;
           completionFenceBeginWaiters.set(message.id, { requestId, resolve, reject });
+          diagnostic(`[chatgpt-web] browser turn ${message.id} phase=completion_fence_begin_requested requestId=${requestId}`);
           if (!writeProtocol({ type: "event", id: message.id, event: "completion_fence_begin", requestId })) {
             completionFenceBeginWaiters.delete(message.id);
             reject(new Error("Browser helper could not begin the broker completion fence"));
@@ -243,6 +260,9 @@ async function run(message: RunMessage): Promise<void> {
           completionFenceRequestId += 1;
           const requestId = completionFenceRequestId;
           completionFenceCommitWaiters.set(message.id, { requestId, resolve, reject });
+          diagnostic(
+            `[chatgpt-web] browser turn ${message.id} phase=completion_fence_commit_requested requestId=${requestId} revision=${revision}`,
+          );
           if (!writeProtocol({ type: "event", id: message.id, event: "completion_fence_commit", requestId, revision })) {
             completionFenceCommitWaiters.delete(message.id);
             reject(new Error("Browser helper could not commit the broker completion fence"));
@@ -299,8 +319,12 @@ async function run(message: RunMessage): Promise<void> {
   };
   try {
     const text = await ChatGptBrowserWorker.forProvider(provider).run(turn);
+    diagnostic(`[chatgpt-web] browser turn ${message.id} phase=helper_result_emit textChars=${text.length}`);
     writeProtocol({ type: "result", id: message.id, text });
   } catch (error) {
+    if (!(error instanceof ChatGptCompactionHandoffAccepted)) {
+      diagnostic(`[chatgpt-web] browser turn ${message.id} failed: ${diagnosticErrorChain(error)}`);
+    }
     writeProtocol({
       type: "error",
       id: message.id,
@@ -370,7 +394,11 @@ async function maintain(message: InspectMessage | SmokeMessage): Promise<void> {
     const value = message.type === "inspect"
       ? await worker.inspectSession(message.detectCapabilities)
       : await worker.smokeTest(abortController.signal);
-    writeProtocol({ type: "result", id: message.id, value });
+    writeProtocol({
+      type: "result",
+      id: message.id,
+      value,
+    });
   } catch (error) {
     writeProtocol({
       type: "error",
@@ -434,6 +462,10 @@ input.on("line", line => {
     const waiter = completionFenceBeginWaiters.get(message.id);
     if (!waiter || waiter.requestId !== message.requestId) return;
     completionFenceBeginWaiters.delete(message.id);
+    diagnostic(
+      `[chatgpt-web] browser turn ${message.id} phase=completion_fence_begin_acknowledged requestId=${message.requestId}`
+      + ` revision=${message.revision ?? "none"}`,
+    );
     waiter.resolve(message.revision ?? undefined);
   } else if (message.type === "completion_fence_commit_ack") {
     if (!Number.isSafeInteger(message.requestId) || message.requestId <= 0
@@ -445,6 +477,10 @@ input.on("line", line => {
     const waiter = completionFenceCommitWaiters.get(message.id);
     if (!waiter || waiter.requestId !== message.requestId) return;
     completionFenceCommitWaiters.delete(message.id);
+    diagnostic(
+      `[chatgpt-web] browser turn ${message.id} phase=completion_fence_commit_acknowledged requestId=${message.requestId}`
+      + ` committed=${message.committed}`,
+    );
     waiter.resolve(message.committed);
   } else if (message.type === "progress") {
     // Progress is meaningful only for a turn this helper is currently running. Ignore every other
@@ -517,4 +553,7 @@ process.once("SIGTERM", () => {
 });
 
 // Advertise the optional frames this helper understands so the daemon can negotiate them explicitly.
-writeProtocol({ type: "ready", features: ["progress", "tool-boundary-ack", "completion-fence", "multipart-stage-ack"] });
+writeProtocol({
+  type: "ready",
+  features: ["progress", "tool-boundary-ack", "completion-fence", "multipart-stage-ack", "terminal-ipc-diagnostics-v1"],
+});

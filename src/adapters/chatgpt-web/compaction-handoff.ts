@@ -6,7 +6,10 @@ import type {
 } from "../../types";
 import { extractChatGptCompactionSourceRevision } from "./environment";
 import type { ChatGptBrowserWorker } from "./browser-worker";
-import { ChatGptCompactionHandoffAccepted } from "./adapter-error";
+import {
+  ChatGptCompactionHandoffAccepted,
+  chatGptRetainedConversationUnavailableError,
+} from "./adapter-error";
 import type { CompactionTransactionHandle } from "./compaction-transaction";
 import type { ChatGptWebCapabilities } from "./model";
 import {
@@ -328,7 +331,12 @@ export async function requestRetainedCompactionHandoff(
       onTextDelta: () => {},
     });
     const browserFailure = browser.then<never>(
-      () => new Promise<never>(() => {}),
+      () => {
+        console.warn(
+          `[chatgpt-web] retained compaction handoff browser completed without connector control trace=${traceId}`,
+        );
+        throw chatGptRetainedConversationUnavailableError();
+      },
       error => { throw error; },
     );
     const summary = await withCompactionAbort(
