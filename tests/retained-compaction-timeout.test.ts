@@ -129,3 +129,70 @@ test("timed-out retained compaction reports before the old browser physically re
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("retained handoff prose immediately falls back instead of consuming the handoff deadline", async () => {
+  const root = mkdtempSync(join(shortSocketTempRoot(), "cgw-retained-prose-"));
+  const provider: CodexProviderConfig = {
+    adapter: "chatgpt-web",
+    baseUrl: `browser://retained-prose-${Date.now()}-${Math.random()}`,
+    chatgptWeb: {
+      browserHost: "launcher",
+      browserHostDescriptorPath: join(root, "launcher.json"),
+      brokerSocketPath: defaultBrokerEndpoint(root),
+      localToolsEnabled: true,
+      solAvailable: true,
+      proAvailable: true,
+      turnTimeoutMs: 2_000,
+    },
+  };
+  const worker = ChatGptBrowserWorker.forProvider(provider);
+  const originalRun = worker.run.bind(worker);
+  const sourceRequest = request(false);
+  const namespace = chatGptWebExecutionNamespace(provider);
+  const sourceKey = `${namespace}:${chatGptTurnExecutionKey(sourceRequest)}`;
+  const conversationKey = chatGptConversationKey(sourceRequest, namespace)!;
+
+  chatGptTurnSessions.getOrCreate(sourceKey, () => ({
+    mode: "read-only",
+    browser: Promise.resolve("source complete"),
+    physicalSettlement: Promise.resolve(),
+    trace: new ChatGptTraceFeed(),
+    text: new ChatGptTextFeed(),
+    usageInput: sourceRequest,
+    conversationKey,
+    cancel() {},
+  }));
+  await chatGptTurnSessions.find(sourceKey)!.browserOutcome;
+
+  const turns: BrowserTurn[] = [];
+  (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = async turn => {
+    turns.push(turn);
+    if (turn.requireRetainedConversation) {
+      return "I summarized the context in prose instead of calling the handoff connector.";
+    }
+    return "Fresh fallback summary";
+  };
+
+  const events: AdapterEvent[] = [];
+  try {
+    await Promise.race([
+      createChatGptWebAdapter(provider).runTurn!(
+        request(true),
+        { headers: new Headers() },
+        event => events.push(event),
+      ),
+      Bun.sleep(500).then(() => { throw new Error("retained prose handoff did not fall back promptly"); }),
+    ]);
+
+    expect(turns).toHaveLength(2);
+    expect(turns[0]?.requireRetainedConversation).toBeTrue();
+    expect(turns[1]?.requireRetainedConversation).not.toBeTrue();
+    expect(events.some(event => event.type === "error")).toBeFalse();
+    expect(events.some(event => event.type === "text_delta" && event.text.includes("Fresh fallback summary"))).toBeTrue();
+    expect(events.some(event => event.type === "done")).toBeTrue();
+  } finally {
+    (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = originalRun;
+    await TurnBroker.forSocket(provider.chatgptWeb!.brokerSocketPath!).close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
