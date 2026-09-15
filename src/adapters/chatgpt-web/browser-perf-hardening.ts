@@ -9,7 +9,7 @@ type Sleep = (milliseconds: number) => Promise<void>;
 type Clock = () => number;
 type Logger = (message: string) => void;
 type AsyncMethod = (...args: unknown[]) => Promise<unknown>;
-type WorkerClass = { prototype: Record<PropertyKey, unknown> };
+type WorkerClass = { prototype: object };
 
 export interface BrowserPerfHardeningOptions {
   now?: Clock;
@@ -174,7 +174,7 @@ export function installChatGptBrowserPerfHardening(
   Worker: WorkerClass,
   options: BrowserPerfHardeningOptions = {},
 ): void {
-  const prototype = Worker.prototype;
+  const prototype = Worker.prototype as Record<PropertyKey, unknown>;
   if (prototype[HARDENING_INSTALLED] === true) return;
 
   const now = options.now ?? (() => Date.now());
