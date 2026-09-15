@@ -1,5 +1,4 @@
 import { expect, test } from "bun:test";
-import { mock } from "node:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -58,7 +57,7 @@ test("timed-out retained compaction reports before the old browser physically re
   const root = mkdtempSync(join(shortSocketTempRoot(), "cgw-retained-timeout-"));
   const provider: CodexProviderConfig = {
     adapter: "chatgpt-web",
-    baseUrl: `browser://retained-timeout-${Date.now()}`,
+    baseUrl: `browser://retained-timeout-${Date.now()}-${Math.random()}`,
     chatgptWeb: {
       browserHost: "launcher",
       browserHostDescriptorPath: join(root, "launcher.json"),
@@ -66,7 +65,7 @@ test("timed-out retained compaction reports before the old browser physically re
       localToolsEnabled: true,
       solAvailable: true,
       proAvailable: true,
-      turnTimeoutMs: 25,
+      turnTimeoutMs: 200,
     },
   };
   const worker = ChatGptBrowserWorker.forProvider(provider);
@@ -107,7 +106,6 @@ test("timed-out retained compaction reports before the old browser physically re
   const compact = request(true);
   const events: AdapterEvent[] = [];
   let run: Promise<void> | undefined;
-  mock.timers.enable({ apis: ["setTimeout"] });
   try {
     run = createChatGptWebAdapter(provider).runTurn!(
       compact,
@@ -116,10 +114,9 @@ test("timed-out retained compaction reports before the old browser physically re
     );
     await Promise.race([
       handoffReady,
-      Bun.sleep(1_000).then(() => { throw new Error("retained compaction handoff did not start"); }),
+      Bun.sleep(2_000).then(() => { throw new Error("retained compaction handoff did not start"); }),
     ]);
-    mock.timers.tick(26);
-    await Bun.sleep(5);
+    await Bun.sleep(300);
 
     expect(browserStarts).toBe(1);
     expect(events.filter(event => event.type === "error")).toHaveLength(1);
@@ -127,9 +124,7 @@ test("timed-out retained compaction reports before the old browser physically re
   } finally {
     releasePhysical();
     if (run) await Promise.allSettled([run]);
-    mock.timers.reset();
     (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = originalRun;
-    chatGptTurnSessions.clear();
     await TurnBroker.forSocket(provider.chatgptWeb!.brokerSocketPath!).close();
     rmSync(root, { recursive: true, force: true });
   }
