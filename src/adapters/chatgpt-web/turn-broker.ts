@@ -448,8 +448,13 @@ export class TurnBroker implements TurnBrokerOwner {
     const channel = this.channels.get(token);
     if (!channel) throw new Error("turn token is invalid or expired");
     if (channel.completionCommitted) return channel.completionRevision;
-    if (channel.activities.size > 0 || pendingInvocationCount(channel) > 0) {
-      return undefined;
+    if (channel.activities.size > 0) return undefined;
+    const pendingInvocations = [...channel.invocations.values()].filter(invocation => !invocation.consumed);
+    if (pendingInvocations.some(invocation => invocation.result === undefined)) return undefined;
+    if (pendingInvocations.length > 0) {
+      throw new Error(
+        `turn completion found ${pendingInvocations.length} unconsumed deferred Codex tool result(s) with no active MCP consumer`,
+      );
     }
     return channel.activityRevision;
   }
