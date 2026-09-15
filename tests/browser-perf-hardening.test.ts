@@ -1,0 +1,100 @@
+import { expect, test } from "bun:test";
+import {
+  BrowserObservationPacer,
+  CHATGPT_RESPONSE_SNAPSHOT_MIN_INTERVAL_MS,
+  CHATGPT_TURN_DOM_POLL_MIN_INTERVAL_MS,
+  installChatGptBrowserPerfHardening,
+} from "../src/adapters/chatgpt-web/browser-perf-hardening";
+
+test("browser observation pacing caps repeated probes without coupling unrelated pages", async () => {
+  let now = 1_000;
+  const sleeps: number[] = [];
+  const pacer = new BrowserObservationPacer(
+    125,
+    () => now,
+    async (milliseconds) => {
+      sleeps.push(milliseconds);
+      now += milliseconds;
+    },
+  );
+  const pageA = {};
+  const pageB = {};
+
+  expect(await pacer.wait(pageA)).toBe(0);
+  now += 25;
+  expect(await pacer.wait(pageA)).toBe(100);
+  expect(sleeps).toEqual([100]);
+
+  // A different browser surface owns an independent cadence.
+  expect(await pacer.wait(pageB)).toBe(0);
+  expect(sleeps).toEqual([100]);
+});
+
+test("browser hardening cadence stays well below frame-rate React churn", () => {
+  expect(CHATGPT_TURN_DOM_POLL_MIN_INTERVAL_MS).toBeGreaterThanOrEqual(100);
+  expect(CHATGPT_RESPONSE_SNAPSHOT_MIN_INTERVAL_MS).toBeGreaterThanOrEqual(75);
+});
+
+test("browser hardening wraps hot observation paths once and preserves per-page isolation", async () => {
+  let now = 10_000;
+  const sleeps: number[] = [];
+  const logs: string[] = [];
+  const calls = { dom: 0, snapshot: 0, submission: 0 };
+
+  class FakeWorker {
+    async waitForTurnDomMutation(_page: object): Promise<void> {
+      calls.dom += 1;
+    }
+
+    async responseDomSnapshot(_locator: object, _cache?: Record<string, unknown>): Promise<{ responsePresent: true }> {
+      calls.snapshot += 1;
+      return { responsePresent: true };
+    }
+
+    async submissionDomState(_page: object, cache?: { fullScans?: number; cacheHits?: number }): Promise<{ ok: true }> {
+      calls.submission += 1;
+      if (cache) cache.fullScans = (cache.fullScans ?? 0) + 1;
+      return { ok: true };
+    }
+  }
+
+  const options = {
+    now: () => now,
+    sleep: async (milliseconds: number) => {
+      sleeps.push(milliseconds);
+      now += milliseconds;
+    },
+    log: (message: string) => logs.push(message),
+    turnDomIntervalMs: 125,
+    responseSnapshotIntervalMs: 100,
+    reportIntervalMs: 60_000,
+  };
+  installChatGptBrowserPerfHardening(FakeWorker, options);
+  // Installation is intentionally idempotent; helper entrypoints may be evaluated more than once
+  // in tests without stacking another pacing layer around each browser operation.
+  installChatGptBrowserPerfHardening(FakeWorker, options);
+
+  const worker = new FakeWorker();
+  const pageA = {};
+  const pageB = {};
+  const responseA = {};
+  const responseB = {};
+  const cacheA: { fullScans?: number; cacheHits?: number } = {};
+
+  await worker.waitForTurnDomMutation(pageA);
+  now += 25;
+  await worker.waitForTurnDomMutation(pageA);
+  await worker.waitForTurnDomMutation(pageB);
+
+  await worker.responseDomSnapshot(responseA, cacheA);
+  now += 20;
+  await worker.responseDomSnapshot(responseA, cacheA);
+  await worker.responseDomSnapshot(responseB, {});
+
+  await worker.submissionDomState(pageA, cacheA);
+
+  expect(calls).toEqual({ dom: 3, snapshot: 3, submission: 1 });
+  expect(sleeps).toEqual([100, 80]);
+  expect(cacheA.fullScans).toBe(1);
+  expect(logs).toEqual([]);
+});
