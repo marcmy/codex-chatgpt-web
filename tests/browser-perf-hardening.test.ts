@@ -96,5 +96,49 @@ test("browser hardening wraps hot observation paths once and preserves per-page 
   expect(calls).toEqual({ dom: 3, snapshot: 3, submission: 1 });
   expect(sleeps).toEqual([100, 80]);
   expect(cacheA.fullScans).toBe(1);
-  expect(logs).toEqual([]);
+  expect(logs).toEqual([
+    "[chatgpt-web] browser perf hardening installed turnDomIntervalMs=125 responseSnapshotIntervalMs=100",
+  ]);
+});
+
+test("browser hardening attributes submission evidence latency to the active trace", async () => {
+  let now = 20_000;
+  const logs: string[] = [];
+
+  class FakeWorker {
+    async waitForTurnDomMutation(_page: object): Promise<void> {}
+    async responseDomSnapshot(_locator: object, _cache?: Record<string, unknown>): Promise<{ responsePresent: true }> {
+      return { responsePresent: true };
+    }
+    async submissionDomState(_page: object, _cache?: Record<string, unknown>): Promise<{ ok: true }> {
+      return { ok: true };
+    }
+    async waitForSubmissionAcceptedWithRecovery(): Promise<"user_turn"> {
+      now += 2_750;
+      return "user_turn";
+    }
+    async runBrowserTurn(turn: { traceId: string }): Promise<"user_turn"> {
+      return this.waitForSubmissionAcceptedWithRecovery().then(result => {
+        now += 250;
+        return result;
+      });
+    }
+  }
+
+  installChatGptBrowserPerfHardening(FakeWorker, {
+    now: () => now,
+    sleep: async () => {},
+    log: message => logs.push(message),
+    reportIntervalMs: 60_000,
+  });
+
+  const worker = new FakeWorker();
+  await worker.runBrowserTurn({ traceId: "trace_submission_latency" });
+
+  expect(logs).toContain(
+    "[chatgpt-web] browser turn trace_submission_latency phase=submission_evidence_wait started",
+  );
+  expect(logs).toContain(
+    "[chatgpt-web] browser turn trace_submission_latency phase=submission_evidence_wait completed durationMs=2750",
+  );
 });
