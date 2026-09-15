@@ -1,3 +1,5 @@
+import { AsyncLocalStorage } from "node:async_hooks";
+
 export const CHATGPT_TURN_DOM_POLL_MIN_INTERVAL_MS = 125;
 export const CHATGPT_RESPONSE_SNAPSHOT_MIN_INTERVAL_MS = 100;
 export const CHATGPT_BROWSER_PERF_REPORT_INTERVAL_MS = 15_000;
@@ -162,6 +164,17 @@ function asyncMethod(prototype: Record<PropertyKey, unknown>, name: string): Asy
   return method as AsyncMethod;
 }
 
+function optionalAsyncMethod(prototype: Record<PropertyKey, unknown>, name: string): AsyncMethod | undefined {
+  const method = prototype[name];
+  return typeof method === "function" ? method as AsyncMethod : undefined;
+}
+
+function browserTurnTraceId(value: unknown): string | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const traceId = (value as { traceId?: unknown }).traceId;
+  return typeof traceId === "string" && traceId.length > 0 ? traceId : undefined;
+}
+
 /**
  * Install helper-process-only pacing around the browser worker's hottest read-only DOM probes.
  *
@@ -201,10 +214,13 @@ export function installChatGptBrowserPerfHardening(
   const turnDomPacer = new BrowserObservationPacer(turnDomIntervalMs, now, sleep);
   const responseSnapshotPacer = new BrowserObservationPacer(responseSnapshotIntervalMs, now, sleep);
   const telemetry = new BrowserPerfTelemetry(now, log, reportIntervalMs, slowObservationMs);
+  const traceContext = new AsyncLocalStorage<string>();
 
   const originalTurnDomMutation = asyncMethod(prototype, "waitForTurnDomMutation");
   const originalResponseDomSnapshot = asyncMethod(prototype, "responseDomSnapshot");
   const originalSubmissionDomState = asyncMethod(prototype, "submissionDomState");
+  const originalRunBrowserTurn = optionalAsyncMethod(prototype, "runBrowserTurn");
+  const originalSubmissionAcceptance = optionalAsyncMethod(prototype, "waitForSubmissionAcceptedWithRecovery");
 
   prototype.waitForTurnDomMutation = async function(this: object, ...args: unknown[]): Promise<unknown> {
     const key = objectKey(args[0], this);
@@ -247,10 +263,54 @@ export function installChatGptBrowserPerfHardening(
     }
   };
 
+  // Keep trace attribution concurrency-safe. One worker serves up to five browser turns at once,
+  // so storing the current trace on `this` would cross-wire latency logs between tabs.
+  if (originalRunBrowserTurn && originalSubmissionAcceptance) {
+    prototype.runBrowserTurn = async function(this: object, ...args: unknown[]): Promise<unknown> {
+      const traceId = browserTurnTraceId(args[0]);
+      return traceId
+        ? await traceContext.run(traceId, () => originalRunBrowserTurn.apply(this, args))
+        : await originalRunBrowserTurn.apply(this, args);
+    };
+
+    prototype.waitForSubmissionAcceptedWithRecovery = async function(
+      this: object,
+      ...args: unknown[]
+    ): Promise<unknown> {
+      const traceId = traceContext.getStore();
+      const startedAt = now();
+      if (traceId) {
+        log(`[chatgpt-web] browser turn ${traceId} phase=submission_evidence_wait started`);
+      }
+      try {
+        const result = await originalSubmissionAcceptance.apply(this, args);
+        if (traceId) {
+          log(
+            `[chatgpt-web] browser turn ${traceId} phase=submission_evidence_wait completed`
+            + ` durationMs=${Math.round(Math.max(0, now() - startedAt))}`,
+          );
+        }
+        return result;
+      } catch (error) {
+        if (traceId) {
+          log(
+            `[chatgpt-web] browser turn ${traceId} phase=submission_evidence_wait failed`
+            + ` durationMs=${Math.round(Math.max(0, now() - startedAt))}`,
+          );
+        }
+        throw error;
+      }
+    };
+  }
+
   Object.defineProperty(prototype, HARDENING_INSTALLED, {
     value: true,
     enumerable: false,
     configurable: false,
     writable: false,
   });
+  log(
+    `[chatgpt-web] browser perf hardening installed turnDomIntervalMs=${turnDomIntervalMs}`
+    + ` responseSnapshotIntervalMs=${responseSnapshotIntervalMs}`,
+  );
 }
