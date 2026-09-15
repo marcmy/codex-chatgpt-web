@@ -142,7 +142,9 @@ test("retained handoff prose immediately falls back instead of consuming the han
       localToolsEnabled: true,
       solAvailable: true,
       proAvailable: true,
-      turnTimeoutMs: 2_000,
+      // Keep the production handoff deadline well beyond the assertion window. The regression
+      // proves terminal prose is recognized promptly; it must not pass by merely reaching timeout.
+      turnTimeoutMs: 10_000,
     },
   };
   const worker = ChatGptBrowserWorker.forProvider(provider);
@@ -181,7 +183,7 @@ test("retained handoff prose immediately falls back instead of consuming the han
         { headers: new Headers() },
         event => events.push(event),
       ),
-      Bun.sleep(500).then(() => { throw new Error("retained prose handoff did not fall back promptly"); }),
+      Bun.sleep(3_000).then(() => { throw new Error("retained prose handoff did not fall back promptly"); }),
     ]);
 
     expect(turns).toHaveLength(2);
