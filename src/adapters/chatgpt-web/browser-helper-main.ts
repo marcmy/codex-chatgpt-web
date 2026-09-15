@@ -322,7 +322,9 @@ async function run(message: RunMessage): Promise<void> {
     diagnostic(`[chatgpt-web] browser turn ${message.id} phase=helper_result_emit textChars=${text.length}`);
     writeProtocol({ type: "result", id: message.id, text });
   } catch (error) {
-    diagnostic(`[chatgpt-web] browser turn ${message.id} failed: ${diagnosticErrorChain(error)}`);
+    if (!(error instanceof ChatGptCompactionHandoffAccepted)) {
+      diagnostic(`[chatgpt-web] browser turn ${message.id} failed: ${diagnosticErrorChain(error)}`);
+    }
     writeProtocol({
       type: "error",
       id: message.id,
@@ -392,7 +394,11 @@ async function maintain(message: InspectMessage | SmokeMessage): Promise<void> {
     const value = message.type === "inspect"
       ? await worker.inspectSession(message.detectCapabilities)
       : await worker.smokeTest(abortController.signal);
-    writeProtocol({ type: "result", id: message.id, value });
+    writeProtocol({
+      type: "result",
+      id: message.id,
+      value,
+    });
   } catch (error) {
     writeProtocol({
       type: "error",
