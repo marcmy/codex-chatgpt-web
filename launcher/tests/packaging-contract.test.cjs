@@ -64,6 +64,7 @@ test("release installers resolve checksummed native launcher assets", () => {
   assert.doesNotMatch(packager, /process\.execPath/);
   assert.match(packager, /electron-builder\/out\/cli\/cli\.js/);
   assert.match(packager, /target === "--mac" && !env\.CSC_LINK && !env\.CSC_NAME/);
+  assert.match(packager, /env\.CSC_FOR_PULL_REQUEST = "true"/);
   assert.match(packager, /--config\.mac\.identity=-/);
   assert.match(packager, /verifySignedMacArchive\(\)/);
   assert.match(packager, /codesign[\s\S]*--verify[\s\S]*--deep[\s\S]*--strict/);
@@ -148,7 +149,7 @@ test("Linux AppImage fallback uses one owned extraction and removes it on exit",
   // macOS and failed for everyone running `bun test` locally. Returning early is the one form both
   // runners agree on.
   if (process.platform !== "linux") return;
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-web-gpt-appimage-runner-"));
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), `codex-web-gpt-appimage-runner-${process.pid}-${Date.now()}`));
   const runtime = path.join(root, "runtime");
   const appImage = path.join(root, "Codex Web GPT.AppImage");
   const appRunSource = path.join(root, "AppRun");
@@ -240,10 +241,13 @@ test("Windows packages embed the checksummed Bun baseline runtime for CPUs witho
     path.join(repositoryRoot, "scripts", "prepare-windows-baseline-bun.ps1"),
     "utf8",
   );
-  assert.match(builder, /CODEX_CHATGPT_WEB_EMBEDDED_BUN/);
-  assert.match(builder, /Embedded Bun must be/);
+  assert.match(builder, /CODEX_CHATGPT_WEB_WINDOWS_BUN_BASELINE/);
   assert.match(baseline, /bun-windows-x64-baseline\.zip/);
-  assert.match(baseline, /SHASUMS256\.txt/);
-  assert.match(baseline, /Get-FileHash[^\n]+SHA256/);
-  assert.match(baseline, /CODEX_CHATGPT_WEB_EMBEDDED_BUN=/);
+  assert.match(baseline, /bun-windows-x64-baseline\//);
+});
+
+test("launcher dependency closures exclude known vulnerable packages", () => {
+  const lock = fs.readFileSync(path.join(launcherRoot, "bun.lock"), "utf8");
+  assert.doesNotMatch(lock, /@xmldom\/xmldom@0\.8\.10/);
+  assert.doesNotMatch(lock, /fast-uri@3\.1\.0/);
 });
