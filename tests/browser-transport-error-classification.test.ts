@@ -9,6 +9,7 @@ import { CHATGPT_WEB_MODEL_ID } from "../src/adapters/chatgpt-web/model";
 const plusCapabilities = {
   localToolsEnabled: false,
   solAvailable: true,
+  extraHighAvailable: false,
   proAvailable: false,
 };
 

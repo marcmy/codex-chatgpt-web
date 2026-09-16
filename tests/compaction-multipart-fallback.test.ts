@@ -5,6 +5,7 @@ import type { CodexParsedRequest } from "../src/types";
 const capabilities = {
   localToolsEnabled: false,
   solAvailable: true,
+  extraHighAvailable: true,
   proAvailable: true,
 };
 
