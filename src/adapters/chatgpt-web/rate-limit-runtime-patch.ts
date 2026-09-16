@@ -131,6 +131,7 @@ async function waitForExistingRateLimitRecovery(
   descriptorPath: string,
   surfaceId: string,
   abortSignal?: AbortSignal,
+  acquireActionPermit = true,
 ): Promise<void> {
   await chatGptRateLimitSerialGate.runExclusive(async () => {
     let snapshot = chatGptRateLimitBackoffPolicy.snapshot();
@@ -145,6 +146,7 @@ async function waitForExistingRateLimitRecovery(
       }
     }
 
+    if (!acquireActionPermit) return;
     await waitForChatGptRateLimitDeadline(
       chatGptRateLimitBackoffPolicy.nextAllowedActionAt(),
       abortSignal,
@@ -265,10 +267,15 @@ export function installChatGptRateLimitBackoffRuntime(): void {
           // Serialize the entire recovery sequence. This prevents concurrent incoming turns from
           // performing their own refresh or resuming during the hard cooldown, and it spaces later
           // website attempts from the one refresh that ended the cooldown.
-          await waitForExistingRateLimitRecovery(descriptorPath, surfaceId, turn.abortSignal);
+          await waitForExistingRateLimitRecovery(
+            descriptorPath,
+            surfaceId,
+            turn.abortSignal,
+            !sendActivated,
+          );
 
-          // Once Send may have fired, replaying the prompt is unsafe. Recovery is still completed,
-          // but the prompt itself is not sent again.
+          // Once Send may have fired, replaying the prompt is unsafe. Complete only cooldown + refresh;
+          // do not consume a phantom action permit when this turn is about to fail without touching the site.
           if (sendActivated) throw error;
         }
       }
