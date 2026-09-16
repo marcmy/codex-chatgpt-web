@@ -6,6 +6,13 @@ export const chatGptRateLimitDialog = (page: Page): Locator => page.locator('[ro
   .filter({ hasText: /making requests too quickly|過於頻繁|过于频繁|リクエストの頻度が高すぎます/i })
   .last();
 
+export function isChatGptRateLimitError(error: unknown): error is ChatGptWebAdapterError {
+  return error instanceof ChatGptWebAdapterError
+    && error.status === 429
+    && error.errorType === "rate_limit_error"
+    && error.code === "rate_limit_exceeded";
+}
+
 /** Detect the known site throttle without clicking its acknowledgement button. */
 export async function throwIfChatGptRateLimitDialogPassive(page: Page): Promise<void> {
   if (!await chatGptRateLimitDialog(page).isVisible().catch(() => false)) return;
