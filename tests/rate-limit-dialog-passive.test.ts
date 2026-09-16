@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import type { Page } from "playwright-core";
-import { throwIfChatGptRateLimitDialogPassive } from "../src/adapters/chatgpt-web/browser-worker";
+import { throwIfChatGptRateLimitDialogPassive } from "../src/adapters/chatgpt-web/rate-limit-dialog";
 
 function rateLimitDialogPage(): { page: Page; presses: string[] } {
   const presses: string[] = [];
