@@ -64,6 +64,7 @@ test("release installers resolve checksummed native launcher assets", () => {
   assert.doesNotMatch(packager, /process\.execPath/);
   assert.match(packager, /electron-builder\/out\/cli\/cli\.js/);
   assert.match(packager, /target === "--mac" && !env\.CSC_LINK && !env\.CSC_NAME/);
+  assert.match(packager, /env\.CSC_FOR_PULL_REQUEST = "true"/);
   assert.match(packager, /--config\.mac\.identity=-/);
   assert.match(packager, /verifySignedMacArchive\(\)/);
   assert.match(packager, /codesign[\s\S]*--verify[\s\S]*--deep[\s\S]*--strict/);
@@ -157,7 +158,7 @@ test("Linux AppImage fallback uses one owned extraction and removes it on exit",
   fs.mkdirSync(runtime);
   fs.writeFileSync(appRunSource, [
     "#!/bin/sh",
-    `printf '%s|%s' \"$APPIMAGE\" \"$1\" > ${JSON.stringify(marker)}`,
+    `printf '%s|%s' "$APPIMAGE" "$1" > ${JSON.stringify(marker)}`,
     "",
   ].join("\n"), { mode: 0o755 });
   fs.writeFileSync(appImage, [

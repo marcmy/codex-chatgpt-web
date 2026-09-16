@@ -16,6 +16,7 @@ const target = requested || (process.platform === "darwin" ? "--mac"
 if (!["--mac", "--win", "--linux"].includes(target)) {
   throw new Error(`Unsupported packaging target: ${requested || process.platform}`);
 }
+
 const nativeTarget = process.platform === "darwin" ? "--mac"
   : process.platform === "win32" ? "--win"
     : process.platform === "linux" ? "--linux"
@@ -36,6 +37,7 @@ const builderArgs = [
   "never",
 ];
 if (target === "--mac" && !env.CSC_LINK && !env.CSC_NAME) {
+  env.CSC_FOR_PULL_REQUEST = "true";
   builderArgs.push("--config.mac.identity=-");
 }
 
