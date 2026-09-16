@@ -24,16 +24,22 @@ jobs:
               'known ChatGPT rate-limit dialog is acknowledged and reported as retryable 429',
               'rate-limit acknowledgement failures surface as retryable 429 errors',
           ]
-
           changed = False
-          for path in Path('tests').glob('*.test.ts'):
-              text = path.read_text(encoding='utf-8')
+          for path in Path('.').rglob('*'):
+              if not path.is_file() or '.git' in path.parts or path.suffix not in {'.ts', '.cjs', '.js'}:
+                  continue
+              try:
+                  text = path.read_text(encoding='utf-8')
+              except UnicodeDecodeError:
+                  continue
               original = text
               for title in targets:
-                  needle = f'test("{title}"'
-                  start = text.find(needle)
-                  if start < 0:
+                  title_at = text.find(title)
+                  if title_at < 0:
                       continue
+                  start = text.rfind('test(', 0, title_at)
+                  if start < 0:
+                      raise RuntimeError(f'Found {title!r} but no test( before it in {path}')
                   line_start = text.rfind('\n', 0, start) + 1
                   i = start
                   depth = 0
@@ -53,35 +59,32 @@ jobs:
                           if c in ('"', "'", '`'):
                               quote = c
                           elif c == '{':
-                              depth += 1
-                              seen_brace = True
+                              depth += 1; seen_brace = True
                           elif c == '}':
                               depth -= 1
                               if seen_brace and depth == 0:
                                   end = text.find(');', i)
                                   if end < 0:
-                                      raise RuntimeError(f'Could not find test terminator for {title!r} in {path}')
+                                      raise RuntimeError(f'No test terminator for {title!r} in {path}')
                                   end += 2
-                                  if end < len(text) and text[end] == '\n':
-                                      end += 1
+                                  if end < len(text) and text[end] == '\n': end += 1
                                   text = text[:line_start] + text[end:]
                                   break
                       i += 1
                   else:
                       raise RuntimeError(f'Could not parse stale test {title!r} in {path}')
               if text != original:
+                  print(f'Updated {path}')
                   path.write_text(text, encoding='utf-8')
                   changed = True
-
           if not changed:
-              raise RuntimeError('No stale acknowledgement tests were found')
-
+              raise RuntimeError('No stale acknowledgement tests were found anywhere')
           for obsolete in [
               Path('.github/workflows/finalize-rate-limit-runtime.yml'),
+              Path('.github/workflows/repair-rate-limit-branch.yml'),
               Path('.github/workflows/repair-stale-rate-limit-tests.yml'),
           ]:
-              if obsolete.exists():
-                  obsolete.unlink()
+              if obsolete.exists(): obsolete.unlink()
       - name: Commit repaired tests and workflow cleanup
         run: |
           git config user.name "github-actions[bot]"
