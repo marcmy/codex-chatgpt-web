@@ -1,0 +1,61 @@
+name: Repair rate-limit branch
+on:
+  push:
+    branches: [rate-limit-backoff]
+permissions:
+  contents: write
+jobs:
+  repair:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Restore accidentally overwritten files and apply final recovery semantics
+        shell: bash
+        run: |
+          set -euo pipefail
+          git checkout 12106a2c82a6d836103646ca5abdbda3e869a9e7 -- \
+            src/adapters/chatgpt-web/browser-worker.ts \
+            src/adapters/chatgpt-web/rate-limit-backoff.ts \
+            tests/rate-limit-backoff.test.ts
+          python3 <<'PY'
+          from pathlib import Path
+
+          p = Path('src/adapters/chatgpt-web/browser-worker.ts')
+          s = p.read_text()
+          old = '''  const acknowledge = dialog.getByRole("button", { name: /^(Got it|知道了|了解)$/ }).last();\n  if (await acknowledge.isVisible().catch(() => false)) {\n    try {\n      await acknowledge.press("Enter");\n    } catch (error) {\n      throw new ChatGptWebAdapterError(\n        `ChatGPT rate limit: too many requests, and the dialog could not be dismissed (${error instanceof Error ? error.message : String(error)}). Try again in a few minutes.`,\n        { status: 429, errorType: "rate_limit_error", code: "rate_limit_exceeded", retryable: true },\n      );\n    }\n  }\n'''
+          assert old in s
+          p.write_text(s.replace(old, ''))
+
+          p = Path('src/adapters/chatgpt-web/rate-limit-backoff.ts')
+          s = p.read_text()
+          s = s.replace(
+              'this.recoveryUntil = now + CHATGPT_RATE_LIMIT_RECOVERY_MS;',
+              'this.recoveryUntil = now + CHATGPT_RATE_LIMIT_COOLDOWN_MS + CHATGPT_RATE_LIMIT_RECOVERY_MS;',
+          )
+          old = '''export async function waitForChatGptRateLimitDeadline(\n  deadline: number,\n  signal?: AbortSignal,\n): Promise<void> {\n  if (signal?.aborted) throw new DOMException("ChatGPT web turn aborted", "AbortError");\n  const remaining = deadline - Date.now();\n  if (remaining <= 0) return;\n\n  await new Promise<void>((resolve, reject) => {\n    const timer = setTimeout(() => {\n      signal?.removeEventListener("abort", onAbort);\n      resolve();\n    }, remaining);\n    timer.unref?.();\n    const onAbort = () => {\n      clearTimeout(timer);\n      signal?.removeEventListener("abort", onAbort);\n      reject(new DOMException("ChatGPT web turn aborted", "AbortError"));\n    };\n    signal?.addEventListener("abort", onAbort, { once: true });\n  });\n}\n'''
+          new = '''export interface ChatGptRateLimitWaitClock {\n  now(): number;\n  sleep(ms: number, signal?: AbortSignal): Promise<void>;\n}\n\nconst systemRateLimitWaitClock: ChatGptRateLimitWaitClock = {\n  now: Date.now,\n  sleep: (ms, signal) => new Promise<void>((resolve, reject) => {\n    if (signal?.aborted) {\n      reject(new DOMException("ChatGPT web turn aborted", "AbortError"));\n      return;\n    }\n    const timer = setTimeout(() => {\n      signal?.removeEventListener("abort", onAbort);\n      resolve();\n    }, ms);\n    timer.unref?.();\n    const onAbort = () => {\n      clearTimeout(timer);\n      signal?.removeEventListener("abort", onAbort);\n      reject(new DOMException("ChatGPT web turn aborted", "AbortError"));\n    };\n    signal?.addEventListener("abort", onAbort, { once: true });\n  }),\n};\n\nexport async function waitForChatGptRateLimitDeadline(\n  deadline: number,\n  signal?: AbortSignal,\n  clock: ChatGptRateLimitWaitClock = systemRateLimitWaitClock,\n): Promise<void> {\n  if (signal?.aborted) throw new DOMException("ChatGPT web turn aborted", "AbortError");\n  const remaining = deadline - clock.now();\n  if (remaining <= 0) return;\n  await clock.sleep(remaining, signal);\n}\n'''
+          assert old in s
+          p.write_text(s.replace(old, new))
+
+          p = Path('tests/rate-limit-backoff.test.ts')
+          s = p.read_text()
+          s = s.replace('  CHATGPT_RATE_LIMIT_RECOVERY_MS,\n', '  CHATGPT_RATE_LIMIT_RECOVERY_MS,\n  waitForChatGptRateLimitDeadline,\n')
+          s = s.replace('recoveryUntil: now + CHATGPT_RATE_LIMIT_RECOVERY_MS,', 'recoveryUntil: now + CHATGPT_RATE_LIMIT_COOLDOWN_MS + CHATGPT_RATE_LIMIT_RECOVERY_MS,')
+          s = s.replace('recoveryUntil: incidentAt + CHATGPT_RATE_LIMIT_RECOVERY_MS,', 'recoveryUntil: incidentAt + CHATGPT_RATE_LIMIT_COOLDOWN_MS + CHATGPT_RATE_LIMIT_RECOVERY_MS,')
+          s = s.replace('the recovery window slides from the most recent incident and resets after 30 clean minutes', 'the recovery window slides and lasts 30 minutes after the hard cooldown')
+          s = s.replace(
+              'expect(policy.snapshot(now + 49 * MINUTE)).toMatchObject({ spacingMs: 3 * MINUTE, tier: 1 });\n    expect(policy.snapshot(now + 50 * MINUTE)).toMatchObject({ spacingMs: 0, tier: -1, refreshRequired: false });',
+              'expect(policy.snapshot(now + 54 * MINUTE)).toMatchObject({ spacingMs: 3 * MINUTE, tier: 1 });\n    expect(policy.snapshot(now + 55 * MINUTE)).toMatchObject({ spacingMs: 0, tier: -1, refreshRequired: false });',
+          )
+          s += '''\n\ndescribe("waitForChatGptRateLimitDeadline", () => {\n  test("uses an injected clock without real-minute sleeps", async () => {\n    const sleeps: number[] = [];\n    const clock = { now: () => 10_000, sleep: async (ms: number) => { sleeps.push(ms); } };\n    await waitForChatGptRateLimitDeadline(310_000, undefined, clock);\n    expect(sleeps).toEqual([300_000]);\n  });\n});\n'''
+          p.write_text(s)
+          PY
+          git rm .github/workflows/repair-rate-limit-branch.yml
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add src/adapters/chatgpt-web/browser-worker.ts src/adapters/chatgpt-web/rate-limit-backoff.ts tests/rate-limit-backoff.test.ts
+          git commit -m 'Finish ChatGPT rate-limit recovery behavior'
+          git push origin HEAD:rate-limit-backoff
