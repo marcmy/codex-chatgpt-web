@@ -97,9 +97,9 @@ test("release installers resolve checksummed native launcher assets", () => {
   assert.ok(devProfile.includes(`WINDOWS_LAUNCHER_GUID = "${manifest.build.nsis.guid}"`));
   assert.match(windowsInstaller, /Get-ItemPropertyValue[\s\S]*InstallLocation/);
   assert.ok(windowsInstaller.includes(`Join-Path $InstallLocation "${manifest.build.productName}.exe"`));
-  assert.match(windowsInstaller, /-ArgumentList "\\/S", "\\/currentuser"/);
+  assert.match(windowsInstaller, /-ArgumentList "\/S", "\/currentuser"/);
   const packageSmoke = fs.readFileSync(path.join(launcherRoot, "scripts", "smoke-package.cjs"), "utf8");
-  assert.match(packageSmoke, /run\(installer, \["\\/S", "\\/currentuser"\]/);
+  assert.match(packageSmoke, /run\(installer, \["\/S", "\/currentuser"\]/);
   assert.match(packageSmoke, /reg\.exe[\s\S]*InstallLocation/);
 });
 
@@ -158,7 +158,7 @@ test("Linux AppImage fallback uses one owned extraction and removes it on exit",
   fs.mkdirSync(runtime);
   fs.writeFileSync(appRunSource, [
     "#!/bin/sh",
-    `printf '%s|%s' \"$APPIMAGE\" \"$1\" > ${JSON.stringify(marker)}`,
+    `printf '%s|%s' "$APPIMAGE" "$1" > ${JSON.stringify(marker)}`,
     "",
   ].join("\n"), { mode: 0o755 });
   fs.writeFileSync(appImage, [
@@ -232,7 +232,7 @@ test("macOS package smoke unregisters its staged app from LaunchServices", () =>
 test("release does not publish demo or screenshot assets", () => {
   const release = fs.readFileSync(path.join(repositoryRoot, ".github", "workflows", "release.yml"), "utf8");
   assert.doesNotMatch(release, /assets\/demo\.gif/);
-  assert.doesNotMatch(release, /release-assets\/[^^\n]*(?:demo|screenshot)/i);
+  assert.doesNotMatch(release, /release-assets\/[^\n]*(?:demo|screenshot)/i);
 });
 
 test("Windows packages embed the checksummed Bun baseline runtime for CPUs without AVX2", () => {
@@ -241,7 +241,6 @@ test("Windows packages embed the checksummed Bun baseline runtime for CPUs witho
     path.join(repositoryRoot, "scripts", "prepare-windows-baseline-bun.ps1"),
     "utf8",
   );
-
   assert.match(builder, /CODEX_CHATGPT_WEB_EMBEDDED_BUN/);
   assert.match(builder, /Embedded Bun must be/);
   assert.match(baseline, /bun-windows-x64-baseline\.zip/);
