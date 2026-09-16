@@ -97,6 +97,26 @@ export class ChatGptRateLimitBackoffPolicy {
   }
 }
 
+/** Serializes account-wide recovery decisions so concurrent turns cannot refresh or resume together. */
+export class ChatGptRateLimitSerialGate {
+  private tail: Promise<void> = Promise.resolve();
+
+  async runExclusive<T>(operation: () => Promise<T>): Promise<T> {
+    const previous = this.tail;
+    let release!: () => void;
+    this.tail = new Promise<void>(resolve => {
+      release = resolve;
+    });
+
+    await previous;
+    try {
+      return await operation();
+    } finally {
+      release();
+    }
+  }
+}
+
 /** Wait without touching the browser page. The surrounding adapter/launcher heartbeats keep running. */
 export async function waitForChatGptRateLimitDeadline(
   deadline: number,
@@ -123,3 +143,4 @@ export async function waitForChatGptRateLimitDeadline(
 
 /** Shared by every browser worker in this process because ChatGPT throttles the signed-in account. */
 export const chatGptRateLimitBackoffPolicy = new ChatGptRateLimitBackoffPolicy();
+export const chatGptRateLimitSerialGate = new ChatGptRateLimitSerialGate();

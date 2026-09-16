@@ -21,6 +21,7 @@ import {
 } from "./adapter-error";
 import {
   chatGptRateLimitBackoffPolicy,
+  chatGptRateLimitSerialGate,
   waitForChatGptRateLimitDeadline,
 } from "./rate-limit-backoff";
 import { isChatGptRateLimitError } from "./rate-limit-dialog";
@@ -131,26 +132,25 @@ async function waitForExistingRateLimitRecovery(
   surfaceId: string,
   abortSignal?: AbortSignal,
 ): Promise<void> {
-  let snapshot = chatGptRateLimitBackoffPolicy.snapshot();
-  if (snapshot.tier < 0) return;
+  await chatGptRateLimitSerialGate.runExclusive(async () => {
+    let snapshot = chatGptRateLimitBackoffPolicy.snapshot();
+    if (snapshot.tier < 0) return;
 
-  if (snapshot.refreshRequired) {
-    await waitForChatGptRateLimitDeadline(snapshot.cooldownUntil, abortSignal);
-    snapshot = chatGptRateLimitBackoffPolicy.snapshot();
     if (snapshot.refreshRequired) {
-      await refreshLauncherRateLimitedSurface(descriptorPath, surfaceId, abortSignal);
-      const refreshedAt = Date.now();
-      if (!chatGptRateLimitBackoffPolicy.recordRefresh(refreshedAt)) {
-        chatGptRateLimitBackoffPolicy.recordAction(refreshedAt);
+      await waitForChatGptRateLimitDeadline(snapshot.cooldownUntil, abortSignal);
+      snapshot = chatGptRateLimitBackoffPolicy.snapshot();
+      if (snapshot.refreshRequired) {
+        await refreshLauncherRateLimitedSurface(descriptorPath, surfaceId, abortSignal);
+        chatGptRateLimitBackoffPolicy.recordRefresh(Date.now());
       }
     }
-  }
 
-  await waitForChatGptRateLimitDeadline(
-    chatGptRateLimitBackoffPolicy.nextAllowedActionAt(),
-    abortSignal,
-  );
-  chatGptRateLimitBackoffPolicy.recordAction();
+    await waitForChatGptRateLimitDeadline(
+      chatGptRateLimitBackoffPolicy.nextAllowedActionAt(),
+      abortSignal,
+    );
+    chatGptRateLimitBackoffPolicy.recordAction();
+  });
 }
 
 /**
@@ -240,8 +240,10 @@ export function installChatGptRateLimitBackoffRuntime(): void {
       heartbeatTimer = setInterval(sendHeartbeat, LAUNCHER_TURN_HEARTBEAT_INTERVAL_MS);
       heartbeatTimer.unref?.();
 
-      await armLauncherRateLimitGuard(descriptorPath, surfaceId, turn.abortSignal);
+      // Existing recovery is checked before any page instrumentation so a newly arriving turn cannot
+      // touch ChatGPT while another turn owns the hard-cooldown/recovery sequence.
       await waitForExistingRateLimitRecovery(descriptorPath, surfaceId, turn.abortSignal);
+      await armLauncherRateLimitGuard(descriptorPath, surfaceId, turn.abortSignal);
 
       for (;;) {
         try {
@@ -260,25 +262,14 @@ export function installChatGptRateLimitBackoffRuntime(): void {
             + ` spacingMs=${snapshot.spacingMs}`,
           );
 
-          // During this wait the browser page is untouched. The launcher lease heartbeat above and
-          // the adapter heartbeat outside the helper continue independently.
-          await waitForChatGptRateLimitDeadline(snapshot.cooldownUntil, turn.abortSignal);
-          await refreshLauncherRateLimitedSurface(descriptorPath, surfaceId, turn.abortSignal);
-          const refreshedAt = Date.now();
-          if (!chatGptRateLimitBackoffPolicy.recordRefresh(refreshedAt)) {
-            chatGptRateLimitBackoffPolicy.recordAction(refreshedAt);
-          }
+          // Serialize the entire recovery sequence. This prevents concurrent incoming turns from
+          // performing their own refresh or resuming during the hard cooldown, and it spaces later
+          // website attempts from the one refresh that ended the cooldown.
+          await waitForExistingRateLimitRecovery(descriptorPath, surfaceId, turn.abortSignal);
 
-          // Once Send may have fired, replaying the prompt is unsafe. We still honor the five-minute
-          // silence and one refresh, then let the adapter's existing ambiguous-submission handling
-          // decide the turn instead of risking a duplicate request.
+          // Once Send may have fired, replaying the prompt is unsafe. Recovery is still completed,
+          // but the prompt itself is not sent again.
           if (sendActivated) throw error;
-
-          await waitForChatGptRateLimitDeadline(
-            chatGptRateLimitBackoffPolicy.nextAllowedActionAt(),
-            turn.abortSignal,
-          );
-          chatGptRateLimitBackoffPolicy.recordAction();
         }
       }
     } catch (error) {

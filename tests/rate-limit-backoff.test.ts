@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   ChatGptRateLimitBackoffPolicy,
+  ChatGptRateLimitSerialGate,
   CHATGPT_RATE_LIMIT_COOLDOWN_MS,
   CHATGPT_RATE_LIMIT_RECOVERY_MS,
 } from "../src/adapters/chatgpt-web/rate-limit-backoff";
@@ -82,5 +83,47 @@ describe("ChatGptRateLimitBackoffPolicy", () => {
     policy.recordRefresh(refreshAt);
     expect(policy.snapshot(refreshAt)).toMatchObject({ refreshRequired: false });
     expect(policy.nextAllowedActionAt(refreshAt)).toBe(refreshAt + MINUTE);
+  });
+});
+
+describe("ChatGptRateLimitSerialGate", () => {
+  test("concurrent recovery owners run one at a time in arrival order", async () => {
+    const gate = new ChatGptRateLimitSerialGate();
+    const events: string[] = [];
+    let releaseFirst!: () => void;
+    const firstBlocked = new Promise<void>(resolve => { releaseFirst = resolve; });
+
+    const first = gate.runExclusive(async () => {
+      events.push("first:start");
+      await firstBlocked;
+      events.push("first:end");
+    });
+    const second = gate.runExclusive(async () => {
+      events.push("second:start");
+      events.push("second:end");
+    });
+
+    await Promise.resolve();
+    expect(events).toEqual(["first:start"]);
+    releaseFirst();
+    await Promise.all([first, second]);
+    expect(events).toEqual(["first:start", "first:end", "second:start", "second:end"]);
+  });
+
+  test("a failed recovery owner still releases the next waiter", async () => {
+    const gate = new ChatGptRateLimitSerialGate();
+    const events: string[] = [];
+
+    const first = gate.runExclusive(async () => {
+      events.push("first");
+      throw new Error("boom");
+    });
+    const second = gate.runExclusive(async () => {
+      events.push("second");
+    });
+
+    await expect(first).rejects.toThrow("boom");
+    await second;
+    expect(events).toEqual(["first", "second"]);
   });
 });
