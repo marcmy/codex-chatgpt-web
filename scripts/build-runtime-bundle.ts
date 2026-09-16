@@ -67,7 +67,7 @@ if (!build.success) {
 }
 
 const browserHelperBuild = await Bun.build({
-  entrypoints: [join(root, "src", "adapters", "chatgpt-web", "browser-helper-main.ts")],
+  entrypoints: [join(root, "src", "adapters", "chatgpt-web", "browser-helper-entry.ts")],
   target: "node",
   format: "cjs",
   minify: true,
