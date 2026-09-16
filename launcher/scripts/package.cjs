@@ -36,10 +36,6 @@ const builderArgs = [
   "never",
 ];
 if (target === "--mac" && !env.CSC_LINK && !env.CSC_NAME) {
-  // electron-builder skips signing by default for pull-request builds. These packages intentionally
-  // use only an ad-hoc identity when no real signing credentials are present, so allowing signing
-  // here keeps the same codesign verification contract without exposing release credentials to PRs.
-  env.CSC_FOR_PULL_REQUEST = "true";
   builderArgs.push("--config.mac.identity=-");
 }
 
