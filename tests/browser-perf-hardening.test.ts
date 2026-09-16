@@ -8,12 +8,12 @@ import {
   installChatGptBrowserPerfHardening,
 } from "../src/adapters/chatgpt-web/browser-perf-hardening";
 
-const helperMain = readFileSync(
-  join(import.meta.dir, "../src/adapters/chatgpt-web/browser-helper-main.ts"),
-  "utf8",
-);
 const helperEntry = readFileSync(
   join(import.meta.dir, "../src/adapters/chatgpt-web/browser-helper-entry.ts"),
+  "utf8",
+);
+const runtimeBundle = readFileSync(
+  join(import.meta.dir, "../scripts/build-runtime-bundle.ts"),
   "utf8",
 );
 
@@ -47,15 +47,14 @@ test("browser hardening cadence stays well below frame-rate React churn", () => 
   expect(CHATGPT_RESPONSE_SNAPSHOT_MIN_INTERVAL_MS).toBeGreaterThanOrEqual(75);
 });
 
-test("packaged browser helper installs perf hardening after diagnostic output owns stderr", () => {
-  const diagnosticInstall = helperMain.indexOf("console.info = diagnostic;");
-  const hardeningInstall = helperMain.indexOf("installChatGptBrowserPerfHardening(ChatGptBrowserWorker);");
-  expect(diagnosticInstall).toBeGreaterThanOrEqual(0);
-  expect(hardeningInstall).toBeGreaterThan(diagnosticInstall);
-  expect(helperMain).toContain("browser-perf-hardening-v1");
-  // The standalone entry may still load helper-main, but must not emit pre-protocol diagnostics
-  // by installing the layer before helper-main redirects console output away from protocol stdout.
-  expect(helperEntry).not.toContain("installChatGptBrowserPerfHardening(ChatGptBrowserWorker)");
+test("packaged browser helper builds through the perf-hardening entrypoint without using protocol stdout", () => {
+  expect(runtimeBundle).toContain(
+    'entrypoints: [join(root, "src", "adapters", "chatgpt-web", "browser-helper-entry.ts")]',
+  );
+  expect(helperEntry).toContain("installChatGptBrowserPerfHardening(ChatGptBrowserWorker");
+  // The entrypoint runs before browser-helper-main owns console.*. Its diagnostics must therefore
+  // bypass console/stdout so a startup marker can never corrupt the helper JSON protocol.
+  expect(helperEntry).toContain("process.stderr.write");
 });
 
 test("browser hardening wraps hot observation paths once and preserves per-page isolation", async () => {
