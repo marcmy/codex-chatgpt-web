@@ -35,6 +35,19 @@ function compareVersions(left, right) {
   return a.prerelease.localeCompare(b.prerelease, "en", { numeric: true });
 }
 
+function isNewerUpstreamRelease(candidateVersion, currentVersion) {
+  const candidate = parseVersion(candidateVersion);
+  const current = parseVersion(currentVersion);
+  if (!candidate || !current) {
+    throw new Error(`Invalid release version comparison: ${candidateVersion} / ${currentVersion}`);
+  }
+  const sameReleaseLine = candidate.major === current.major
+    && candidate.minor === current.minor
+    && candidate.patch === current.patch;
+  if (sameReleaseLine && /^steering(?:\.|$)/i.test(current.prerelease || "")) return false;
+  return compareVersions(candidateVersion, currentVersion) > 0;
+}
+
 function releaseVersion(tagName) {
   const version = String(tagName || "").replace(/^v/, "");
   if (!parseVersion(version)) throw new Error(`GitHub returned an invalid release tag: ${tagName}`);
@@ -276,7 +289,7 @@ function createUpdateController({
     try {
       const release = await deps.fetchRelease();
       const version = releaseVersion(release?.tag_name);
-      if (compareVersions(version, currentVersion) <= 0) {
+      if (!isNewerUpstreamRelease(version, currentVersion)) {
         candidate = null;
         return transition({ status: "up-to-date" });
       }

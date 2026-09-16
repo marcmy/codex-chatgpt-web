@@ -112,6 +112,37 @@ test("startup check runs once and exposes only a newer complete release", async 
   assert.deepEqual(published.map((state) => state.status), ["checking", "available"]);
 });
 
+test("steering builds suppress the matching stock release but still offer the next upstream release", async () => {
+  const controllerFor = (tagName, assets = []) => createUpdateController({
+    currentVersion: "5.0.7-steering.1",
+    platform: "linux",
+    arch: "x64",
+    packaged: true,
+    executablePath: "/tmp/launcher",
+    runtimeExecutable: "/tmp/bun",
+    logsDirectory: "/tmp/logs",
+    dependencies: {
+      fetchRelease: async () => ({ tag_name: tagName, assets }),
+    },
+  });
+
+  assert.deepEqual(await controllerFor("v5.0.7").checkOnce(), { status: "up-to-date" });
+
+  const nextVersion = "5.0.8";
+  const assetName = `codex-web-gpt-${nextVersion}-linux-x64.AppImage`;
+  const next = controllerFor(`v${nextVersion}`, [
+    {
+      name: assetName,
+      browser_download_url: `https://github.com/miuuyy/codex-chatgpt-web/releases/download/v${nextVersion}/${assetName}`,
+    },
+    {
+      name: "checksums.txt",
+      browser_download_url: `https://github.com/miuuyy/codex-chatgpt-web/releases/download/v${nextVersion}/checksums.txt`,
+    },
+  ]);
+  assert.deepEqual(await next.checkOnce(), { status: "available", version: nextVersion });
+});
+
 test("verified update is handed to one detached worker", async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "launcher-update-test-"));
   const oldAppImage = path.join(root, "versions", "1.1.4", "Codex Web GPT.AppImage");
