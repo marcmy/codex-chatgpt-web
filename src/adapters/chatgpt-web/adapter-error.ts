@@ -6,6 +6,32 @@ export interface ChatGptWebAdapterErrorOptions {
   cause?: unknown;
 }
 
+export const CHATGPT_BROWSER_TRANSPORT_LIMIT_CODE = "chatgpt_browser_transport_limit";
+
+/**
+ * Older browser preflight call sites used the canonical OpenAI context-length code for two very
+ * different failures: exhausting the model/transaction context, and exceeding one ChatGPT browser
+ * request envelope. Codex treats `context_length_exceeded` as model-context state and may compact
+ * or replace its canonical history, so a browser-only envelope failure must never use that code.
+ *
+ * Keep this compatibility normalization at the structured adapter boundary so every existing
+ * browser path gets the same semantics. The fragments below are deliberately narrow descriptions
+ * emitted only by transport/message checks; genuine context-window and multipart-total ceilings do
+ * not match them and therefore retain `context_length_exceeded`.
+ */
+function normalizeChatGptWebAdapterErrorCode(message: string, code: string): string {
+  if (code !== "context_length_exceeded") return code;
+  const browserTransportFailure = [
+    "browser transport budget",
+    "ChatGPT composer boundary",
+    "ChatGPT browser message boundary",
+    "ChatGPT message boundary",
+    "input budget after reserving space for ChatGPT and attachments",
+    "No ChatGPT effort available to this account can carry a Bigger Context stage",
+  ].some(fragment => message.includes(fragment));
+  return browserTransportFailure ? CHATGPT_BROWSER_TRANSPORT_LIMIT_CODE : code;
+}
+
 export class ChatGptWebAdapterError extends Error {
   readonly status: number;
   readonly errorType: string;
@@ -17,7 +43,7 @@ export class ChatGptWebAdapterError extends Error {
     this.name = "ChatGptWebAdapterError";
     this.status = options.status;
     this.errorType = options.errorType;
-    this.code = options.code;
+    this.code = normalizeChatGptWebAdapterErrorCode(message, options.code);
     this.retryable = options.retryable;
   }
 }
