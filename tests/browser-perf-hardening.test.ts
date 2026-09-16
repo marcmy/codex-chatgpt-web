@@ -53,8 +53,8 @@ test("packaged browser helper builds through the perf-hardening entrypoint witho
   );
   expect(helperEntry).toContain("installChatGptBrowserPerfHardening(ChatGptBrowserWorker");
   // The entrypoint runs before browser-helper-main owns console.*. Its diagnostics must therefore
-  // bypass console/stdout so a startup marker can never corrupt the helper JSON protocol.
-  expect(helperEntry).toContain("process.stderr.write");
+  // use the closed-pipe-safe stderr writer so startup telemetry can never corrupt JSON stdout.
+  expect(helperEntry).toContain("createProcessLineWriter(stderr");
 });
 
 test("browser hardening wraps hot observation paths once and preserves per-page isolation", async () => {
