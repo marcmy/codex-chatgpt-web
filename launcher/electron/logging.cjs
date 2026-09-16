@@ -1,6 +1,10 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const { renameAtomicFile } = require("./atomic-file.cjs");
+const {
+  CompletionFenceDiagnosticGate,
+  compactCompletionFenceDiagnosticRecord,
+} = require("./completion-fence-diagnostics.cjs");
 
 const MAX_LOG_BYTES = 4 * 1024 * 1024;
 const MAX_MEMORY_RECORDS = 300;
@@ -142,14 +146,17 @@ function readRecent(filePath) {
 
 function createLogger({ filePath, publish }) {
   const records = readRecent(filePath);
+  const completionFenceGate = new CompletionFenceDiagnosticGate();
 
   const append = (level, event, detail = {}) => {
-    const record = {
+    const candidate = {
       at: new Date().toISOString(),
       level,
       event,
       detail: detail && typeof detail === "object" && !Array.isArray(detail) ? sanitize(detail) : {},
     };
+    const record = compactCompletionFenceDiagnosticRecord(candidate, completionFenceGate);
+    if (!record) return undefined;
     records.push(record);
     if (records.length > MAX_MEMORY_RECORDS) records.splice(0, records.length - MAX_MEMORY_RECORDS);
     try {
