@@ -39,13 +39,13 @@ export class ChatGptRateLimitBackoffPolicy {
     return true;
   }
 
-  /** Records the single refresh that ends hard cooldown and arms recovery spacing. */
-  recordRefresh(now = Date.now()): void {
+  /**
+   * Records the refresh that ends hard cooldown and arms recovery spacing.
+   * Returns false when another recovery owner already recorded it.
+   */
+  recordRefresh(now = Date.now()): boolean {
     this.resetIfRecovered(now);
-    if (this.tier < 0) return;
-    if (!this.refreshRequired) {
-      throw new Error("ChatGPT rate-limit recovery refresh was already recorded");
-    }
+    if (this.tier < 0 || !this.refreshRequired) return false;
     if (now < this.cooldownUntil) {
       throw new Error("ChatGPT rate-limit recovery refresh cannot run during hard cooldown");
     }
@@ -53,9 +53,10 @@ export class ChatGptRateLimitBackoffPolicy {
     this.refreshRequired = false;
     this.incidentLatched = false;
     this.lastActionAt = now;
+    return true;
   }
 
-  /** Records a later ChatGPT website mutation after the required refresh. */
+  /** Records a later logical ChatGPT website attempt after the required refresh. */
   recordAction(now = Date.now()): void {
     this.resetIfRecovered(now);
     if (this.tier < 0) return;
@@ -65,7 +66,7 @@ export class ChatGptRateLimitBackoffPolicy {
     this.lastActionAt = now;
   }
 
-  /** Earliest time the next permitted website mutation may begin. */
+  /** Earliest time the next permitted logical website attempt may begin. */
   nextAllowedActionAt(now = Date.now()): number {
     this.resetIfRecovered(now);
     if (this.tier < 0) return now;
@@ -94,6 +95,30 @@ export class ChatGptRateLimitBackoffPolicy {
     this.refreshRequired = false;
     this.incidentLatched = false;
   }
+}
+
+/** Wait without touching the browser page. The surrounding adapter/launcher heartbeats keep running. */
+export async function waitForChatGptRateLimitDeadline(
+  deadline: number,
+  signal?: AbortSignal,
+): Promise<void> {
+  if (signal?.aborted) throw new DOMException("ChatGPT web turn aborted", "AbortError");
+  const remaining = deadline - Date.now();
+  if (remaining <= 0) return;
+
+  await new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, remaining);
+    timer.unref?.();
+    const onAbort = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+      reject(new DOMException("ChatGPT web turn aborted", "AbortError"));
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
 }
 
 /** Shared by every browser worker in this process because ChatGPT throttles the signed-in account. */
