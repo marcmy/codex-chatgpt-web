@@ -1069,6 +1069,10 @@ export function createChatGptWebAdapter(
                       && handoffError.code === "compaction_source_unavailable") {
                       return await runFreshCompactionFallback("source_disappeared_before_handoff");
                     }
+                    if (handoffError instanceof ChatGptWebAdapterError
+                      && handoffError.code === "compaction_retained_handoff_not_started") {
+                      return await runFreshCompactionFallback("retained_handoff_failed_before_send");
+                    }
                     throw handoffError;
                   } finally {
                     if (handoffTimer) clearTimeout(handoffTimer);

@@ -8,6 +8,8 @@ import { extractChatGptCompactionSourceRevision } from "./environment";
 import type { ChatGptBrowserWorker } from "./browser-worker";
 import {
   ChatGptCompactionHandoffAccepted,
+  ChatGptWebAdapterError,
+  chatGptRetainedCompactionHandoffNotStartedError,
   chatGptRetainedConversationUnavailableError,
 } from "./adapter-error";
 import type { CompactionTransactionHandle } from "./compaction-transaction";
@@ -303,6 +305,7 @@ export async function requestRetainedCompactionHandoff(
   const abortBrowser = () => browserAbort.abort(operationSignal.reason);
   let transaction: CompactionTransactionHandle | undefined;
   let browser: Promise<string> | undefined;
+  let sendActivated = false;
   if (operationSignal.aborted) abortBrowser();
   else operationSignal.addEventListener("abort", abortBrowser, { once: true });
   try {
@@ -328,6 +331,7 @@ export async function requestRetainedCompactionHandoff(
       conversationKey,
       requireRetainedConversation: true,
       abortSignal: browserAbort.signal,
+      onSendActivated: () => { sendActivated = true; },
       onTextDelta: () => {},
     });
     const browserFailure = browser.then<never>(
@@ -355,6 +359,13 @@ export async function requestRetainedCompactionHandoff(
       operationSignal,
     );
     return summary;
+  } catch (error) {
+    if (!operationSignal.aborted
+      && !sendActivated
+      && !(error instanceof ChatGptWebAdapterError && error.code === "compaction_source_unavailable")) {
+      throw chatGptRetainedCompactionHandoffNotStartedError(error);
+    }
+    throw error;
   } finally {
     browserAbort.abort();
     if (transaction) broker.abortCompactionTransaction(transaction.token);

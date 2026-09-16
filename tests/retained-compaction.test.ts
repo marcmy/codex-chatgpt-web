@@ -1498,6 +1498,128 @@ test("structured compact rebuilds canonical context when its retained browser di
   }
 });
 
+test("structured compact rebuilds fresh when retained browser acquisition fails before Send", async () => {
+  const root = mkdtempSync(join(shortSocketTempRoot(), "cgw-retained-presend-failure-"));
+  const provider: CodexProviderConfig = {
+    adapter: "chatgpt-web",
+    baseUrl: `browser://retained-presend-failure-${Date.now()}`,
+    chatgptWeb: {
+      browserHost: "launcher",
+      browserHostDescriptorPath: join(root, "launcher.json"),
+      brokerSocketPath: defaultBrokerEndpoint(root),
+      localToolsEnabled: true,
+      solAvailable: true,
+      proAvailable: true,
+    },
+  };
+  const worker = ChatGptBrowserWorker.forProvider(provider);
+  const originalRun = worker.run.bind(worker);
+  const sourceRequest = request(false);
+  const namespace = chatGptWebExecutionNamespace(provider);
+  const sourceKey = `${namespace}:${chatGptTurnExecutionKey(sourceRequest)}`;
+  chatGptTurnSessions.getOrCreate(sourceKey, () => ({
+    mode: "read-only",
+    browser: Promise.resolve("source complete"),
+    physicalSettlement: Promise.resolve(),
+    trace: new ChatGptTraceFeed(),
+    text: new ChatGptTextFeed(),
+    usageInput: sourceRequest,
+    conversationKey: chatGptConversationKey(sourceRequest, namespace)!,
+    cancel() {},
+  }));
+  await chatGptTurnSessions.find(sourceKey)!.browserOutcome;
+
+  let browserStarts = 0;
+  (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = async turn => {
+    browserStarts += 1;
+    if (turn.requireRetainedConversation) {
+      throw new Error("ChatGPT browser stage timed out: browser_page");
+    }
+    const prepared = await turn.prepare();
+    expect(prepared.text).toContain("Original task");
+    prepared.release();
+    return "Fallback checkpoint after retained browser acquisition failure";
+  };
+  const events: AdapterEvent[] = [];
+  try {
+    await createChatGptWebAdapter(provider).runTurn!(
+      request(true),
+      { headers: new Headers() },
+      event => events.push(event),
+    );
+    expect(browserStarts).toBe(2);
+    expect(events.some(event => event.type === "text_delta"
+      && event.text.includes("Fallback checkpoint after retained browser acquisition failure"))).toBeTrue();
+    expect(events.at(-1)).toMatchObject({ type: "done", stopReason: "stop", endTurn: true });
+  } finally {
+    (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = originalRun;
+    chatGptTurnSessions.clear();
+    await TurnBroker.forSocket(provider.chatgptWeb!.brokerSocketPath!).close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("structured compact does not rebuild after retained Send activation becomes ambiguous", async () => {
+  const root = mkdtempSync(join(shortSocketTempRoot(), "cgw-retained-ambiguous-send-"));
+  const provider: CodexProviderConfig = {
+    adapter: "chatgpt-web",
+    baseUrl: `browser://retained-ambiguous-send-${Date.now()}`,
+    chatgptWeb: {
+      browserHost: "launcher",
+      browserHostDescriptorPath: join(root, "launcher.json"),
+      brokerSocketPath: defaultBrokerEndpoint(root),
+      localToolsEnabled: true,
+      solAvailable: true,
+      proAvailable: true,
+    },
+  };
+  const worker = ChatGptBrowserWorker.forProvider(provider);
+  const originalRun = worker.run.bind(worker);
+  const sourceRequest = request(false);
+  const namespace = chatGptWebExecutionNamespace(provider);
+  const sourceKey = `${namespace}:${chatGptTurnExecutionKey(sourceRequest)}`;
+  chatGptTurnSessions.getOrCreate(sourceKey, () => ({
+    mode: "read-only",
+    browser: Promise.resolve("source complete"),
+    physicalSettlement: Promise.resolve(),
+    trace: new ChatGptTraceFeed(),
+    text: new ChatGptTextFeed(),
+    usageInput: sourceRequest,
+    conversationKey: chatGptConversationKey(sourceRequest, namespace)!,
+    cancel() {},
+  }));
+  await chatGptTurnSessions.find(sourceKey)!.browserOutcome;
+
+  let browserStarts = 0;
+  (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = async turn => {
+    browserStarts += 1;
+    if (turn.requireRetainedConversation) {
+      await turn.onSendActivated?.();
+      throw new Error("submission evidence disappeared after Send activation");
+    }
+    throw new Error("fresh fallback must not start after ambiguous retained Send");
+  };
+  const events: AdapterEvent[] = [];
+  try {
+    await createChatGptWebAdapter(provider).runTurn!(
+      request(true),
+      { headers: new Headers() },
+      event => events.push(event),
+    );
+    expect(browserStarts).toBe(1);
+    expect(events.at(-1)).toMatchObject({
+      type: "error",
+      code: "compaction_handoff_failed",
+      retryable: false,
+    });
+  } finally {
+    (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = originalRun;
+    chatGptTurnSessions.clear();
+    await TurnBroker.forSocket(provider.chatgptWeb!.brokerSocketPath!).close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("a disappeared retained source cannot leave its fresh compaction rebuild past the shared deadline", async () => {
   const root = mkdtempSync(join(shortSocketTempRoot(), "cgw-stale-retained-deadline-"));
   const provider: CodexProviderConfig = {

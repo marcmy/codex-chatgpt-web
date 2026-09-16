@@ -107,3 +107,16 @@ export function chatGptRetainedConversationUnavailableError(): ChatGptWebAdapter
     },
   );
 }
+
+export function chatGptRetainedCompactionHandoffNotStartedError(cause: unknown): ChatGptWebAdapterError {
+  return new ChatGptWebAdapterError(
+    "The retained ChatGPT compaction handoff failed before Send was activated.",
+    {
+      status: 409,
+      errorType: "invalid_request_error",
+      code: "compaction_retained_handoff_not_started",
+      retryable: false,
+      cause,
+    },
+  );
+}
