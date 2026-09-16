@@ -7,6 +7,10 @@ export interface ChatGptWebAdapterErrorOptions {
 }
 
 export const CHATGPT_BROWSER_TRANSPORT_LIMIT_CODE = "chatgpt_browser_transport_limit";
+export const CHATGPT_DEFERRED_RESULT_UNCONSUMED_CODE = "chatgpt_deferred_result_unconsumed";
+
+const UNCONSUMED_DEFERRED_RESULT_FENCE_ERROR =
+  /^turn completion found \d+ unconsumed deferred Codex tool result\(s\) with no active MCP consumer$/;
 
 /**
  * Older browser preflight call sites used the canonical OpenAI context-length code for two very
@@ -46,6 +50,28 @@ export class ChatGptWebAdapterError extends Error {
     this.code = normalizeChatGptWebAdapterErrorCode(message, options.code);
     this.retryable = options.retryable;
   }
+}
+
+export function classifyChatGptCompletionFenceError(error: unknown): Error {
+  const normalized = error instanceof Error ? error : new Error(String(error));
+  if (!UNCONSUMED_DEFERRED_RESULT_FENCE_ERROR.test(normalized.message)) return normalized;
+  return new ChatGptWebAdapterError(
+    "ChatGPT finished before collecting a completed deferred Codex tool result.",
+    {
+      status: 502,
+      errorType: "server_error",
+      code: CHATGPT_DEFERRED_RESULT_UNCONSUMED_CODE,
+      retryable: true,
+      cause: normalized,
+    },
+  );
+}
+
+export function isChatGptDeferredResultUnconsumedError(
+  error: unknown,
+): error is ChatGptWebAdapterError {
+  return error instanceof ChatGptWebAdapterError
+    && error.code === CHATGPT_DEFERRED_RESULT_UNCONSUMED_CODE;
 }
 
 // Only the compaction owner may signal this after the broker accepts its one-shot handoff.

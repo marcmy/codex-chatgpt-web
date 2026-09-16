@@ -3,7 +3,11 @@ import { existsSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { createInterface } from "node:readline";
 import { notifyLauncherTurn, readLauncherBrowserHostDescriptor } from "../../launcher-browser-host";
-import { ChatGptCompactionHandoffAccepted, ChatGptWebAdapterError } from "./adapter-error";
+import {
+  ChatGptCompactionHandoffAccepted,
+  ChatGptWebAdapterError,
+  isChatGptDeferredResultUnconsumedError,
+} from "./adapter-error";
 import type { CompiledChatGptWebPrompt } from "./prompt";
 import type { BrowserTurn, ResolvedBrowserConfig } from "./browser-worker";
 import {
@@ -459,11 +463,36 @@ export class LauncherBrowserHelperClient {
             requestId: message.requestId,
             revision: revision ?? null,
           });
-        }).catch(error => this.abortWithLocalFailure(
-          message.id,
-          error instanceof Error ? error : new Error(String(error)),
-          pending,
-        ));
+        }).catch(error => {
+          const failure = error instanceof Error ? error : new Error(String(error));
+          if (isChatGptDeferredResultUnconsumedError(failure)) {
+            if (this.pending.get(message.id) !== pending || pending.localFailure || pending.turn.abortSignal?.aborted) return;
+            console.info(
+              `[chatgpt-web] browser turn ${message.id} phase=completion_fence_begin_resolved requestId=${message.requestId}`
+              + ` error=${failure.code}`,
+            );
+            void this.send({
+              type: "completion_fence_begin_ack",
+              id: message.id,
+              requestId: message.requestId,
+              revision: null,
+              error: {
+                name: failure.name,
+                message: failure.message,
+                status: failure.status,
+                errorType: failure.errorType,
+                code: failure.code,
+                retryable: failure.retryable,
+              },
+            }).catch(sendError => this.abortWithLocalFailure(
+              message.id,
+              sendError instanceof Error ? sendError : new Error(String(sendError)),
+              pending,
+            ));
+            return;
+          }
+          this.abortWithLocalFailure(message.id, failure, pending);
+        });
       }
       else if (message.event === "completion_fence_commit") {
         const fence = pending.turn.completionFence;

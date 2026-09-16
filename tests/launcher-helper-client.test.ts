@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { ChatGptCompactionHandoffAccepted, ChatGptWebAdapterError } from "../src/adapters/chatgpt-web/adapter-error";
 import { LauncherBrowserHelperClient } from "../src/adapters/chatgpt-web/launcher-helper-client";
 import type { BrowserTurn, ResolvedBrowserConfig } from "../src/adapters/chatgpt-web/browser-worker";
+import { ChatGptExternalTurnProgress } from "../src/adapters/chatgpt-web/turn-progress";
 import { LAUNCHER_BROWSER_HOST_KIND, LAUNCHER_BROWSER_IDLE_URL } from "../src/launcher-browser-host";
 
 const roots: string[] = [];
@@ -399,4 +400,161 @@ test("structured helper errors preserve the ChatGPT adapter failure contract", a
     code: "rate_limit_exceeded",
     retryable: true,
   });
+});
+
+test("completed deferred-result fence failures return to the helper without aborting the browser turn", async () => {
+  const client = new LauncherBrowserHelperClient({
+    appName: "Codex Native",
+    browserHost: "launcher",
+    browserHostDescriptorPath: "/durable/launcher.json",
+    storageStatePath: "/durable/unused-state.json",
+    chromeExecutablePath: "/durable/unused-chrome",
+    turnTimeoutMs: 60_000,
+    headed: true,
+    autoApproveToolCalls: false,
+  });
+  const sent: Record<string, unknown>[] = [];
+  const internal = client as unknown as {
+    child?: unknown;
+    pending: Map<string, {
+      turn: BrowserTurn;
+      resolve: (value: string) => void;
+      reject: (error: Error) => void;
+    }>;
+    send(message: Record<string, unknown>): Promise<void>;
+    handleLine(child: unknown, line: string): void;
+  };
+  const child = {};
+  internal.child = child;
+  internal.send = async message => { sent.push(message); };
+  internal.pending.set("deferred-fence-123", {
+    turn: {
+      traceId: "deferred-fence-123",
+      modelId: "gpt-5.6-sol",
+      reasoning: "high",
+      capabilities: { localToolsEnabled: true, solAvailable: true, extraHighAvailable: false, proAvailable: false },
+      prepare: async () => ({ text: "inspect", images: [], release() {} }),
+      onTextDelta() {},
+      completionFence: {
+        begin: async () => {
+          throw new ChatGptWebAdapterError(
+            "ChatGPT finished before collecting a completed deferred Codex tool result.",
+            {
+              status: 502,
+              errorType: "server_error",
+              code: "chatgpt_deferred_result_unconsumed",
+              retryable: true,
+            },
+          );
+        },
+        commit: async () => true,
+      },
+    },
+    resolve() {},
+    reject() {},
+  });
+
+  internal.handleLine(child, JSON.stringify({
+    type: "event",
+    id: "deferred-fence-123",
+    event: "completion_fence_begin",
+    requestId: 7,
+  }));
+  await Bun.sleep(0);
+
+  expect(sent).toEqual([{
+    type: "completion_fence_begin_ack",
+    id: "deferred-fence-123",
+    requestId: 7,
+    revision: null,
+    error: {
+      name: "ChatGptWebAdapterError",
+      message: "ChatGPT finished before collecting a completed deferred Codex tool result.",
+      status: 502,
+      errorType: "server_error",
+      code: "chatgpt_deferred_result_unconsumed",
+      retryable: true,
+    },
+  }]);
+});
+
+test("completed deferred-result fence failures round-trip through the real helper as structured errors", async () => {
+  const root = mkdtempSync(join(tmpdir(), "codex-helper-deferred-fence-"));
+  roots.push(root);
+  const helper = join(root, "helper.ts");
+  writeFileSync(helper, `
+    import { ChatGptBrowserWorker } from ${JSON.stringify(new URL("../src/adapters/chatgpt-web/browser-worker.ts", import.meta.url).href)};
+    ChatGptBrowserWorker.prototype.run = async turn => {
+      if (!turn.completionFence) throw new Error("completion fence was not forwarded");
+      await turn.completionFence.begin();
+      throw new Error("completion fence unexpectedly resolved");
+    };
+    await import(${JSON.stringify(new URL("../src/adapters/chatgpt-web/browser-helper-main.ts", import.meta.url).href)});
+  `, { mode: 0o700 });
+  const descriptorPath = join(root, "launcher.json");
+  writeFileSync(descriptorPath, `${JSON.stringify({
+    version: 3,
+    kind: LAUNCHER_BROWSER_HOST_KIND,
+    profile: "production",
+    pid: process.pid,
+    endpoint: "http://127.0.0.1:39001",
+    control: {
+      endpoint: "http://127.0.0.1:39002",
+      token: "launcher-control-token-0123456789abcdefghijklmnop",
+    },
+    helper: { executable: process.execPath, script: helper },
+    partition: "persist:codex-web-gpt-chatgpt",
+    idleUrl: LAUNCHER_BROWSER_IDLE_URL,
+    surfaceId: "launcher_surface_id_0123456789AB",
+    surfaceTargets: { launcher_surface_id_0123456789AB: "native-owned-target" },
+    createdAt: new Date().toISOString(),
+  })}\n`, { mode: 0o600 });
+  const progress = new ChatGptExternalTurnProgress();
+  const client = new LauncherBrowserHelperClient({
+    appName: "Codex Native2",
+    browserHost: "launcher",
+    browserHostDescriptorPath: descriptorPath,
+    browserHelperScriptPath: helper,
+    storageStatePath: join(root, "unused-state.json"),
+    chromeExecutablePath: join(root, "unused-chrome"),
+    turnTimeoutMs: 60_000,
+    headed: true,
+    autoApproveToolCalls: false,
+  });
+  try {
+    const error = await client.run({
+      traceId: "deferred-fence-roundtrip",
+      modelId: "gpt-5.6-sol",
+      reasoning: "high",
+      capabilities: { localToolsEnabled: true, solAvailable: true, extraHighAvailable: false, proAvailable: false },
+      prepare: async () => ({ text: "inspect", images: [], release() {} }),
+      onTextDelta() {},
+      externalProgress: progress,
+      completionFence: {
+        begin: async () => {
+          throw new ChatGptWebAdapterError(
+            "ChatGPT finished before collecting a completed deferred Codex tool result.",
+            {
+              status: 502,
+              errorType: "server_error",
+              code: "chatgpt_deferred_result_unconsumed",
+              retryable: true,
+            },
+          );
+        },
+        commit: async () => true,
+      },
+    }).then(() => undefined, failure => failure);
+
+    expect(error).toBeInstanceOf(ChatGptWebAdapterError);
+    expect(error).toMatchObject({
+      message: "ChatGPT finished before collecting a completed deferred Codex tool result.",
+      status: 502,
+      errorType: "server_error",
+      code: "chatgpt_deferred_result_unconsumed",
+      retryable: true,
+    });
+  } finally {
+    await client.close();
+  }
 });

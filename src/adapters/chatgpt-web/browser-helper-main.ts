@@ -59,11 +59,27 @@ interface SmokeMessage {
 }
 
 type MaintenanceMessage = VerifyMessage | InspectMessage | SmokeMessage;
+
+interface CompletionFenceAdapterErrorPayload {
+  name: "ChatGptWebAdapterError";
+  message: string;
+  status: number;
+  errorType: string;
+  code: string;
+  retryable: boolean;
+}
+
 type InputMessage = RunMessage
   | MaintenanceMessage
   | { type: "prepared_selected_ack"; id: string; prepared: CompiledChatGptWebPrompt }
   | { type: "send_activation_ack"; id: string }
-  | { type: "completion_fence_begin_ack"; id: string; requestId: number; revision: number | null }
+  | {
+      type: "completion_fence_begin_ack";
+      id: string;
+      requestId: number;
+      revision: number | null;
+      error?: CompletionFenceAdapterErrorPayload;
+    }
   | { type: "completion_fence_commit_ack"; id: string; requestId: number; committed: boolean }
   | { type: "progress"; id: string; snapshot: ChatGptExternalTurnProgressSnapshot }
   | { type: "abort"; id: string; reason?: "compaction_handoff_accepted" }
@@ -101,6 +117,32 @@ function diagnosticErrorChain(error: unknown, seen = new Set<unknown>()): string
     return `${error.name}: ${error.message}${cause}`;
   }
   return String(error);
+}
+
+function parseCompletionFenceAdapterError(value: unknown): ChatGptWebAdapterError | undefined {
+  if (value === undefined) return undefined;
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("Browser helper completion fence error payload is invalid");
+  }
+  const payload = value as Record<string, unknown>;
+  if (payload.name !== "ChatGptWebAdapterError"
+    || typeof payload.message !== "string"
+    || !Number.isInteger(payload.status)
+    || (payload.status as number) < 400
+    || (payload.status as number) > 599
+    || typeof payload.errorType !== "string"
+    || !payload.errorType
+    || typeof payload.code !== "string"
+    || !payload.code
+    || typeof payload.retryable !== "boolean") {
+    throw new Error("Browser helper completion fence error payload is invalid");
+  }
+  return new ChatGptWebAdapterError(payload.message, {
+    status: payload.status as number,
+    errorType: payload.errorType,
+    code: payload.code,
+    retryable: payload.retryable,
+  });
 }
 
 const abortControllers = new Map<string, AbortController>();
@@ -453,8 +495,21 @@ input.on("line", line => {
     sendActivationWaiters.delete(message.id);
     waiter.resolve();
   } else if (message.type === "completion_fence_begin_ack") {
+    let fenceError: ChatGptWebAdapterError | undefined;
+    try {
+      fenceError = parseCompletionFenceAdapterError(message.error);
+    } catch (error) {
+      writeProtocol({
+        type: "error",
+        id: message.id,
+        message: error instanceof Error ? error.message : String(error),
+      });
+      abortControllers.get(message.id)?.abort();
+      return;
+    }
     if (!Number.isSafeInteger(message.requestId) || message.requestId <= 0
-      || (message.revision !== null && (!Number.isSafeInteger(message.revision) || message.revision < 0))) {
+      || (message.revision !== null && (!Number.isSafeInteger(message.revision) || message.revision < 0))
+      || (fenceError !== undefined && message.revision !== null)) {
       writeProtocol({ type: "error", id: message.id, message: "Browser helper completion fence revision is invalid" });
       abortControllers.get(message.id)?.abort();
       return;
@@ -464,8 +519,12 @@ input.on("line", line => {
     completionFenceBeginWaiters.delete(message.id);
     diagnostic(
       `[chatgpt-web] browser turn ${message.id} phase=completion_fence_begin_acknowledged requestId=${message.requestId}`
-      + ` revision=${message.revision ?? "none"}`,
+      + (fenceError ? ` error=${fenceError.code}` : ` revision=${message.revision ?? "none"}`),
     );
+    if (fenceError) {
+      waiter.reject(fenceError);
+      return;
+    }
     waiter.resolve(message.revision ?? undefined);
   } else if (message.type === "completion_fence_commit_ack") {
     if (!Number.isSafeInteger(message.requestId) || message.requestId <= 0

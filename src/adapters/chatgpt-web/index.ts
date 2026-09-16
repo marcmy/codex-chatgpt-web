@@ -20,7 +20,7 @@ import {
 import { namespacedToolName, type AdapterEvent, type CodexContentPart, type CodexParsedRequest, type CodexProviderConfig, type CodexToolResultMessage, type CodexUsage } from "../../types";
 import type { ProviderAdapter } from "../base";
 import { parseDataUrl } from "../image";
-import { ChatGptWebAdapterError } from "./adapter-error";
+import { ChatGptWebAdapterError, classifyChatGptCompletionFenceError } from "./adapter-error";
 import { ChatGptBrowserWorker } from "./browser-worker";
 import { extractChatGptTurnEnvironment, extractChatGptTurnIdentity, priorChatGptAbortedTurnIds } from "./environment";
 import { CHATGPT_WEB_LUNA_MODEL_ID, resolveChatGptWebModelMode, type ChatGptWebCapabilities } from "./model";
@@ -758,7 +758,13 @@ export function createChatGptWebAdapter(
       onTextDelta: delta => text.push(delta),
       externalProgress,
       completionFence: {
-        begin: async () => broker.beginCompletionFence(await token.promise),
+        begin: async () => {
+          try {
+            return await broker.beginCompletionFence(await token.promise);
+          } catch (error) {
+            throw classifyChatGptCompletionFenceError(error);
+          }
+        },
         commit: async revision => broker.commitCompletionFence(await token.promise, revision),
       },
       ...(captureLunaCheckpoint ? {

@@ -82,6 +82,7 @@ import {
   chatGptBrowserTabClosedError,
   chatGptRetainedConversationUnavailableError,
   chatGptStoppedThinkingError,
+  isChatGptDeferredResultUnconsumedError,
 } from "./adapter-error";
 import {
   ChatGptLunaCheckpointStream,
@@ -4307,14 +4308,17 @@ export class ChatGptBrowserWorker {
     } finally {
       if (heartbeatTimer) clearInterval(heartbeatTimer);
       try {
+        const retainRecoverableFailure = terminal === "failed"
+          && isChatGptDeferredResultUnconsumedError(originalError);
         const release = await notifyLauncherTurn(this.config.browserHostDescriptorPath!, {
           phase: "end",
           traceId: turn.traceId,
           helperPid: process.pid,
           status: terminal,
           ...(terminalMessage ? { message: terminalMessage } : {}),
-          ...(terminal === "completed" && turn.retainConversation ? { retain: true } : {}),
-          ...(terminal === "completed" && (turn.nativeConnector || turn.capabilities.localToolsEnabled)
+          ...((terminal === "completed" || retainRecoverableFailure) && turn.retainConversation ? { retain: true } : {}),
+          ...((terminal === "completed" || retainRecoverableFailure)
+            && (turn.nativeConnector || turn.capabilities.localToolsEnabled)
             ? { connectorBound: true }
             : {}),
         });

@@ -2609,6 +2609,54 @@ test("a completed keyed turn is retained for thirty minutes and preserves its ac
   assert.equal(fixture.turnTabs.has(tab.id), true);
 });
 
+test("an explicitly retained failed keyed turn stays reusable", async () => {
+  const tab = {
+    id: "tab-recoverable-failure",
+    surfaceId: "surface-recoverable-failure",
+    traceId: "trace_recoverable_failure",
+    conversationKey: "d".repeat(64),
+    connectorIdentity: "Codex Native2",
+    connectorBound: true,
+    helperPid: 777,
+    status: "running",
+    loading: true,
+    view: { webContents: {
+      isDestroyed: () => false,
+      setBackgroundThrottling() {},
+      close() {},
+    } },
+  };
+  const fixture = Object.assign(Object.create(BrowserHost.prototype), {
+    turnTabs: new Map([[tab.id, tab]]),
+    closedTurnOwners: new Map(),
+    userCancelledTurnOwners: new Map(),
+    selectedTabId: tab.id,
+    syncViewVisibility() {},
+    writeDescriptor() {},
+    publishState() {},
+    snapshot: () => ({ tabs: [] }),
+    hide() {},
+    logger: { info() {} },
+  });
+
+  const result = await BrowserHost.prototype.endTurn.call(
+    fixture,
+    tab.traceId,
+    tab.helperPid,
+    "failed",
+    true,
+    "completed deferred result was not collected",
+    true,
+    true,
+  );
+
+  assert.deepEqual(result, { cancelledByUser: false });
+  assert.equal(fixture.turnTabs.get(tab.id), tab);
+  assert.equal(tab.status, "ready");
+  assert.equal(tab.connectorBound, true);
+  assert.equal(Number.isFinite(tab.lastHeartbeatAt), true);
+});
+
 test("a retained browser tab expires at thirty minutes", () => {
   const removed = [];
   const tab = {

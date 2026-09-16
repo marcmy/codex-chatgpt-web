@@ -2376,22 +2376,28 @@ class BrowserHost {
       );
     }
     const cancelledByUser = this.userCancelledTurnOwners.get(traceId) === helperPid;
-    tab.status = status === "completed" ? "ready" : status === "aborted" ? "aborted" : "error";
+    const retainTerminalConversation = !cancelledByUser
+      && status !== "aborted"
+      && retain
+      && tab.conversationKey
+      && (!tab.connectorIdentity || connectorBound);
+    tab.status = retainTerminalConversation || status === "completed"
+      ? "ready"
+      : status === "aborted" ? "aborted" : "error";
     this.syncPowerSaveBlocker();
-    tab.message = status === "completed" ? "Task completed" : message || `ChatGPT turn ${status}`;
+    tab.message = status === "completed"
+      ? "Task completed"
+      : retainTerminalConversation ? "Task ready to resume" : message || `ChatGPT turn ${status}`;
     tab.loading = false;
     if (!tab.view.webContents.isDestroyed()) tab.view.webContents.setBackgroundThrottling(true);
     if (status === "completed") {
       this.logger.info("browser.tab_completed", { tabId: tab.id, traceId });
     }
-    if (status === "completed"
-      && retain
-      && tab.conversationKey
-      && (!tab.connectorIdentity || connectorBound)) {
+    if (retainTerminalConversation) {
       tab.connectorBound = connectorBound === true;
       tab.lastHeartbeatAt = Date.now();
       if (hideAfterTurn && !this.activeTraceId) this.hide();
-      this.logger.info("browser.tab_retained", { tabId: tab.id, traceId });
+      this.logger.info("browser.tab_retained", { tabId: tab.id, traceId, status });
       this.publishState?.(this.snapshot());
       this.writeDescriptor();
       return { cancelledByUser };

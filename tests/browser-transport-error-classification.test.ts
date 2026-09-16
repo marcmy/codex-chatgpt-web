@@ -3,7 +3,11 @@ import {
   assertChatGptWebInputWithinLimits,
   resolveChatGptWebMultipartStagingMode,
 } from "../src/adapters/chatgpt-web/browser-worker";
-import { ChatGptWebAdapterError } from "../src/adapters/chatgpt-web/adapter-error";
+import {
+  CHATGPT_DEFERRED_RESULT_UNCONSUMED_CODE,
+  ChatGptWebAdapterError,
+  classifyChatGptCompletionFenceError,
+} from "../src/adapters/chatgpt-web/adapter-error";
 import { CHATGPT_WEB_MODEL_ID } from "../src/adapters/chatgpt-web/model";
 
 const plusCapabilities = {
@@ -56,4 +60,21 @@ test("genuine total model context overflow keeps the canonical context error", (
     plusCapabilities,
   ));
   expect(context.code).toBe("context_length_exceeded");
+});
+
+test("only a completed unconsumed deferred result becomes a retryable fence recovery", () => {
+  const brokerFailure = new Error(
+    "turn completion found 1 unconsumed deferred Codex tool result(s) with no active MCP consumer",
+  );
+  const classified = classifyChatGptCompletionFenceError(brokerFailure);
+  expect(classified).toBeInstanceOf(ChatGptWebAdapterError);
+  expect(classified).toMatchObject({
+    code: CHATGPT_DEFERRED_RESULT_UNCONSUMED_CODE,
+    retryable: true,
+    status: 502,
+    errorType: "server_error",
+  });
+
+  const unrelated = new Error("turn token is invalid or expired");
+  expect(classifyChatGptCompletionFenceError(unrelated)).toBe(unrelated);
 });
