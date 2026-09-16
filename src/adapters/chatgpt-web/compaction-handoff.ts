@@ -306,6 +306,14 @@ export async function requestRetainedCompactionHandoff(
   let transaction: CompactionTransactionHandle | undefined;
   let browser: Promise<string> | undefined;
   let sendActivated = false;
+  const classifyBrowserFailure = (error: unknown): unknown => {
+    if (!operationSignal.aborted
+      && !sendActivated
+      && !(error instanceof ChatGptWebAdapterError && error.code === "compaction_source_unavailable")) {
+      return chatGptRetainedCompactionHandoffNotStartedError(error);
+    }
+    return error;
+  };
   if (operationSignal.aborted) abortBrowser();
   else operationSignal.addEventListener("abort", abortBrowser, { once: true });
   try {
@@ -318,22 +326,26 @@ export async function requestRetainedCompactionHandoff(
     transaction = await withCompactionAbort(transactionPromise, operationSignal);
     const instruction = structuredCompactionHandoffInstruction(transaction);
     const prepare = async () => ({ text: instruction, images: [], release: () => {} });
-    browser = worker.run({
-      traceId,
-      modelId: parsed.modelId,
-      reasoning: parsed.options.reasoning,
-      // The retained connector exposes only the one-shot control token embedded above. It does
-      // not receive an ordinary Codex tool environment for this checkpoint message.
-      capabilities: { ...capabilities, localToolsEnabled: false },
-      nativeConnector: true,
-      prepare,
-      prepareResume: prepare,
-      conversationKey,
-      requireRetainedConversation: true,
-      abortSignal: browserAbort.signal,
-      onSendActivated: () => { sendActivated = true; },
-      onTextDelta: () => {},
-    });
+    try {
+      browser = worker.run({
+        traceId,
+        modelId: parsed.modelId,
+        reasoning: parsed.options.reasoning,
+        // The retained connector exposes only the one-shot control token embedded above. It does
+        // not receive an ordinary Codex tool environment for this checkpoint message.
+        capabilities: { ...capabilities, localToolsEnabled: false },
+        nativeConnector: true,
+        prepare,
+        prepareResume: prepare,
+        conversationKey,
+        requireRetainedConversation: true,
+        abortSignal: browserAbort.signal,
+        onSendActivated: () => { sendActivated = true; },
+        onTextDelta: () => {},
+      });
+    } catch (error) {
+      throw classifyBrowserFailure(error);
+    }
     const browserFailure = browser.then<never>(
       () => {
         console.warn(
@@ -341,7 +353,7 @@ export async function requestRetainedCompactionHandoff(
         );
         throw chatGptRetainedConversationUnavailableError();
       },
-      error => { throw error; },
+      error => { throw classifyBrowserFailure(error); },
     );
     const summary = await withCompactionAbort(
       Promise.race([
@@ -359,13 +371,6 @@ export async function requestRetainedCompactionHandoff(
       operationSignal,
     );
     return summary;
-  } catch (error) {
-    if (!operationSignal.aborted
-      && !sendActivated
-      && !(error instanceof ChatGptWebAdapterError && error.code === "compaction_source_unavailable")) {
-      throw chatGptRetainedCompactionHandoffNotStartedError(error);
-    }
-    throw error;
   } finally {
     browserAbort.abort();
     if (transaction) broker.abortCompactionTransaction(transaction.token);
