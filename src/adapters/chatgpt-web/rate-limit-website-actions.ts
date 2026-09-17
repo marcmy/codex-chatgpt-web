@@ -3,6 +3,7 @@ import type { Page } from "playwright-core";
 import { chatGptWebsiteActionGate } from "./rate-limit-backoff";
 
 const websiteActionContext = new AsyncLocalStorage<boolean>();
+const websiteTurnContext = new AsyncLocalStorage<{ signal?: AbortSignal }>();
 const patchedPrototypes = new WeakSet<object>();
 
 /** Public Playwright methods that actively manipulate the ChatGPT website. */
@@ -52,7 +53,15 @@ function actionSignal(args: unknown[]): AbortSignal | undefined {
     const signal = (candidate as { signal?: unknown }).signal;
     if (signal instanceof AbortSignal) return signal;
   }
-  return undefined;
+  return websiteTurnContext.getStore()?.signal;
+}
+
+/** Bind intercepted actions to the owning browser turn so recovery queue waits remain cancellable. */
+export function runWithChatGptWebsiteActionAbortSignal<T>(
+  signal: AbortSignal | undefined,
+  action: () => Promise<T>,
+): Promise<T> {
+  return websiteTurnContext.run({ signal }, action);
 }
 
 /**
@@ -66,7 +75,7 @@ export function runChatGptWebsiteAction<T>(
   if (websiteActionContext.getStore()) return action();
   return chatGptWebsiteActionGate.runAction(
     () => websiteActionContext.run(true, action),
-    signal,
+    signal ?? websiteTurnContext.getStore()?.signal,
   );
 }
 
@@ -77,11 +86,11 @@ export function runChatGptRecoveryRefresh(
 ): Promise<boolean> {
   return chatGptWebsiteActionGate.runRecoveryRefresh(
     () => websiteActionContext.run(true, action),
-    signal,
+    signal ?? websiteTurnContext.getStore()?.signal,
   );
 }
 
-type AsyncMethod = (...args: any[]) => Promise<unknown>;
+type AsyncMethod = (...args: unknown[]) => Promise<unknown>;
 
 function patchActiveMethod(prototype: object, methodName: string): void {
   const descriptor = Object.getOwnPropertyDescriptor(prototype, methodName);
