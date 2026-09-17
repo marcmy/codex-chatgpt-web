@@ -246,8 +246,11 @@ describe("ChatGptWebsiteActionGate", () => {
     const events: string[] = [];
     let releaseFirst!: () => void;
     const blocked = new Promise<void>(resolve => { releaseFirst = resolve; });
+    let signalFirstStarted!: () => void;
+    const firstStarted = new Promise<void>(resolve => { signalFirstStarted = resolve; });
     const first = gate.runAction(async () => {
       events.push("first:start");
+      signalFirstStarted();
       await blocked;
       events.push("first:end");
     }, undefined, clock);
@@ -255,8 +258,7 @@ describe("ChatGptWebsiteActionGate", () => {
       events.push("second:start");
     }, undefined, clock);
 
-    await Promise.resolve();
-    await Promise.resolve();
+    await firstStarted;
     expect(events).toEqual(["first:start"]);
     releaseFirst();
     await Promise.all([first, second]);
