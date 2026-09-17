@@ -2,6 +2,60 @@ export const CHATGPT_RATE_LIMIT_COOLDOWN_MS = 5 * 60_000;
 export const CHATGPT_RATE_LIMIT_RECOVERY_MS = 30 * 60_000;
 export const CHATGPT_RATE_LIMIT_SPACING_MS = [1, 3, 5, 7, 10].map(minutes => minutes * 60_000) as readonly number[];
 
+export const CHATGPT_RATE_LIMIT_TEST_COOLDOWN_MS = 5_000;
+export const CHATGPT_RATE_LIMIT_TEST_RECOVERY_MS = 60_000;
+export const CHATGPT_RATE_LIMIT_TEST_SPACING_MS = [1, 3, 5, 7, 10].map(seconds => seconds * 1_000) as readonly number[];
+
+export interface ChatGptRateLimitBackoffConfig {
+  cooldownMs: number;
+  recoveryMs: number;
+  spacingMs: readonly number[];
+  testMode: boolean;
+}
+
+export const CHATGPT_RATE_LIMIT_PRODUCTION_CONFIG: ChatGptRateLimitBackoffConfig = Object.freeze({
+  cooldownMs: CHATGPT_RATE_LIMIT_COOLDOWN_MS,
+  recoveryMs: CHATGPT_RATE_LIMIT_RECOVERY_MS,
+  spacingMs: CHATGPT_RATE_LIMIT_SPACING_MS,
+  testMode: false,
+});
+
+export const CHATGPT_RATE_LIMIT_TEST_CONFIG: ChatGptRateLimitBackoffConfig = Object.freeze({
+  cooldownMs: CHATGPT_RATE_LIMIT_TEST_COOLDOWN_MS,
+  recoveryMs: CHATGPT_RATE_LIMIT_TEST_RECOVERY_MS,
+  spacingMs: CHATGPT_RATE_LIMIT_TEST_SPACING_MS,
+  testMode: true,
+});
+
+export type ChatGptRateLimitTestTriggerMode = "off" | "once" | "each-turn";
+
+/**
+ * Test mode is deliberately an all-or-nothing preset rather than user-provided durations. That
+ * keeps production constants immutable and prevents a typo in an environment variable from
+ * silently changing the real account backoff policy.
+ */
+export function resolveChatGptRateLimitRuntimeConfig(
+  env: Readonly<Record<string, string | undefined>> = process.env,
+): ChatGptRateLimitBackoffConfig {
+  return env.CODEX_WEB_RATE_LIMIT_TEST === "1"
+    ? CHATGPT_RATE_LIMIT_TEST_CONFIG
+    : CHATGPT_RATE_LIMIT_PRODUCTION_CONFIG;
+}
+
+export function resolveChatGptRateLimitTestTriggerMode(
+  env: Readonly<Record<string, string | undefined>> = process.env,
+): ChatGptRateLimitTestTriggerMode {
+  if (env.CODEX_WEB_RATE_LIMIT_TEST !== "1") return "off";
+  switch (env.CODEX_WEB_RATE_LIMIT_TEST_TRIGGER?.trim().toLowerCase()) {
+    case "once":
+      return "once";
+    case "each-turn":
+      return "each-turn";
+    default:
+      return "off";
+  }
+}
+
 export interface ChatGptRateLimitBackoffSnapshot {
   cooldownUntil: number;
   recoveryUntil: number;
@@ -54,14 +108,23 @@ export class ChatGptRateLimitBackoffPolicy {
   private refreshRequired = false;
   private incidentLatched = false;
 
+  constructor(private readonly config: ChatGptRateLimitBackoffConfig = CHATGPT_RATE_LIMIT_PRODUCTION_CONFIG) {
+    if (config.cooldownMs < 0 || config.recoveryMs <= 0 || config.spacingMs.length === 0) {
+      throw new Error("Invalid ChatGPT rate-limit backoff configuration");
+    }
+    if (config.spacingMs.some(ms => ms < 0)) {
+      throw new Error("Invalid ChatGPT rate-limit spacing configuration");
+    }
+  }
+
   /** Returns true only when this observation starts a new rate-limit incident. */
   recordRateLimit(now = Date.now()): boolean {
     this.resetIfRecovered(now);
     if (this.incidentLatched) return false;
 
-    this.tier = Math.min(this.tier + 1, CHATGPT_RATE_LIMIT_SPACING_MS.length - 1);
-    this.cooldownUntil = now + CHATGPT_RATE_LIMIT_COOLDOWN_MS;
-    this.recoveryUntil = now + CHATGPT_RATE_LIMIT_COOLDOWN_MS + CHATGPT_RATE_LIMIT_RECOVERY_MS;
+    this.tier = Math.min(this.tier + 1, this.config.spacingMs.length - 1);
+    this.cooldownUntil = now + this.config.cooldownMs;
+    this.recoveryUntil = now + this.config.cooldownMs + this.config.recoveryMs;
     this.refreshRequired = true;
     this.incidentLatched = true;
     this.lastActionAt = undefined;
@@ -100,7 +163,7 @@ export class ChatGptRateLimitBackoffPolicy {
     this.resetIfRecovered(now);
     if (this.tier < 0) return now;
     if (this.refreshRequired) return Math.max(now, this.cooldownUntil);
-    const spacingMs = CHATGPT_RATE_LIMIT_SPACING_MS[this.tier]!;
+    const spacingMs = this.config.spacingMs[this.tier]!;
     return Math.max(now, (this.lastActionAt ?? now) + spacingMs);
   }
 
@@ -109,7 +172,7 @@ export class ChatGptRateLimitBackoffPolicy {
     return {
       cooldownUntil: this.cooldownUntil,
       recoveryUntil: this.recoveryUntil,
-      spacingMs: this.tier >= 0 ? CHATGPT_RATE_LIMIT_SPACING_MS[this.tier]! : 0,
+      spacingMs: this.tier >= 0 ? this.config.spacingMs[this.tier]! : 0,
       tier: this.tier,
       refreshRequired: this.refreshRequired,
     };
@@ -365,7 +428,8 @@ export class ChatGptWebsiteActionGate {
 }
 
 /** Shared by every browser worker in this process because ChatGPT throttles the signed-in account. */
-export const chatGptRateLimitBackoffPolicy = new ChatGptRateLimitBackoffPolicy();
+export const chatGptRateLimitRuntimeConfig = resolveChatGptRateLimitRuntimeConfig();
+export const chatGptRateLimitBackoffPolicy = new ChatGptRateLimitBackoffPolicy(chatGptRateLimitRuntimeConfig);
 export const chatGptRateLimitSerialGate = new ChatGptRateLimitSerialGate();
 export const chatGptWebsiteActionGate = new ChatGptWebsiteActionGate(
   chatGptRateLimitBackoffPolicy,
