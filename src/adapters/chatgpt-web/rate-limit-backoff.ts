@@ -10,6 +10,34 @@ export interface ChatGptRateLimitBackoffSnapshot {
   refreshRequired: boolean;
 }
 
+function chatGptRateLimitAbortError(): DOMException {
+  return new DOMException("ChatGPT web turn aborted", "AbortError");
+}
+
+function waitForPromiseOrAbort<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return promise;
+  if (signal.aborted) return Promise.reject(chatGptRateLimitAbortError());
+
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => {
+      cleanup();
+      reject(chatGptRateLimitAbortError());
+    };
+    const cleanup = () => signal.removeEventListener("abort", onAbort);
+    signal.addEventListener("abort", onAbort, { once: true });
+    promise.then(
+      value => {
+        cleanup();
+        resolve(value);
+      },
+      error => {
+        cleanup();
+        reject(error);
+      },
+    );
+  });
+}
+
 /**
  * Account-wide recovery state for ChatGPT's "Too many requests" browser dialog.
  *
@@ -102,15 +130,23 @@ export class ChatGptRateLimitBackoffPolicy {
 export class ChatGptRateLimitSerialGate {
   private tail: Promise<void> = Promise.resolve();
 
-  async runExclusive<T>(operation: () => Promise<T>): Promise<T> {
+  async runExclusive<T>(operation: () => Promise<T>, signal?: AbortSignal): Promise<T> {
     const previous = this.tail;
     let release!: () => void;
     this.tail = new Promise<void>(resolve => {
       release = resolve;
     });
 
-    await previous;
     try {
+      await waitForPromiseOrAbort(previous, signal);
+    } catch (error) {
+      // Preserve FIFO progress even when this queued owner is cancelled before acquiring the gate.
+      void previous.then(release, release);
+      throw error;
+    }
+
+    try {
+      if (signal?.aborted) throw chatGptRateLimitAbortError();
       return await operation();
     } finally {
       release();
@@ -128,7 +164,7 @@ const systemRateLimitWaitClock: ChatGptRateLimitWaitClock = {
   now: Date.now,
   sleep: (ms, signal) => new Promise<void>((resolve, reject) => {
     if (signal?.aborted) {
-      reject(new DOMException("ChatGPT web turn aborted", "AbortError"));
+      reject(chatGptRateLimitAbortError());
       return;
     }
     const timer = setTimeout(() => {
@@ -139,7 +175,7 @@ const systemRateLimitWaitClock: ChatGptRateLimitWaitClock = {
     const onAbort = () => {
       clearTimeout(timer);
       signal?.removeEventListener("abort", onAbort);
-      reject(new DOMException("ChatGPT web turn aborted", "AbortError"));
+      reject(chatGptRateLimitAbortError());
     };
     signal?.addEventListener("abort", onAbort, { once: true });
   }),
@@ -150,10 +186,15 @@ export async function waitForChatGptRateLimitDeadline(
   signal?: AbortSignal,
   clock: ChatGptRateLimitWaitClock = systemRateLimitWaitClock,
 ): Promise<void> {
-  if (signal?.aborted) throw new DOMException("ChatGPT web turn aborted", "AbortError");
+  if (signal?.aborted) throw chatGptRateLimitAbortError();
   const remaining = deadline - clock.now();
   if (remaining <= 0) return;
   await clock.sleep(remaining, signal);
+}
+
+interface RefreshBarrier {
+  promise: Promise<void>;
+  resolve: () => void;
 }
 
 /**
@@ -171,6 +212,7 @@ export class ChatGptWebsiteActionGate {
     remainingMs: number;
     clock: ChatGptRateLimitWaitClock;
   } | undefined;
+  private refreshBarrier: RefreshBarrier | undefined;
 
   constructor(
     private readonly policy: ChatGptRateLimitBackoffPolicy,
@@ -194,27 +236,42 @@ export class ChatGptWebsiteActionGate {
     signal?: AbortSignal,
     clock: ChatGptRateLimitWaitClock = systemRateLimitWaitClock,
   ): Promise<T> {
-    if (signal?.aborted) throw new DOMException("ChatGPT web turn aborted", "AbortError");
+    if (signal?.aborted) throw chatGptRateLimitAbortError();
 
     // Do not serialize normal browser use. Once an incident is active every later action enters the
     // shared serial section, which owns the wait and the operation until completion.
     if (this.policy.snapshot(clock.now()).tier < 0) return action();
 
-    return this.serial.runExclusive(async () => {
-      if (signal?.aborted) throw new DOMException("ChatGPT web turn aborted", "AbortError");
-      const snapshot = this.policy.snapshot(clock.now());
-      if (snapshot.tier < 0) return action();
-      if (snapshot.refreshRequired) {
-        throw new Error("ChatGPT rate-limit recovery requires its refresh before other website actions");
+    for (;;) {
+      const beforeGate = this.policy.snapshot(clock.now());
+      if (beforeGate.tier < 0) return action();
+      if (beforeGate.refreshRequired) {
+        await this.waitForRefresh(signal);
+        continue;
       }
 
-      await this.waitTracked(this.policy.nextAllowedActionAt(clock.now()), signal, clock);
-      try {
-        return await action();
-      } finally {
-        this.policy.recordAction(clock.now());
-      }
-    });
+      const result = await this.serial.runExclusive(async () => {
+        if (signal?.aborted) throw chatGptRateLimitAbortError();
+        const snapshot = this.policy.snapshot(clock.now());
+        if (snapshot.tier < 0) {
+          return { kind: "value" as const, value: await action() };
+        }
+        if (snapshot.refreshRequired) {
+          this.ensureRefreshBarrier();
+          return { kind: "refresh" as const };
+        }
+
+        await this.waitTracked(this.policy.nextAllowedActionAt(clock.now()), signal, clock);
+        try {
+          return { kind: "value" as const, value: await action() };
+        } finally {
+          this.policy.recordAction(clock.now());
+        }
+      }, signal);
+
+      if (result.kind === "value") return result.value;
+      await this.waitForRefresh(signal);
+    }
   }
 
   /**
@@ -226,22 +283,59 @@ export class ChatGptWebsiteActionGate {
     signal?: AbortSignal,
     clock: ChatGptRateLimitWaitClock = systemRateLimitWaitClock,
   ): Promise<boolean> {
+    const initial = this.policy.snapshot(clock.now());
+    if (initial.tier < 0 || !initial.refreshRequired) {
+      this.resolveRefreshBarrier();
+      return false;
+    }
+    this.ensureRefreshBarrier();
+
     return this.serial.runExclusive(async () => {
-      if (signal?.aborted) throw new DOMException("ChatGPT web turn aborted", "AbortError");
+      if (signal?.aborted) throw chatGptRateLimitAbortError();
       let snapshot = this.policy.snapshot(clock.now());
-      if (snapshot.tier < 0 || !snapshot.refreshRequired) return false;
+      if (snapshot.tier < 0 || !snapshot.refreshRequired) {
+        this.resolveRefreshBarrier();
+        return false;
+      }
 
       await this.waitTracked(snapshot.cooldownUntil, signal, clock);
       snapshot = this.policy.snapshot(clock.now());
-      if (snapshot.tier < 0 || !snapshot.refreshRequired) return false;
+      if (snapshot.tier < 0 || !snapshot.refreshRequired) {
+        this.resolveRefreshBarrier();
+        return false;
+      }
 
       try {
         await action();
         return true;
       } finally {
         this.policy.recordRefresh(clock.now());
+        this.resolveRefreshBarrier();
       }
+    }, signal);
+  }
+
+  private ensureRefreshBarrier(): RefreshBarrier {
+    if (this.refreshBarrier) return this.refreshBarrier;
+    let resolve!: () => void;
+    const promise = new Promise<void>(done => {
+      resolve = done;
     });
+    this.refreshBarrier = { promise, resolve };
+    return this.refreshBarrier;
+  }
+
+  private resolveRefreshBarrier(): void {
+    const barrier = this.refreshBarrier;
+    if (!barrier) return;
+    this.refreshBarrier = undefined;
+    barrier.resolve();
+  }
+
+  private async waitForRefresh(signal?: AbortSignal): Promise<void> {
+    if (!this.policy.snapshot().refreshRequired) return;
+    const barrier = this.ensureRefreshBarrier();
+    await waitForPromiseOrAbort(barrier.promise, signal);
   }
 
   private async waitTracked(
