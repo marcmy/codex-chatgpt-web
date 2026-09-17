@@ -202,7 +202,7 @@ export function installChatGptRateLimitBackoffRuntime(): void {
       action,
       recoveryAwareSuspensionClock(suspensionClock),
       awaitAbortedActionSettlement,
-    );
+    ) as Promise<T>;
   };
 
   const originalRunExclusive = prototype.runExclusive;
