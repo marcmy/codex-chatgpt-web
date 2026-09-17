@@ -28,6 +28,7 @@ import { isChatGptRateLimitError } from "./rate-limit-dialog";
 import {
   installChatGptWebsiteActionInterceptors,
   runChatGptRecoveryRefresh,
+  runWithChatGptWebsiteActionAbortSignal,
 } from "./rate-limit-website-actions";
 
 const RATE_LIMIT_PATCH_MARK = Symbol.for("codex-chatgpt-web.rate-limit-backoff-installed");
@@ -289,7 +290,10 @@ export function installChatGptRateLimitBackoffRuntime(): void {
 
       for (;;) {
         try {
-          return await worker.runBrowserTurn(trackedTurn, surfaceId, undefined, reused);
+          return await runWithChatGptWebsiteActionAbortSignal(
+            turn.abortSignal,
+            () => worker.runBrowserTurn(trackedTurn, surfaceId, undefined, reused),
+          );
         } catch (error) {
           if (!isChatGptRateLimitError(error)) throw error;
 
