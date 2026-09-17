@@ -23,7 +23,7 @@ describe("ChatGptRateLimitBackoffPolicy", () => {
     expect(policy.snapshot(now)).toMatchObject({
       cooldownUntil: now + CHATGPT_RATE_LIMIT_COOLDOWN_MS,
       recoveryUntil: now + CHATGPT_RATE_LIMIT_COOLDOWN_MS + CHATGPT_RATE_LIMIT_RECOVERY_MS,
-      spacingMs: 1 * MINUTE,
+      spacingMs: MINUTE,
       tier: 0,
       refreshRequired: true,
     });
@@ -147,6 +147,34 @@ describe("ChatGptRateLimitSerialGate", () => {
     await second;
     expect(events).toEqual(["first", "second"]);
   });
+
+  test("a cancelled queued owner is removed without blocking later owners", async () => {
+    const gate = new ChatGptRateLimitSerialGate();
+    const events: string[] = [];
+    let releaseFirst!: () => void;
+    const firstBlocked = new Promise<void>(resolve => { releaseFirst = resolve; });
+    const controller = new AbortController();
+
+    const first = gate.runExclusive(async () => {
+      events.push("first:start");
+      await firstBlocked;
+      events.push("first:end");
+    });
+    const cancelled = gate.runExclusive(async () => {
+      events.push("cancelled:ran");
+    }, controller.signal);
+    const third = gate.runExclusive(async () => {
+      events.push("third:start");
+    });
+
+    controller.abort();
+    await expect(cancelled).rejects.toMatchObject({ name: "AbortError" });
+    expect(events).toEqual(["first:start"]);
+
+    releaseFirst();
+    await Promise.all([first, third]);
+    expect(events).toEqual(["first:start", "first:end", "third:start"]);
+  });
 });
 
 class FakeRateLimitClock {
@@ -265,17 +293,46 @@ describe("ChatGptWebsiteActionGate", () => {
     expect(events).toEqual(["first:start", "first:end", "second:start"]);
   });
 
-  test("ordinary actions cannot bypass a pending hard-cooldown refresh", async () => {
+  test("ordinary actions queue behind the required hard-cooldown refresh", async () => {
     const now = 4_000_000;
     const policy = new ChatGptRateLimitBackoffPolicy();
     const gate = new ChatGptWebsiteActionGate(policy);
     const clock = new FakeRateLimitClock(now);
     policy.recordRateLimit(now);
 
-    await expect(gate.runAction(async () => {}, undefined, clock)).rejects.toThrow(
-      "requires its refresh before other website actions",
-    );
-    expect(clock.sleeps).toEqual([]);
+    let actionStartedAt = 0;
+    const queuedAction = gate.runAction(async () => {
+      actionStartedAt = clock.now();
+    }, undefined, clock);
+
+    await Promise.resolve();
+    expect(actionStartedAt).toBe(0);
+
+    let refreshStartedAt = 0;
+    expect(await gate.runRecoveryRefresh(async () => {
+      refreshStartedAt = clock.now();
+    }, undefined, clock)).toBe(true);
+    await queuedAction;
+
+    expect(refreshStartedAt).toBe(now + CHATGPT_RATE_LIMIT_COOLDOWN_MS);
+    expect(actionStartedAt).toBe(refreshStartedAt + MINUTE);
+  });
+
+  test("a queued action can be cancelled while it waits for the required refresh", async () => {
+    const now = 4_500_000;
+    const policy = new ChatGptRateLimitBackoffPolicy();
+    const gate = new ChatGptWebsiteActionGate(policy);
+    const clock = new FakeRateLimitClock(now);
+    const controller = new AbortController();
+    policy.recordRateLimit(now);
+
+    const action = gate.runAction(async () => {
+      throw new Error("cancelled action must never run");
+    }, controller.signal, clock);
+    controller.abort();
+
+    await expect(action).rejects.toMatchObject({ name: "AbortError" });
+    expect(await gate.runRecoveryRefresh(async () => {}, undefined, clock)).toBe(true);
   });
 
   test("a throwing recovery refresh is consumed exactly once and becomes the spacing origin", async () => {
