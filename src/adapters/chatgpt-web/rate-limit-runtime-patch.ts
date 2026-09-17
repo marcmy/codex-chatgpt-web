@@ -22,7 +22,9 @@ import {
 } from "./adapter-error";
 import {
   chatGptRateLimitBackoffPolicy,
+  chatGptRateLimitRuntimeConfig,
   chatGptWebsiteActionGate,
+  resolveChatGptRateLimitTestTriggerMode,
 } from "./rate-limit-backoff";
 import { isChatGptRateLimitError } from "./rate-limit-dialog";
 import {
@@ -32,6 +34,7 @@ import {
 } from "./rate-limit-website-actions";
 
 const RATE_LIMIT_PATCH_MARK = Symbol.for("codex-chatgpt-web.rate-limit-backoff-installed");
+let syntheticRateLimitInjected = false;
 
 type SuspensionClockLike = Pick<typeof chatGptSuspensionClock, "suspendedMs">;
 
@@ -139,17 +142,32 @@ async function refreshLauncherRateLimitedSurface(
   surfaceId: string,
   abortSignal?: AbortSignal,
 ): Promise<boolean> {
-  return withLauncherSurface(descriptorPath, surfaceId, abortSignal, async page => {
-    const refreshed = await runChatGptRecoveryRefresh(async () => {
+  if (chatGptRateLimitRuntimeConfig.testMode) {
+    const snapshot = chatGptRateLimitBackoffPolicy.snapshot();
+    console.warn(
+      `[chatgpt-web][rate-limit-test] recovery refresh queued; cooldownRemainingMs=${Math.max(0, snapshot.cooldownUntil - Date.now())}`,
+    );
+  }
+
+  const refreshed = await withLauncherSurface(descriptorPath, surfaceId, abortSignal, async page => {
+    const didRefresh = await runChatGptRecoveryRefresh(async () => {
       await page.reload({ waitUntil: "domcontentloaded", timeout: 60_000 });
     }, abortSignal);
-    if (refreshed) {
+    if (didRefresh) {
       // The init script installed before the incident normally survives the navigation. Re-arm it
       // as defensive instrumentation after (never during) the hard-cooldown refresh.
       await armPassiveRateLimitGuard(page);
     }
-    return refreshed;
+    return didRefresh;
   });
+
+  if (chatGptRateLimitRuntimeConfig.testMode) {
+    const snapshot = chatGptRateLimitBackoffPolicy.snapshot();
+    console.warn(
+      `[chatgpt-web][rate-limit-test] recovery refresh ${refreshed ? "completed" : "not-needed"}; nextSpacingMs=${snapshot.spacingMs}`,
+    );
+  }
+  return refreshed;
 }
 
 /** Complete only the mandatory hard-cooldown refresh. Ordinary actions acquire their own permits. */
@@ -161,6 +179,30 @@ async function ensureRateLimitRecoveryRefresh(
   const snapshot = chatGptRateLimitBackoffPolicy.snapshot();
   if (snapshot.tier < 0 || !snapshot.refreshRequired) return;
   await refreshLauncherRateLimitedSurface(descriptorPath, surfaceId, abortSignal);
+}
+
+/**
+ * Injects only the detection event. Cooldown, refresh, action interception, serialization, spacing,
+ * cancellation, and timeout-budget accounting all continue through the real recovery machinery.
+ */
+function maybeInjectSyntheticRateLimit(traceId: string): void {
+  const triggerMode = resolveChatGptRateLimitTestTriggerMode();
+  if (triggerMode === "off") return;
+  if (triggerMode === "once" && syntheticRateLimitInjected) return;
+
+  syntheticRateLimitInjected = true;
+  const detectedAt = Date.now();
+  const newIncident = chatGptRateLimitBackoffPolicy.recordRateLimit(detectedAt);
+  const snapshot = chatGptRateLimitBackoffPolicy.snapshot(detectedAt);
+  console.warn(
+    `[chatgpt-web][rate-limit-test] synthetic rate-limit incident injected for ${traceId};`
+    + ` trigger=${triggerMode}`
+    + ` incident=${newIncident ? "new" : "latched"}`
+    + ` tier=${snapshot.tier + 1}`
+    + ` cooldownMs=${Math.max(0, snapshot.cooldownUntil - detectedAt)}`
+    + ` spacingMs=${snapshot.spacingMs}`
+    + ` recoveryMs=${Math.max(0, snapshot.recoveryUntil - snapshot.cooldownUntil)}`,
+  );
 }
 
 /**
@@ -184,6 +226,15 @@ export function installChatGptRateLimitBackoffRuntime(): void {
   const prototype = ChatGptBrowserWorker.prototype as unknown as PatchableWorkerPrototype;
   if (prototype[RATE_LIMIT_PATCH_MARK]) return;
   prototype[RATE_LIMIT_PATCH_MARK] = true;
+
+  if (chatGptRateLimitRuntimeConfig.testMode) {
+    console.warn(
+      `[chatgpt-web][rate-limit-test] TEST MODE ENABLED; cooldownMs=${chatGptRateLimitRuntimeConfig.cooldownMs}`
+      + ` recoveryMs=${chatGptRateLimitRuntimeConfig.recoveryMs}`
+      + ` spacingMs=${chatGptRateLimitRuntimeConfig.spacingMs.join(",")}`
+      + ` trigger=${resolveChatGptRateLimitTestTriggerMode()}`,
+    );
+  }
 
   const originalRunStage = prototype.runStage;
   prototype.runStage = function rateLimitAwareRunStage<T>(
@@ -285,6 +336,10 @@ export function installChatGptRateLimitBackoffRuntime(): void {
       await turn.onPreparedSelected?.(reused);
       heartbeatTimer = setInterval(sendHeartbeat, LAUNCHER_TURN_HEARTBEAT_INTERVAL_MS);
       heartbeatTimer.unref?.();
+
+      // Test injection happens at the exact seam where a real detected incident would have armed
+      // the shared policy. Everything after this line uses the production recovery implementation.
+      maybeInjectSyntheticRateLimit(turn.traceId);
 
       // Connecting/instrumenting is passive. If a prior incident is still in hard cooldown, perform
       // only its one required refresh here; the first real UI action later acquires its own spacing.
