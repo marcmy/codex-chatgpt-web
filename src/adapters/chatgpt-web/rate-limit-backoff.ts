@@ -13,9 +13,10 @@ export interface ChatGptRateLimitBackoffSnapshot {
 /**
  * Account-wide recovery state for ChatGPT's "Too many requests" browser dialog.
  *
- * One visible dialog is one incident until the post-cooldown refresh occurs. A later dialog after
- * that refresh is a new incident and advances the recovery spacing, capped at ten minutes. Thirty
- * clean minutes from the latest incident reset the policy completely.
+ * One visible dialog remains latched through the mandatory post-cooldown refresh. The incident is
+ * unlatched only after an ordinary website action has actually resumed; a rate-limit observed after
+ * that resumption is a new incident and advances the recovery spacing, capped at ten minutes.
+ * Thirty clean minutes after the hard cooldown reset the policy completely.
  */
 export class ChatGptRateLimitBackoffPolicy {
   private tier = -1;
@@ -40,8 +41,8 @@ export class ChatGptRateLimitBackoffPolicy {
   }
 
   /**
-   * Records the refresh that ends hard cooldown and arms recovery spacing.
-   * Returns false when another recovery owner already recorded it.
+   * Records the one refresh that ends hard cooldown and arms recovery spacing.
+   * The incident intentionally stays latched until an ordinary website action resumes.
    */
   recordRefresh(now = Date.now()): boolean {
     this.resetIfRecovered(now);
@@ -51,12 +52,11 @@ export class ChatGptRateLimitBackoffPolicy {
     }
 
     this.refreshRequired = false;
-    this.incidentLatched = false;
     this.lastActionAt = now;
     return true;
   }
 
-  /** Records a later logical ChatGPT website attempt after the required refresh. */
+  /** Records completion of an ordinary active ChatGPT website action. */
   recordAction(now = Date.now()): void {
     this.resetIfRecovered(now);
     if (this.tier < 0) return;
@@ -64,9 +64,10 @@ export class ChatGptRateLimitBackoffPolicy {
       throw new Error("ChatGPT rate-limit recovery requires its refresh before other website actions");
     }
     this.lastActionAt = now;
+    this.incidentLatched = false;
   }
 
-  /** Earliest time the next permitted logical website attempt may begin. */
+  /** Earliest time the next permitted ordinary active website action may begin. */
   nextAllowedActionAt(now = Date.now()): number {
     this.resetIfRecovered(now);
     if (this.tier < 0) return now;
@@ -97,7 +98,7 @@ export class ChatGptRateLimitBackoffPolicy {
   }
 }
 
-/** Serializes account-wide recovery decisions so concurrent turns cannot refresh or resume together. */
+/** Serializes account-wide recovery work so concurrent tabs cannot resume together. */
 export class ChatGptRateLimitSerialGate {
   private tail: Promise<void> = Promise.resolve();
 
@@ -155,6 +156,117 @@ export async function waitForChatGptRateLimitDeadline(
   await clock.sleep(remaining, signal);
 }
 
+/**
+ * Account-wide gate for active ChatGPT website operations during recovery.
+ *
+ * Normal operation remains fully concurrent. Once recovery is active, the gate owns both the
+ * deliberate wait and the active operation itself, so spacing is measured from the previous
+ * operation's completion to the next operation's start. An invoked operation counts even if it
+ * throws because the website may already have observed it.
+ */
+export class ChatGptWebsiteActionGate {
+  private throttleWaitTotalMs = 0;
+  private activeWait: {
+    startedAt: number;
+    remainingMs: number;
+    clock: ChatGptRateLimitWaitClock;
+  } | undefined;
+
+  constructor(
+    private readonly policy: ChatGptRateLimitBackoffPolicy,
+    private readonly serial: ChatGptRateLimitSerialGate = new ChatGptRateLimitSerialGate(),
+  ) {}
+
+  /** Monotonic deliberate recovery wait time, including a wait still in progress. */
+  throttledMs(): number {
+    const active = this.activeWait;
+    if (!active) return this.throttleWaitTotalMs;
+    const elapsed = Math.min(
+      active.remainingMs,
+      Math.max(0, active.clock.now() - active.startedAt),
+    );
+    return this.throttleWaitTotalMs + elapsed;
+  }
+
+  /** Run exactly one ordinary active website operation. */
+  async runAction<T>(
+    action: () => Promise<T>,
+    signal?: AbortSignal,
+    clock: ChatGptRateLimitWaitClock = systemRateLimitWaitClock,
+  ): Promise<T> {
+    if (signal?.aborted) throw new DOMException("ChatGPT web turn aborted", "AbortError");
+
+    // Do not serialize normal browser use. Once an incident is active every later action enters the
+    // shared serial section, which owns the wait and the operation until completion.
+    if (this.policy.snapshot(clock.now()).tier < 0) return action();
+
+    return this.serial.runExclusive(async () => {
+      if (signal?.aborted) throw new DOMException("ChatGPT web turn aborted", "AbortError");
+      const snapshot = this.policy.snapshot(clock.now());
+      if (snapshot.tier < 0) return action();
+      if (snapshot.refreshRequired) {
+        throw new Error("ChatGPT rate-limit recovery requires its refresh before other website actions");
+      }
+
+      await this.waitTracked(this.policy.nextAllowedActionAt(clock.now()), signal, clock);
+      try {
+        return await action();
+      } finally {
+        this.policy.recordAction(clock.now());
+      }
+    });
+  }
+
+  /**
+   * Run the one refresh that ends hard cooldown. A refresh that throws is still consumed because
+   * once invoked the browser/site may already have observed the navigation.
+   */
+  async runRecoveryRefresh(
+    action: () => Promise<void>,
+    signal?: AbortSignal,
+    clock: ChatGptRateLimitWaitClock = systemRateLimitWaitClock,
+  ): Promise<boolean> {
+    return this.serial.runExclusive(async () => {
+      if (signal?.aborted) throw new DOMException("ChatGPT web turn aborted", "AbortError");
+      let snapshot = this.policy.snapshot(clock.now());
+      if (snapshot.tier < 0 || !snapshot.refreshRequired) return false;
+
+      await this.waitTracked(snapshot.cooldownUntil, signal, clock);
+      snapshot = this.policy.snapshot(clock.now());
+      if (snapshot.tier < 0 || !snapshot.refreshRequired) return false;
+
+      try {
+        await action();
+        return true;
+      } finally {
+        this.policy.recordRefresh(clock.now());
+      }
+    });
+  }
+
+  private async waitTracked(
+    deadline: number,
+    signal: AbortSignal | undefined,
+    clock: ChatGptRateLimitWaitClock,
+  ): Promise<void> {
+    const remaining = deadline - clock.now();
+    if (remaining <= 0) return;
+    const startedAt = clock.now();
+    this.activeWait = { startedAt, remainingMs: remaining, clock };
+    try {
+      await waitForChatGptRateLimitDeadline(deadline, signal, clock);
+    } finally {
+      // Count only deliberate waiting, not scheduler overrun beyond the requested deadline.
+      this.throttleWaitTotalMs += Math.min(remaining, Math.max(0, clock.now() - startedAt));
+      this.activeWait = undefined;
+    }
+  }
+}
+
 /** Shared by every browser worker in this process because ChatGPT throttles the signed-in account. */
 export const chatGptRateLimitBackoffPolicy = new ChatGptRateLimitBackoffPolicy();
 export const chatGptRateLimitSerialGate = new ChatGptRateLimitSerialGate();
+export const chatGptWebsiteActionGate = new ChatGptWebsiteActionGate(
+  chatGptRateLimitBackoffPolicy,
+  chatGptRateLimitSerialGate,
+);
