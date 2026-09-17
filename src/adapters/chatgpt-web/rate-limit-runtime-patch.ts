@@ -9,6 +9,7 @@ import {
 } from "../../launcher-browser-host";
 import {
   browserStageTimeouts,
+  chatGptSuspensionClock,
   ChatGptBrowserWorker,
   type BrowserTurn,
   type ResolvedBrowserConfig,
@@ -21,12 +22,17 @@ import {
 } from "./adapter-error";
 import {
   chatGptRateLimitBackoffPolicy,
-  chatGptRateLimitSerialGate,
-  waitForChatGptRateLimitDeadline,
+  chatGptWebsiteActionGate,
 } from "./rate-limit-backoff";
 import { isChatGptRateLimitError } from "./rate-limit-dialog";
+import {
+  installChatGptWebsiteActionInterceptors,
+  runChatGptRecoveryRefresh,
+} from "./rate-limit-website-actions";
 
 const RATE_LIMIT_PATCH_MARK = Symbol.for("codex-chatgpt-web.rate-limit-backoff-installed");
+
+type SuspensionClockLike = Pick<typeof chatGptSuspensionClock, "suspendedMs">;
 
 interface WorkerInternals {
   config: ResolvedBrowserConfig;
@@ -40,6 +46,14 @@ interface WorkerInternals {
 
 interface PatchableWorkerPrototype {
   runExclusive(turn: BrowserTurn): Promise<string>;
+  runStage<T>(
+    traceId: string,
+    stage: string,
+    timeoutMs: number,
+    action: (abortSignal: AbortSignal) => Promise<T>,
+    suspensionClock?: SuspensionClockLike,
+    awaitAbortedActionSettlement?: boolean,
+  ): Promise<T>;
   [RATE_LIMIT_PATCH_MARK]?: boolean;
 }
 
@@ -100,6 +114,7 @@ async function withLauncherSurface<T>(
       abortSignal,
     );
     browser = connection.browser;
+    installChatGptWebsiteActionInterceptors(connection.page);
     return await action(connection.page);
   } finally {
     await browser?.close().catch(() => {});
@@ -114,56 +129,81 @@ async function armLauncherRateLimitGuard(
   await withLauncherSurface(descriptorPath, surfaceId, abortSignal, armPassiveRateLimitGuard);
 }
 
+/**
+ * Perform exactly the one refresh allowed after hard cooldown. The action gate owns the full wait
+ * and refresh operation, so every competing active browser action remains blocked until it settles.
+ */
 async function refreshLauncherRateLimitedSurface(
   descriptorPath: string,
   surfaceId: string,
   abortSignal?: AbortSignal,
-): Promise<void> {
-  await withLauncherSurface(descriptorPath, surfaceId, abortSignal, async page => {
-    await armPassiveRateLimitGuard(page);
-    await page.reload({ waitUntil: "domcontentloaded", timeout: 60_000 });
-    // addInitScript covers the new document; evaluating again also covers unusual same-document reloads.
-    await page.evaluate(installPassiveRateLimitGuardInPage);
+): Promise<boolean> {
+  return withLauncherSurface(descriptorPath, surfaceId, abortSignal, async page => {
+    const refreshed = await runChatGptRecoveryRefresh(async () => {
+      await page.reload({ waitUntil: "domcontentloaded", timeout: 60_000 });
+    }, abortSignal);
+    if (refreshed) {
+      // The init script installed before the incident normally survives the navigation. Re-arm it
+      // as defensive instrumentation after (never during) the hard-cooldown refresh.
+      await armPassiveRateLimitGuard(page);
+    }
+    return refreshed;
   });
 }
 
-async function waitForExistingRateLimitRecovery(
+/** Complete only the mandatory hard-cooldown refresh. Ordinary actions acquire their own permits. */
+async function ensureRateLimitRecoveryRefresh(
   descriptorPath: string,
   surfaceId: string,
   abortSignal?: AbortSignal,
-  acquireActionPermit = true,
 ): Promise<void> {
-  await chatGptRateLimitSerialGate.runExclusive(async () => {
-    let snapshot = chatGptRateLimitBackoffPolicy.snapshot();
-    if (snapshot.tier < 0) return;
+  const snapshot = chatGptRateLimitBackoffPolicy.snapshot();
+  if (snapshot.tier < 0 || !snapshot.refreshRequired) return;
+  await refreshLauncherRateLimitedSurface(descriptorPath, surfaceId, abortSignal);
+}
 
-    if (snapshot.refreshRequired) {
-      await waitForChatGptRateLimitDeadline(snapshot.cooldownUntil, abortSignal);
-      snapshot = chatGptRateLimitBackoffPolicy.snapshot();
-      if (snapshot.refreshRequired) {
-        await refreshLauncherRateLimitedSurface(descriptorPath, surfaceId, abortSignal);
-        chatGptRateLimitBackoffPolicy.recordRefresh(Date.now());
-      }
-    }
-
-    if (!acquireActionPermit) return;
-    await waitForChatGptRateLimitDeadline(
-      chatGptRateLimitBackoffPolicy.nextAllowedActionAt(),
-      abortSignal,
-    );
-    chatGptRateLimitBackoffPolicy.recordAction();
-  });
+/**
+ * Browser stage budgets use the existing suspension-clock seam. Adding the action gate's monotonic
+ * deliberate-wait counter makes backoff sleep invisible to stage deadlines while leaving actual
+ * Playwright operation time fully charged. Individual Playwright timeouts are naturally preserved
+ * because their methods are not invoked until the gate finishes waiting.
+ */
+function recoveryAwareSuspensionClock(base: SuspensionClockLike): SuspensionClockLike {
+  return {
+    suspendedMs: () => base.suspendedMs() + chatGptWebsiteActionGate.throttledMs(),
+  };
 }
 
 /**
  * The bundled launcher helper installs this patch before browser-helper-main starts. Keeping the
  * change at the helper boundary lets a rate-limited turn retain its launcher lease and heartbeats
- * without changing the large browser worker's normal success path.
+ * while the website-action interceptor enforces recovery below the large browser worker.
  */
 export function installChatGptRateLimitBackoffRuntime(): void {
   const prototype = ChatGptBrowserWorker.prototype as unknown as PatchableWorkerPrototype;
   if (prototype[RATE_LIMIT_PATCH_MARK]) return;
   prototype[RATE_LIMIT_PATCH_MARK] = true;
+
+  const originalRunStage = prototype.runStage;
+  prototype.runStage = function rateLimitAwareRunStage<T>(
+    this: ChatGptBrowserWorker,
+    traceId: string,
+    stage: string,
+    timeoutMs: number,
+    action: (abortSignal: AbortSignal) => Promise<T>,
+    suspensionClock: SuspensionClockLike = chatGptSuspensionClock,
+    awaitAbortedActionSettlement = false,
+  ): Promise<T> {
+    return originalRunStage.call(
+      this,
+      traceId,
+      stage,
+      timeoutMs,
+      action,
+      recoveryAwareSuspensionClock(suspensionClock),
+      awaitAbortedActionSettlement,
+    );
+  };
 
   const originalRunExclusive = prototype.runExclusive;
   prototype.runExclusive = async function rateLimitAwareRunExclusive(
@@ -242,9 +282,9 @@ export function installChatGptRateLimitBackoffRuntime(): void {
       heartbeatTimer = setInterval(sendHeartbeat, LAUNCHER_TURN_HEARTBEAT_INTERVAL_MS);
       heartbeatTimer.unref?.();
 
-      // Existing recovery is checked before any page instrumentation so a newly arriving turn cannot
-      // touch ChatGPT while another turn owns the hard-cooldown/recovery sequence.
-      await waitForExistingRateLimitRecovery(descriptorPath, surfaceId, turn.abortSignal);
+      // Connecting/instrumenting is passive. If a prior incident is still in hard cooldown, perform
+      // only its one required refresh here; the first real UI action later acquires its own spacing.
+      await ensureRateLimitRecoveryRefresh(descriptorPath, surfaceId, turn.abortSignal);
       await armLauncherRateLimitGuard(descriptorPath, surfaceId, turn.abortSignal);
 
       for (;;) {
@@ -264,18 +304,12 @@ export function installChatGptRateLimitBackoffRuntime(): void {
             + ` spacingMs=${snapshot.spacingMs}`,
           );
 
-          // Serialize the entire recovery sequence. This prevents concurrent incoming turns from
-          // performing their own refresh or resuming during the hard cooldown, and it spaces later
-          // website attempts from the one refresh that ended the cooldown.
-          await waitForExistingRateLimitRecovery(
-            descriptorPath,
-            surfaceId,
-            turn.abortSignal,
-            !sendActivated,
-          );
+          // The hard cooldown owns the account: no ordinary UI action is permitted until this one
+          // refresh settles. Later clicks/keys/fills acquire their own completion-based spacing.
+          await ensureRateLimitRecoveryRefresh(descriptorPath, surfaceId, turn.abortSignal);
 
-          // Once Send may have fired, replaying the prompt is unsafe. Complete only cooldown + refresh;
-          // do not consume a phantom action permit when this turn is about to fail without touching the site.
+          // Once Send may have fired, replaying the prompt is unsafe. We still complete cooldown +
+          // refresh, but fail this turn without consuming a phantom ordinary-action permit.
           if (sendActivated) throw error;
         }
       }
