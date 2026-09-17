@@ -246,7 +246,7 @@ export class ChatGptWebsiteActionGate {
       const beforeGate = this.policy.snapshot(clock.now());
       if (beforeGate.tier < 0) return action();
       if (beforeGate.refreshRequired) {
-        await this.waitForRefresh(signal);
+        await this.waitForRefresh(signal, clock);
         continue;
       }
 
@@ -270,7 +270,7 @@ export class ChatGptWebsiteActionGate {
       }, signal);
 
       if (result.kind === "value") return result.value;
-      await this.waitForRefresh(signal);
+      await this.waitForRefresh(signal, clock);
     }
   }
 
@@ -332,9 +332,16 @@ export class ChatGptWebsiteActionGate {
     barrier.resolve();
   }
 
-  private async waitForRefresh(signal?: AbortSignal): Promise<void> {
-    if (!this.policy.snapshot().refreshRequired) return;
+  private async waitForRefresh(
+    signal: AbortSignal | undefined,
+    clock: ChatGptRateLimitWaitClock,
+  ): Promise<void> {
+    if (!this.policy.snapshot(clock.now()).refreshRequired) return;
     const barrier = this.ensureRefreshBarrier();
+    if (!this.policy.snapshot(clock.now()).refreshRequired) {
+      this.resolveRefreshBarrier();
+      return;
+    }
     await waitForPromiseOrAbort(barrier.promise, signal);
   }
 
