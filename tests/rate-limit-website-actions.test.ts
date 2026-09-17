@@ -40,6 +40,7 @@ test("the action interceptor covers every explicit active Playwright operation u
 test("the known mutating composer evaluate is explicitly classified while passive evaluate remains available", () => {
   const worker = source("src/adapters/chatgpt-web/browser-worker.ts");
   const interceptor = source("src/adapters/chatgpt-web/rate-limit-website-actions.ts");
+  expect(worker).toContain("export function insertPlainTextIntoComposer");
   expect(worker).toContain("composer.evaluate(insertPlainTextIntoComposer");
   expect(interceptor).toContain('pageFunction.name !== "insertPlainTextIntoComposer"');
 });
@@ -52,8 +53,10 @@ test("runtime recovery uses the per-action gate instead of one coarse turn permi
   expect(runtime).not.toContain("recordAction(");
 });
 
-test("browser stage budgets refund live deliberate backoff wait", () => {
+test("browser stage budgets refund live deliberate backoff wait and propagate the stage abort signal", () => {
   const runtime = source("src/adapters/chatgpt-web/rate-limit-runtime-patch.ts");
   expect(runtime).toContain("base.suspendedMs() + chatGptWebsiteActionGate.throttledMs()");
   expect(runtime).toContain("recoveryAwareSuspensionClock(suspensionClock)");
+  expect(runtime).toContain("abortSignal => runWithChatGptWebsiteActionAbortSignal(");
+  expect(runtime).toContain("() => action(abortSignal)");
 });
