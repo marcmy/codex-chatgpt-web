@@ -200,7 +200,10 @@ export function installChatGptRateLimitBackoffRuntime(): void {
       traceId,
       stage,
       timeoutMs,
-      action,
+      abortSignal => runWithChatGptWebsiteActionAbortSignal(
+        abortSignal,
+        () => action(abortSignal),
+      ),
       recoveryAwareSuspensionClock(suspensionClock),
       awaitAbortedActionSettlement,
     ) as Promise<T>;
