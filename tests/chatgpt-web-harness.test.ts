@@ -1012,6 +1012,18 @@ describe("ChatGPT outer-native harness v4", () => {
   });
 
 
+  test("image steering is not eligible for the in-place MCP steering channel", () => {
+    const steered = rawWireRequest(environmentXml);
+    const input = (steered._rawBody as { input: Array<Record<string, unknown>> }).input;
+    const latest = input.at(-1)!;
+    latest.id = "msg_image_steer";
+    latest.content = [
+      { type: "input_text", text: "Actually use this screenshot instead." },
+      { type: "input_image", image_url: "data:image/png;base64,steering-image", detail: "high" },
+    ];
+    expect(chatGptSteeringInstructionText(steered)).toBeUndefined();
+  });
+
   test("steering retires a browser waiting for an old tool result and rejects late older requests", async () => {
     const sessions = new ChatGptTurnSessions();
     const original = rawWireRequest(environmentXml);
