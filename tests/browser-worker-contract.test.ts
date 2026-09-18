@@ -16,6 +16,7 @@ import type { CodexProviderConfig } from "../src/types";
 import { compileChatGptWebPrompt, formatChatGptWebMultipartCommit, formatChatGptWebMultipartStage } from "../src/adapters/chatgpt-web/prompt";
 import { estimateCompiledChatGptWebInputTokens } from "../src/adapters/chatgpt-web/input-tokens";
 import { estimateTokens } from "../src/lib/token-estimate";
+import { SUMMARY_PREFIX } from "../src/responses/compaction";
 import { chatGptHtmlToMarkdown } from "../src/adapters/chatgpt-web/markdown";
 
 function personalizedTemporaryChatRole(
@@ -3045,6 +3046,60 @@ test("browser preflight separates model context from one-message transport limit
     pro,
     520_001,
   )).toThrow("104,000-token ChatGPT browser message boundary");
+});
+
+test("browser prompt drops checkpointed screenshots but keeps images sent after compaction", () => {
+  const oldImage = "data:image/png;base64,old-checkpointed-screenshot";
+  const newImage = "data:image/png;base64,new-post-checkpoint-screenshot";
+  const checkpoint = `${SUMMARY_PREFIX}\nvisual state captured in checkpoint`;
+  const compiled = compileChatGptWebPrompt({
+    modelId: CHATGPT_WEB_MODEL_ID,
+    stream: true,
+    options: { reasoning: "medium" },
+    context: {
+      systemPrompt: [],
+      messages: [
+        {
+          role: "user",
+          content: [
+            { type: "text", text: "Old screenshot request" },
+            { type: "image", imageUrl: oldImage, detail: "high" },
+          ],
+          timestamp: 1,
+        },
+        { role: "user", content: checkpoint, timestamp: 2 },
+        {
+          role: "user",
+          content: [
+            { type: "text", text: "New screenshot request" },
+            { type: "image", imageUrl: newImage, detail: "high" },
+          ],
+          timestamp: 3,
+        },
+      ],
+    },
+  }, {
+    localToolsEnabled: false,
+    solAvailable: true,
+    extraHighAvailable: false,
+    proAvailable: false,
+  });
+
+  expect(compiled.images).toEqual([
+    { ref: "codex-input-image-1", imageUrl: newImage, detail: "high" },
+  ]);
+  const contextJson = compiled.text.match(/<codex_context_json>\n([\s\S]*?)\n<\/codex_context_json>/)?.[1];
+  expect(contextJson).toBeDefined();
+  const envelope = JSON.parse(contextJson!);
+  expect(envelope.messages[0]).toEqual({ role: "user", content: "Old screenshot request" });
+  expect(envelope.messages[1]).toEqual({ role: "user", content: checkpoint });
+  expect(envelope.messages[2]).toEqual({
+    role: "user",
+    content: [
+      { type: "text", text: "New screenshot request" },
+      { type: "image_attachment", attachment_ref: "codex-input-image-1", detail: "high" },
+    ],
+  });
 });
 
 test("Bigger Context fits mixed-density whole records within both token and composer limits", () => {
