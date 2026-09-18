@@ -66,7 +66,7 @@ jobs:
       - run: bun run app:smoke
       - name: Upload packaged launcher
         if: runner.os == 'Windows'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: codex-chatgpt-web-${{ matrix.os }}
           path: launcher/artifacts/*.exe
