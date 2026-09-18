@@ -83,13 +83,23 @@ export function resolveBiggerContextMultipartParts(
     mode.effort,
     { ...capabilities, experimentalBiggerContext: false },
   );
+  const compaction = parsed._compactionRequest === true;
   const compile = (parts?: ChatGptWebMultipartPartCount): CompiledChatGptWebPrompt => compileChatGptWebPrompt(
     parsed, capabilities, mode.localTools ? ESTIMATE_TURN_TOKEN : undefined,
-    { experimentalMultipartParts: parts, experimentalSkillAttachments },
+    {
+      experimentalMultipartParts: parts,
+      experimentalSkillAttachments,
+      ...(parts !== undefined ? { multipartPlanningOnly: true } : {}),
+    },
   );
-  const inline = compile();
-  const inputTokens = estimateCompiledChatGptWebInputTokens(inline, parsed.modelId);
-  const initialParts = biggerContextPartCount(inputTokens, autoCompactTokenLimit, parsed._compactionRequest === true);
+  const inline = compaction ? undefined : compile();
+  const initialParts = compaction
+    ? CHATGPT_BIGGER_CONTEXT_PARTS
+    : biggerContextPartCount(
+      estimateCompiledChatGptWebInputTokens(inline!, parsed.modelId),
+      autoCompactTokenLimit,
+      false,
+    );
 
   const fits = (compiled: CompiledChatGptWebPrompt): boolean => {
     const messages = compiledChatGptWebMessages(compiled);
@@ -112,7 +122,7 @@ export function resolveBiggerContextMultipartParts(
     return estimateCompiledChatGptWebInputTokens(compiled, parsed.modelId) < contextWindow * logicalParts;
   };
 
-  if (initialParts === undefined && fits(inline)) return undefined;
+  if (initialParts === undefined && inline && fits(inline)) return undefined;
   const minimumParts = initialParts ?? 2;
   for (const parts of [2, CHATGPT_BIGGER_CONTEXT_PARTS, CHATGPT_BIGGER_CONTEXT_MAX_TRANSPORT_PARTS] as const) {
     if (parts < minimumParts) continue;
