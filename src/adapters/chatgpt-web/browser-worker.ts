@@ -4463,6 +4463,17 @@ export class ChatGptBrowserWorker {
           throw new DOMException("ChatGPT browser page acquisition aborted", "AbortError");
         }
         turnConnection = connection.browser;
+        if (reuseConversation) {
+          // Attaching a new Playwright/CDP session can itself clear Chromium's effective device
+          // emulation. Refresh the exact retained Electron surface after the transport is live,
+          // not only before connection, so the viewport contract survives the attach boundary.
+          await notifyLauncherTurn(this.config.browserHostDescriptorPath!, {
+            phase: "heartbeat",
+            traceId: turn.traceId,
+            helperPid: process.pid,
+            refreshViewport: true,
+          });
+        }
         try {
           await waitForOperationalChatGptViewport(connection.page, abortSignal);
         } catch (error) {
@@ -4475,15 +4486,10 @@ export class ChatGptBrowserWorker {
           connection = await connectAfterClosingBrowserConnection(
             previousConnection,
             async () => {
-              // The old CDP session must be fully gone before Electron reapplies device emulation.
-              // Otherwise its eventual disconnect can clear the repaired hidden viewport again.
+              // First remove the stale CDP owner. Then reconnect, because CDP attachment itself
+              // may disturb effective device emulation; only after the new transport is live do we
+              // force Electron to reassert the hidden viewport contract.
               turnConnection = undefined;
-              await notifyLauncherTurn(this.config.browserHostDescriptorPath!, {
-                phase: "heartbeat",
-                traceId: turn.traceId,
-                helperPid: process.pid,
-                refreshViewport: true,
-              });
               const repaired = await connectLauncherBrowserHost(
                 this.config.browserHostDescriptorPath!,
                 browserStageTimeouts.browserPage,
@@ -4495,6 +4501,12 @@ export class ChatGptBrowserWorker {
                 throw new DOMException("ChatGPT browser page acquisition aborted", "AbortError");
               }
               turnConnection = repaired.browser;
+              await notifyLauncherTurn(this.config.browserHostDescriptorPath!, {
+                phase: "heartbeat",
+                traceId: turn.traceId,
+                helperPid: process.pid,
+                refreshViewport: true,
+              });
               await waitForOperationalChatGptViewport(repaired.page, abortSignal);
               return repaired;
             },
@@ -4536,22 +4548,22 @@ export class ChatGptBrowserWorker {
                   : turn.abortSignal
                     ? AbortSignal.any([stageSignal, turn.abortSignal])
                     : stageSignal;
-                await notifyLauncherTurn(this.config.browserHostDescriptorPath!, {
-                  phase: "heartbeat",
-                  traceId: turn.traceId,
-                  helperPid: process.pid,
-                  refreshViewport: true,
-                });
                 const rebound = await connectLauncherBrowserHost(
                   this.config.browserHostDescriptorPath!,
                   browserStageTimeouts.browserPage,
                   launcherSurfaceId,
                   signal,
                 );
-                // Own the connection before validating its page: viewport failure still needs
-                // the outer diagnostic capture and finally block to release this exact transport.
+                // Own the replacement transport first, then reassert Electron emulation across
+                // that newly attached CDP session before validating the page.
                 turnConnection = rebound.browser;
                 diagnosticPage = rebound.page;
+                await notifyLauncherTurn(this.config.browserHostDescriptorPath!, {
+                  phase: "heartbeat",
+                  traceId: turn.traceId,
+                  helperPid: process.pid,
+                  refreshViewport: true,
+                });
                 await waitForOperationalChatGptViewport(rebound.page, signal);
                 return rebound;
               },
