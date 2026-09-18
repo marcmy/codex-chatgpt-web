@@ -283,6 +283,31 @@ export function withoutSupersededModelSwitchContracts(messages: readonly CodexMe
   return messages.filter((_message, index) => !dropped.has(index));
 }
 
+
+/**
+ * A readable compaction summary is the durable checkpoint for every earlier visual turn. Strip raw
+ * images from messages before the newest checkpoint so stale screenshots cannot be reattached when
+ * a compacted Codex history is reconstructed in a fresh or retained ChatGPT browser conversation.
+ * Text and non-image context remain byte-for-byte equivalent; images sent after the checkpoint stay.
+ */
+export function withoutCheckpointedImages(messages: readonly CodexMessage[]): CodexMessage[] {
+  const checkpointIndex = messages.findLastIndex(message =>
+    message.role === "user" && isReadableCompactionSummaryText(plainMessageText(message))
+  );
+  if (checkpointIndex < 0) return [...messages];
+
+  return messages.map((message, index) => {
+    if (index >= checkpointIndex || message.role === "assistant" || typeof message.content === "string") {
+      return message;
+    }
+    if (!message.content.some(part => part.type === "image")) return message;
+    return {
+      ...message,
+      content: message.content.filter(part => part.type !== "image"),
+    } as CodexMessage;
+  });
+}
+
 function messageEnvelope(
   message: CodexMessage,
   images: ChatGptWebPromptImage[],
@@ -688,7 +713,9 @@ export function compileChatGptWebPrompt(
     return { text, images, ...attachments };
   };
 
-  let sourceMessages = withoutSupersededModelSwitchContracts(parsed.context.messages);
+  let sourceMessages = withoutCheckpointedImages(
+    withoutSupersededModelSwitchContracts(parsed.context.messages),
+  );
   const initialMessageCount = sourceMessages.length;
   let compiled = build(sourceMessages);
   if (!parsed._compactionRequest) return compiled;
