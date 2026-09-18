@@ -526,7 +526,7 @@ function multipartCompactionFitsAvailableMessages(
     (sum, image) => sum + chatGptWebImageTokenReserve(image.detail),
     0,
   );
-  const finalSkillTokens = skillFileTokens(compiled.skillFiles, parsed.modelId);
+  const finalSkillTokens = skillFileTokens(compiled.skillFiles, CHATGPT_WEB_MODEL_ID);
   const transactionId = `ctx_${"0".repeat(32)}`;
 
   return multipart.parts.every((payload, index) => {
@@ -535,10 +535,10 @@ function multipartCompactionFitsAvailableMessages(
     const text = final
       ? formatChatGptWebMultipartCommit(multipart, transactionId)
       : formatChatGptWebMultipartStage(payload, transactionId, index + 1, multipart.parts.length).text;
-    const limits = resolveChatGptWebTransportLimits(parsed.modelId, effort, capabilities);
-    const messageTokens = estimateTokens(text, parsed.modelId) + (final ? finalSkillTokens : 0);
+    const limits = resolveChatGptWebTransportLimits(CHATGPT_WEB_MODEL_ID, effort, capabilities);
+    const messageTokens = estimateTokens(text, CHATGPT_WEB_MODEL_ID) + (final ? finalSkillTokens : 0);
     const messageBudget = resolveChatGptWebMessageTokenBudget(
-      parsed.modelId,
+      CHATGPT_WEB_MODEL_ID,
       effort,
       capabilities,
       final ? imageTokens : 0,
