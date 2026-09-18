@@ -12,7 +12,7 @@ test("recognizes both Codex v1 and transparent v2 readable compaction summaries"
   expect(isReadableCompactionSummaryText(`${SUMMARY_PREFIX}not a summary boundary`)).toBe(false);
 });
 
-test("v1 compaction keeps only the newest ten structured images without copying them into text", () => {
+test("v1 compaction keeps only the newest unconsumed visual user turn", () => {
   const input = Array.from({ length: 12 }, (_, index) => ({
     type: "message",
     role: "user",
@@ -37,14 +37,66 @@ test("v1 compaction keeps only the newest ten structured images without copying 
   expect(retained).toHaveLength(12);
   expect(retained.map(item => item.id)).toEqual(input.map(item => item.id));
   expect(retained.map(item => item.metadata?.source)).toEqual(input.map(item => item.metadata.source));
-  const imageUrls = retained.flatMap(item => item.content
-    .filter(block => block.type === "input_image")
-    .map(block => block.image_url));
-  expect(imageUrls).toEqual(input.slice(2).map(item => item.content[1]!.image_url));
-  expect(retained.flatMap(item => item.content)
-    .filter(block => block.type === "input_text")
-    .every(block => !block.text?.includes("data:image"))).toBe(true);
-  expect(retained.at(-1)?.content.at(-1)).toMatchObject({ detail: "high" });
+  const images = retained.flatMap(item => item.content.filter(block => block.type === "input_image"));
+  expect(images).toEqual([{
+    type: "input_image",
+    image_url: "data:image/png;base64,image-11",
+    detail: "high",
+  }]);
+});
+
+test("v1 compaction drops a consumed screenshot but preserves the pending screenshot", () => {
+  const consumed = "data:image/png;base64,consumed";
+  const pending = "data:image/png;base64,pending";
+  const extracted = extractCompactUserMessages([
+    {
+      type: "message",
+      role: "user",
+      id: "consumed-turn",
+      content: [
+        { type: "input_text", text: "Inspect this old screenshot" },
+        { type: "input_image", image_url: consumed, detail: "high" },
+      ],
+    },
+    {
+      type: "message",
+      role: "assistant",
+      content: [{ type: "output_text", text: "I inspected it." }],
+    },
+    {
+      type: "message",
+      role: "user",
+      id: "pending-turn",
+      content: [
+        { type: "input_text", text: "Now inspect this screenshot" },
+        { type: "input_image", image_url: pending, detail: "high" },
+      ],
+    },
+  ]) as Array<{ id?: string; content: Array<{ type: string; image_url?: string }> }>;
+
+  expect(extracted[0]!.content.some(block => block.type === "input_image")).toBeFalse();
+  expect(extracted[1]!.content.at(-1)).toMatchObject({ type: "input_image", image_url: pending });
+
+  const serialized = JSON.stringify(buildCompactV1Output(extracted, "checkpoint"));
+  expect(serialized).not.toContain(consumed);
+  expect(serialized).toContain(pending);
+});
+
+test("model tool output boundary marks an earlier screenshot consumed", () => {
+  const image = "data:image/png;base64,tool-consumed";
+  const extracted = extractCompactUserMessages([
+    {
+      type: "message",
+      role: "user",
+      content: [
+        { type: "input_text", text: "Inspect before using a tool" },
+        { type: "input_image", image_url: image, detail: "high" },
+      ],
+    },
+    { type: "function_call", call_id: "call_1", name: "exec_command", arguments: "{}" },
+  ]) as Array<{ content: Array<{ type: string; image_url?: string }> }>;
+
+  expect(extracted[0]!.content.some(block => block.type === "input_image")).toBeFalse();
 });
 
 test("v1 recompaction does not carry already-checkpointed images into another browser epoch", () => {
@@ -91,11 +143,12 @@ test("v1 recompaction does not carry already-checkpointed images into another br
   const output = buildCompactV1Output(extracted, "next checkpoint");
   const serialized = JSON.stringify(output);
   expect(serialized).toContain("Old screenshot request");
+  expect(serialized).toContain("New screenshot request");
   expect(serialized).not.toContain(oldImage);
   expect(serialized).toContain(newImage);
 });
 
-test("v1 compaction drops persisted one-pixel image sentinels", () => {
+test("v1 compaction drops one-pixel sentinels while preserving a real pending image", () => {
   const placeholder = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
   const output = buildCompactV1Output(extractCompactUserMessages([{
     type: "message",
@@ -109,4 +162,5 @@ test("v1 compaction drops persisted one-pixel image sentinels", () => {
 
   expect(JSON.stringify(output)).not.toContain(placeholder);
   expect(JSON.stringify(output)).toContain("data:image/png;base64,real-image");
+  expect(JSON.stringify(output)).toContain("keep the request");
 });
