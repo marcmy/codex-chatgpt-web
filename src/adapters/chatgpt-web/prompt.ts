@@ -37,6 +37,8 @@ export interface CompileChatGptWebPromptOptions {
   captureLunaCheckpoint?: boolean;
   experimentalSkillAttachments?: boolean;
   experimentalMultipartParts?: ChatGptWebMultipartPartCount;
+  /** Internal planner seam: inspect a requested multipart layout before compaction fallback trims it. */
+  multipartPlanningOnly?: boolean;
   /**
    * Manual Zero Risk transport keeps ChatGPT model/effort selection and prompt submission under the
    * user's control. The browser bridge may open the owned tab and copy this prompt, but it never
@@ -953,8 +955,16 @@ export function compileChatGptWebPrompt(
   // oversized atomic historical record cannot be split safely; for compaction only, fall back to
   // the inline compiler so the native-style oldest-history trimming below can recover the task.
   if (compiled.multipart) {
-    if (multipartCompactionFitsAvailableMessages(parsed, capabilities, compiled)) return compiled;
-    const { experimentalMultipartParts: _multipart, ...singleMessageOptions } = options ?? {};
+    // Transport planning must see the requested multipart shape even when it would normally trigger
+    // compaction's inline-trimming recovery; the planner may still fit the same history by adding
+    // the transport-only spill part.
+    if (options?.multipartPlanningOnly
+      || multipartCompactionFitsAvailableMessages(parsed, capabilities, compiled)) return compiled;
+    const {
+      experimentalMultipartParts: _multipart,
+      multipartPlanningOnly: _planning,
+      ...singleMessageOptions
+    } = options ?? {};
     return compileChatGptWebPrompt(parsed, capabilities, turnToken, singleMessageOptions);
   }
 
