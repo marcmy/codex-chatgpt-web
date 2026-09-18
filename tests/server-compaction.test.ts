@@ -6,6 +6,7 @@ import { compactRequest, responseRequest as respond } from "../src/server";
 import type { CodexProviderConfig } from "../src/types";
 import { extractChatGptTurnIdentity, extractChatGptTurnUserRevision } from "../src/adapters/chatgpt-web/environment";
 import { chatGptCompactionSourceExecutionKey, chatGptTurnExecutionKey } from "../src/adapters/chatgpt-web/turn-execution";
+import { ChatGptWebAdapterError } from "../src/adapters/chatgpt-web/adapter-error";
 
 const model = "chatgpt-web/high";
 const summary = "The repository was inspected. Continue by implementing the bounded Web context contract.";
@@ -574,6 +575,38 @@ test("preserves a structured browser preflight failure through the v1 compaction
       message: "This task exceeds the ChatGPT Web context window.",
       type: "invalid_request_error",
       code: "context_length_exceeded",
+    },
+  });
+});
+
+test("preserves a structured browser preflight error that is thrown before the adapter can emit", async () => {
+  const response = await responseRequest(new Request("http://127.0.0.1:17841/v1/responses", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ model, input: "test", stream: false }),
+  }), defaultConfig("browser-only"), () => ({
+    name: "thrown-preflight-error",
+    async runTurn() {
+      throw new ChatGptWebAdapterError(
+        "No ChatGPT effort available to this account can carry this Bigger Context stage.",
+        {
+          status: 400,
+          errorType: "invalid_request_error",
+          code: "context_length_exceeded",
+          retryable: false,
+        },
+      );
+    },
+  }));
+
+  expect(response.status).toBe(200);
+  expect(await response.json()).toMatchObject({
+    status: "failed",
+    retryable: false,
+    error: {
+      type: "invalid_request_error",
+      code: "context_length_exceeded",
+      message: "No ChatGPT effort available to this account can carry this Bigger Context stage.",
     },
   });
 });
