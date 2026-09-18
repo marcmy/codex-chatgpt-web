@@ -12,7 +12,7 @@ test("recognizes both Codex v1 and transparent v2 readable compaction summaries"
   expect(isReadableCompactionSummaryText(`${SUMMARY_PREFIX}not a summary boundary`)).toBe(false);
 });
 
-test("v1 compaction keeps only the newest ten structured images without copying them into text", () => {
+test("v1 compaction drops raw images while retaining user text and metadata", () => {
   const input = Array.from({ length: 12 }, (_, index) => ({
     type: "message",
     role: "user",
@@ -37,14 +37,9 @@ test("v1 compaction keeps only the newest ten structured images without copying 
   expect(retained).toHaveLength(12);
   expect(retained.map(item => item.id)).toEqual(input.map(item => item.id));
   expect(retained.map(item => item.metadata?.source)).toEqual(input.map(item => item.metadata.source));
-  const imageUrls = retained.flatMap(item => item.content
-    .filter(block => block.type === "input_image")
-    .map(block => block.image_url));
-  expect(imageUrls).toEqual(input.slice(2).map(item => item.content[1]!.image_url));
-  expect(retained.flatMap(item => item.content)
-    .filter(block => block.type === "input_text")
-    .every(block => !block.text?.includes("data:image"))).toBe(true);
-  expect(retained.at(-1)?.content.at(-1)).toMatchObject({ detail: "high" });
+  expect(retained.flatMap(item => item.content).filter(block => block.type === "input_image")).toEqual([]);
+  expect(retained.flatMap(item => item.content).map(block => block.text))
+    .toEqual(input.map(item => item.content[0]!.text));
 });
 
 test("v1 recompaction does not carry already-checkpointed images into another browser epoch", () => {
@@ -91,11 +86,12 @@ test("v1 recompaction does not carry already-checkpointed images into another br
   const output = buildCompactV1Output(extracted, "next checkpoint");
   const serialized = JSON.stringify(output);
   expect(serialized).toContain("Old screenshot request");
+  expect(serialized).toContain("New screenshot request");
   expect(serialized).not.toContain(oldImage);
-  expect(serialized).toContain(newImage);
+  expect(serialized).not.toContain(newImage);
 });
 
-test("v1 compaction drops persisted one-pixel image sentinels", () => {
+test("v1 compaction drops persisted one-pixel sentinels and real image payloads", () => {
   const placeholder = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
   const output = buildCompactV1Output(extractCompactUserMessages([{
     type: "message",
@@ -108,5 +104,6 @@ test("v1 compaction drops persisted one-pixel image sentinels", () => {
   }]), "checkpoint");
 
   expect(JSON.stringify(output)).not.toContain(placeholder);
-  expect(JSON.stringify(output)).toContain("data:image/png;base64,real-image");
+  expect(JSON.stringify(output)).not.toContain("data:image/png;base64,real-image");
+  expect(JSON.stringify(output)).toContain("keep the request");
 });
