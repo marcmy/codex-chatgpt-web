@@ -116,7 +116,11 @@ export function resolveBiggerContextMultipartParts(
   const minimumParts = initialParts ?? 2;
   for (const parts of [2, CHATGPT_BIGGER_CONTEXT_PARTS, CHATGPT_BIGGER_CONTEXT_MAX_TRANSPORT_PARTS] as const) {
     if (parts < minimumParts) continue;
-    if (fits(compile(parts))) return parts;
+    const candidate = compile(parts);
+    // Compaction compilation may deliberately fall back inline when the requested multipart shape
+    // cannot fit. Treat that as a failed candidate here so the planner can try the spill part first.
+    if (candidate.multipart?.parts.length !== parts) continue;
+    if (fits(candidate)) return parts;
   }
   // Keep the maximum transport shape so the normal compiler/browser diagnostics can report the
   // actual irreducible limit (or compaction can activate its existing inline-trimming fallback).
