@@ -523,7 +523,7 @@ test("compaction retry submission evidence cannot make prompt-stage settlement u
 
 test("launcher page acquisition proves a nonzero operational viewport before DOM interaction", () => {
   const workerSource = readFileSync(new URL("../src/adapters/chatgpt-web/browser-worker.ts", import.meta.url), "utf8");
-  const connect = workerSource.indexOf("const connection = await connectLauncherBrowserHost(");
+  const connect = workerSource.indexOf("let connection = await connectLauncherBrowserHost(");
   const viewport = workerSource.indexOf("await waitForOperationalChatGptViewport(connection.page, abortSignal);", connect);
   const acquired = workerSource.indexOf('await diagnostics.capture(page, "browser-page-acquired")', viewport);
 
@@ -531,6 +531,46 @@ test("launcher page acquisition proves a nonzero operational viewport before DOM
   expect(viewport).toBeGreaterThan(connect);
   expect(acquired).toBeGreaterThan(viewport);
   expect(workerSource).toContain("innerWidth >= width && innerHeight >= height");
+});
+
+test("retained launcher viewport acquisition gets one same-surface repair before outer reconnect", () => {
+  const workerSource = readFileSync(new URL("../src/adapters/chatgpt-web/browser-worker.ts", import.meta.url), "utf8");
+  const runBrowserTurn = workerSource.slice(
+    workerSource.indexOf("  private async runBrowserTurn("),
+    workerSource.indexOf("      const rebindLauncherPage =", workerSource.indexOf("  private async runBrowserTurn(")),
+  );
+  const firstViewport = runBrowserTurn.indexOf(
+    "await waitForOperationalChatGptViewport(connection.page, abortSignal);",
+  );
+  const retainedOnly = runBrowserTurn.indexOf(
+    "if (!reuseConversation || abortSignal.aborted) throw error;",
+    firstViewport,
+  );
+  const disconnect = runBrowserTurn.indexOf(
+    "connectAfterClosingBrowserConnection(",
+    retainedOnly,
+  );
+  const refresh = runBrowserTurn.indexOf("refreshViewport: true", disconnect);
+  const reconnect = runBrowserTurn.indexOf(
+    "const repaired = await connectLauncherBrowserHost(",
+    refresh,
+  );
+  const secondViewport = runBrowserTurn.indexOf(
+    "await waitForOperationalChatGptViewport(repaired.page, abortSignal);",
+    reconnect,
+  );
+  const repaired = runBrowserTurn.indexOf(
+    "repaired its retained launcher viewport in place",
+    secondViewport,
+  );
+
+  expect(firstViewport).toBeGreaterThan(-1);
+  expect(retainedOnly).toBeGreaterThan(firstViewport);
+  expect(disconnect).toBeGreaterThan(retainedOnly);
+  expect(refresh).toBeGreaterThan(disconnect);
+  expect(reconnect).toBeGreaterThan(refresh);
+  expect(secondViewport).toBeGreaterThan(reconnect);
+  expect(repaired).toBeGreaterThan(secondViewport);
 });
 
 test("Luna turns without a retained conversation never send connector identity alone", () => {
