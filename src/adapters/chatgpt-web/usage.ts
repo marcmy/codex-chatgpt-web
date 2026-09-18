@@ -10,6 +10,7 @@ import {
 import type { CodexParsedRequest, CodexUsage } from "../../types";
 import { compiledChatGptWebMessages, estimateChatGptWebImageTokens, estimateCompiledChatGptWebInputTokens } from "./input-tokens";
 import {
+  CHATGPT_BIGGER_CONTEXT_MAX_TRANSPORT_PARTS,
   CHATGPT_BIGGER_CONTEXT_PARTS,
   compileChatGptWebPrompt,
   type ChatGptWebMultipartPartCount,
@@ -60,9 +61,10 @@ export function estimateChatGptWebInputTokens(
 }
 
 /**
- * The compaction threshold chooses the initial part count. Whole records and composer limits
- * can require more parts even when the total token estimate is small. Plan before submission;
- * compaction always receives all three parts without passing through the legacy inline budget.
+ * The compaction threshold chooses the logical context width. Browser-message boundaries can
+ * require one additional physical spill part even when the task remains inside the same three-window
+ * Bigger Context ceiling. Plan that transport before submission; the fourth part never expands the
+ * model context advertised to Codex.
  */
 export function resolveBiggerContextMultipartParts(
   parsed: CodexParsedRequest,
@@ -76,20 +78,28 @@ export function resolveBiggerContextMultipartParts(
     throw new Error("Bigger Context is unavailable for Luna because its accumulated browser transcript still shares one 28,000-token transport budget");
   }
   const mode = resolveChatGptWebModelMode(parsed.modelId, parsed.options.reasoning, capabilities);
-  if (parsed._compactionRequest) return CHATGPT_BIGGER_CONTEXT_PARTS;
   const { contextWindow, autoCompactTokenLimit } = resolveChatGptWebContextLimits(
     CHATGPT_WEB_BACKEND_MODEL,
     mode.effort,
     { ...capabilities, experimentalBiggerContext: false },
   );
+  const compaction = parsed._compactionRequest === true;
   const compile = (parts?: ChatGptWebMultipartPartCount): CompiledChatGptWebPrompt => compileChatGptWebPrompt(
     parsed, capabilities, mode.localTools ? ESTIMATE_TURN_TOKEN : undefined,
-    { experimentalMultipartParts: parts, experimentalSkillAttachments },
+    {
+      experimentalMultipartParts: parts,
+      experimentalSkillAttachments,
+      ...(parts !== undefined ? { multipartPlanningOnly: true } : {}),
+    },
   );
-  const inline = compile();
-  const inputTokens = estimateCompiledChatGptWebInputTokens(inline, parsed.modelId);
-  const initialParts = biggerContextPartCount(inputTokens, autoCompactTokenLimit, false);
-  if (initialParts === CHATGPT_BIGGER_CONTEXT_PARTS) return initialParts;
+  const inline = compaction ? undefined : compile();
+  const initialParts = compaction
+    ? CHATGPT_BIGGER_CONTEXT_PARTS
+    : biggerContextPartCount(
+      estimateCompiledChatGptWebInputTokens(inline!, parsed.modelId),
+      autoCompactTokenLimit,
+      false,
+    );
 
   const fits = (compiled: CompiledChatGptWebPrompt): boolean => {
     const messages = compiledChatGptWebMessages(compiled);
@@ -106,10 +116,25 @@ export function resolveBiggerContextMultipartParts(
       );
       if (estimateTokens(text, parsed.modelId) > budget) return false;
     }
-    return estimateCompiledChatGptWebInputTokens(compiled, parsed.modelId) < contextWindow * messages.length;
+    // A fourth physical part is transport spill only. Never let it raise the logical three-window
+    // Bigger Context ceiling that the model catalog advertises to Codex.
+    const logicalParts = Math.min(messages.length, CHATGPT_BIGGER_CONTEXT_PARTS);
+    return estimateCompiledChatGptWebInputTokens(compiled, parsed.modelId) < contextWindow * logicalParts;
   };
-  if (initialParts === undefined && fits(inline)) return undefined;
-  return fits(compile(2)) ? 2 : CHATGPT_BIGGER_CONTEXT_PARTS;
+
+  if (initialParts === undefined && inline && fits(inline)) return undefined;
+  const minimumParts = initialParts ?? 2;
+  for (const parts of [2, CHATGPT_BIGGER_CONTEXT_PARTS, CHATGPT_BIGGER_CONTEXT_MAX_TRANSPORT_PARTS] as const) {
+    if (parts < minimumParts) continue;
+    const candidate = compile(parts);
+    // Compaction compilation may deliberately fall back inline when the requested multipart shape
+    // cannot fit. Treat that as a failed candidate here so the planner can try the spill part first.
+    if (candidate.multipart?.parts.length !== parts) continue;
+    if (fits(candidate)) return parts;
+  }
+  // Keep the maximum transport shape so the normal compiler/browser diagnostics can report the
+  // actual irreducible limit (or compaction can activate its existing inline-trimming fallback).
+  return CHATGPT_BIGGER_CONTEXT_MAX_TRANSPORT_PARTS;
 }
 
 export function biggerContextPartCount(

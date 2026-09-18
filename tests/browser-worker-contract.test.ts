@@ -3352,6 +3352,24 @@ test("Bigger Context preflight expands only the total context ceiling and keeps 
     3,
   )).toThrow("270,000-token three-part ceiling");
   expect(() => assertChatGptWebMultipartInputWithinLimits(
+    269_999,
+    80_000,
+    "gpt-5.6-sol",
+    "high",
+    plus,
+    900_000,
+    4,
+  )).not.toThrow();
+  expect(() => assertChatGptWebMultipartInputWithinLimits(
+    270_000,
+    80_000,
+    "gpt-5.6-sol",
+    "high",
+    plus,
+    900_000,
+    4,
+  )).toThrow("270,000-token four-transport-part ceiling");
+  expect(() => assertChatGptWebMultipartInputWithinLimits(
     180_000,
     80_000,
     "gpt-5.6-sol",
