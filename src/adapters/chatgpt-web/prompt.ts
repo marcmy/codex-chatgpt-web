@@ -285,10 +285,13 @@ export function withoutSupersededModelSwitchContracts(messages: readonly CodexMe
 
 
 /**
- * A readable compaction summary is the durable checkpoint for every earlier visual turn. Strip raw
- * images from messages before the newest checkpoint so stale screenshots cannot be reattached when
- * a compacted Codex history is reconstructed in a fresh or retained ChatGPT browser conversation.
- * Text and non-image context remain byte-for-byte equivalent; images sent after the checkpoint stay.
+ * Remove stale raw images from history before the newest readable compaction checkpoint.
+ *
+ * V2 history still contains assistant output, so an image is known-consumed when model output sits
+ * between that user turn and the checkpoint. V1 replacement history intentionally omits assistant
+ * messages, which loses that provenance; in that ambiguous shape retain at most the newest visual
+ * user turn as a one-turn safety fallback. Once any assistant output appears after the checkpoint,
+ * even that fallback has been consumed and all pre-checkpoint raw images can be removed.
  */
 export function withoutCheckpointedImages(messages: readonly CodexMessage[]): CodexMessage[] {
   const checkpointIndex = messages.findLastIndex(message =>
@@ -296,11 +299,40 @@ export function withoutCheckpointedImages(messages: readonly CodexMessage[]): Co
   );
   if (checkpointIndex < 0) return [...messages];
 
+  const meaningfulAssistant = (message: CodexMessage): boolean =>
+    message.role === "assistant" && message.content.length > 0;
+
+  const checkpointAlreadyConsumed = messages
+    .slice(checkpointIndex + 1)
+    .some(meaningfulAssistant);
+
+  let retainedFallbackIndex = -1;
+  if (!checkpointAlreadyConsumed) {
+    // Search only the suffix since the most recent model output. An image before that output was
+    // already consumed. In v1 replacement history there is no assistant evidence at all, so this
+    // naturally selects only the newest image-bearing user turn as the conservative fallback.
+    for (let index = checkpointIndex - 1; index >= 0; index -= 1) {
+      const message = messages[index]!;
+      if (meaningfulAssistant(message)) break;
+      if (
+        retainedFallbackIndex < 0
+        && message.role === "user"
+        && typeof message.content !== "string"
+        && message.content.some(part => part.type === "image")
+      ) {
+        retainedFallbackIndex = index;
+        break;
+      }
+    }
+  }
+
   return messages.map((message, index) => {
-    if (index >= checkpointIndex || message.role === "assistant" || typeof message.content === "string") {
+    if (index >= checkpointIndex || index === retainedFallbackIndex || typeof message.content === "string") {
       return message;
     }
-    if (!message.content.some(part => part.type === "image")) return message;
+    if (message.role === "assistant" || !message.content.some(part => part.type === "image")) {
+      return message;
+    }
     return {
       ...message,
       content: message.content.filter(part => part.type !== "image"),
