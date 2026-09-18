@@ -4452,7 +4452,7 @@ export class ChatGptBrowserWorker {
           }
           return managed;
         }
-        const connection = await connectLauncherBrowserHost(
+        let connection = await connectLauncherBrowserHost(
           this.config.browserHostDescriptorPath!,
           browserStageTimeouts.browserPage,
           launcherSurfaceId,
@@ -4463,7 +4463,46 @@ export class ChatGptBrowserWorker {
           throw new DOMException("ChatGPT browser page acquisition aborted", "AbortError");
         }
         turnConnection = connection.browser;
-        await waitForOperationalChatGptViewport(connection.page, abortSignal);
+        try {
+          await waitForOperationalChatGptViewport(connection.page, abortSignal);
+        } catch (error) {
+          if (!reuseConversation || abortSignal.aborted) throw error;
+          console.warn(
+            `[chatgpt-web] browser turn ${turn.traceId} is repairing a retained launcher viewport after acquisition failure:`
+            + ` ${redactChatGptUiDiagnostic(error instanceof Error ? error.message : String(error))}`,
+          );
+          const previousConnection = turnConnection;
+          connection = await connectAfterClosingBrowserConnection(
+            previousConnection,
+            async () => {
+              // The old CDP session must be fully gone before Electron reapplies device emulation.
+              // Otherwise its eventual disconnect can clear the repaired hidden viewport again.
+              turnConnection = undefined;
+              await notifyLauncherTurn(this.config.browserHostDescriptorPath!, {
+                phase: "heartbeat",
+                traceId: turn.traceId,
+                helperPid: process.pid,
+                refreshViewport: true,
+              });
+              const repaired = await connectLauncherBrowserHost(
+                this.config.browserHostDescriptorPath!,
+                browserStageTimeouts.browserPage,
+                launcherSurfaceId,
+                abortSignal,
+              );
+              if (abortSignal.aborted) {
+                await repaired.browser.close().catch(() => {});
+                throw new DOMException("ChatGPT browser page acquisition aborted", "AbortError");
+              }
+              turnConnection = repaired.browser;
+              await waitForOperationalChatGptViewport(repaired.page, abortSignal);
+              return repaired;
+            },
+          );
+          console.warn(
+            `[chatgpt-web] browser turn ${turn.traceId} repaired its retained launcher viewport in place`,
+          );
+        }
         return connection.page;
       });
       if (!maintenancePage && !launcherSurfaceId) managedPage = page;
