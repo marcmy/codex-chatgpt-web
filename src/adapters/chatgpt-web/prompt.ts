@@ -45,11 +45,21 @@ export interface CompileChatGptWebPromptOptions {
   manualControl?: true;
 }
 
+/** Logical Bigger Context capacity remains three ordinary model windows. */
 export const CHATGPT_BIGGER_CONTEXT_PARTS = 3 as const;
-export type ChatGptWebMultipartPartCount = 2 | typeof CHATGPT_BIGGER_CONTEXT_PARTS;
+/**
+ * A fourth physical transport part is spill capacity only. It lets fragmented records fit the
+ * per-message browser boundary without advertising or accepting a fourth model-context window.
+ */
+export const CHATGPT_BIGGER_CONTEXT_MAX_TRANSPORT_PARTS = 4 as const;
+export type ChatGptWebMultipartPartCount =
+  | 2
+  | typeof CHATGPT_BIGGER_CONTEXT_PARTS
+  | typeof CHATGPT_BIGGER_CONTEXT_MAX_TRANSPORT_PARTS;
 export type ChatGptWebMultipartParts =
   | readonly [string, string]
-  | readonly [string, string, string];
+  | readonly [string, string, string]
+  | readonly [string, string, string, string];
 
 export interface ChatGptWebMultipartPrompt {
   parts: ChatGptWebMultipartParts;
@@ -81,7 +91,8 @@ export function formatChatGptWebMultipartStage(
     !Number.isInteger(partIndex)
     || partIndex < 1
     || partIndex > totalParts
-    || (totalParts !== 2 && totalParts !== CHATGPT_BIGGER_CONTEXT_PARTS)
+    || totalParts < 2
+    || totalParts > CHATGPT_BIGGER_CONTEXT_MAX_TRANSPORT_PARTS
   ) {
     throw new Error("ChatGPT multipart stage index is invalid");
   }
@@ -117,8 +128,8 @@ export function formatChatGptWebMultipartCommit(
 ): string {
   assertMultipartTransactionId(transactionId);
   const totalParts = multipart.parts.length;
-  if (totalParts !== 2 && totalParts !== CHATGPT_BIGGER_CONTEXT_PARTS) {
-    throw new Error("ChatGPT multipart commit requires two or three staged parts");
+  if (totalParts < 2 || totalParts > CHATGPT_BIGGER_CONTEXT_MAX_TRANSPORT_PARTS) {
+    throw new Error("ChatGPT multipart commit requires two to four transport parts");
   }
   const manifest = multipart.parts.map((payload, index) => (
     `${index + 1}/${totalParts}:${createHash("sha256").update(payload).digest("hex")}`
@@ -591,7 +602,10 @@ function partitionMultipartContext(
     records: group,
   })));
   if (totalParts === 2) return [payloads[0]!, payloads[1]!];
-  return [payloads[0]!, payloads[1]!, payloads[2]!];
+  if (totalParts === CHATGPT_BIGGER_CONTEXT_PARTS) {
+    return [payloads[0]!, payloads[1]!, payloads[2]!];
+  }
+  return [payloads[0]!, payloads[1]!, payloads[2]!, payloads[3]!];
 }
 
 export function chatGptReadOnlyContextWarning(
@@ -685,8 +699,11 @@ export function compileChatGptWebPrompt(
       throw new Error("ChatGPT Zero Risk does not support rolling or multipart browser transport");
     }
   }
-  if (multipartParts !== undefined && multipartParts !== 2 && multipartParts !== CHATGPT_BIGGER_CONTEXT_PARTS) {
-    throw new Error("Bigger Context requires two or three multipart stages");
+  if (
+    multipartParts !== undefined
+    && (multipartParts < 2 || multipartParts > CHATGPT_BIGGER_CONTEXT_MAX_TRANSPORT_PARTS)
+  ) {
+    throw new Error("Bigger Context requires two to four transport parts");
   }
   if (multipartEnabled && parsed.modelId === CHATGPT_WEB_LUNA_MODEL_ID) {
     throw new Error("Bigger Context is unavailable for Luna because its accumulated browser transcript still shares one 28,000-token transport budget");
@@ -861,7 +878,9 @@ export function compileChatGptWebPrompt(
       const multipart: ChatGptWebMultipartPrompt = {
         parts: multipartParts === 2
           ? [emptyPart(0), emptyPart(1)]
-          : [emptyPart(0), emptyPart(1), emptyPart(2)],
+          : multipartParts === CHATGPT_BIGGER_CONTEXT_PARTS
+            ? [emptyPart(0), emptyPart(1), emptyPart(2)]
+            : [emptyPart(0), emptyPart(1), emptyPart(2), emptyPart(3)],
         commit: [
           ...sharedContract,
           ...skillContract,
