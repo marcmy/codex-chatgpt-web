@@ -37,11 +37,13 @@ import {
   estimateCompiledChatGptWebMessageTokens,
 } from "./input-tokens";
 import {
+  CHATGPT_BIGGER_CONTEXT_PARTS,
   CHATGPT_MAX_INPUT_IMAGES,
   formatChatGptWebMultipartCommit,
   formatChatGptWebMultipartStage,
   type CompiledChatGptWebPrompt,
   type ChatGptWebPromptImage,
+  type ChatGptWebMultipartPartCount,
   type ChatGptWebMultipartStage,
 } from "./prompt";
 import { estimateCompiledChatGptWebInputTokens } from "./input-tokens";
@@ -904,7 +906,7 @@ export function assertChatGptWebMultipartInputWithinLimits(
   effort: ChatGptWebModelMode["effort"],
   capabilities: ChatGptWebCapabilities,
   maxMessageChars: number,
-  partCount: 2 | 3,
+  partCount: ChatGptWebMultipartPartCount,
   transport?: {
     stagingEffort: ChatGptWebModelMode["effort"];
     maxStageMessageTokens: number;
@@ -977,9 +979,16 @@ export function assertChatGptWebMultipartInputWithinLimits(
   } else {
     assertMessageBoundary("stage", estimatedMessageTokens, maxMessageChars, effort);
   }
-  const experimentalContextWindow = baseContextWindow * partCount;
+  // Four physical messages are allowed only to relieve per-message transport pressure. Bigger
+  // Context itself still owns at most three ordinary model windows, matching the advertised catalog.
+  const logicalParts = Math.min(partCount, CHATGPT_BIGGER_CONTEXT_PARTS);
+  const experimentalContextWindow = baseContextWindow * logicalParts;
   if (estimatedInputTokens < experimentalContextWindow) return;
-  const partLabel = partCount === 2 ? "two-part" : "three-part";
+  const partLabel = partCount === 2
+    ? "two-part"
+    : partCount === CHATGPT_BIGGER_CONTEXT_PARTS
+      ? "three-part"
+      : "four-transport-part";
   throw new ChatGptWebAdapterError(
     `This Bigger Context transaction is estimated at ${estimatedInputTokens.toLocaleString("en-US")} input tokens, which exceeds its experimental ${experimentalContextWindow.toLocaleString("en-US")}-token ${partLabel} ceiling. Run /compact, then retry.`,
     { status: 400, errorType: "invalid_request_error", code: "context_length_exceeded", retryable: false },
