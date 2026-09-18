@@ -176,32 +176,27 @@ function imageBlock(block: CompactContentBlock): boolean {
 /**
  * Build the v1 compact replacement history.
  *
- * Text follows Codex's 20k-token retained-user-message budget. Images introduced since the latest
- * readable checkpoint are independently bounded to ChatGPT's ten-attachment limit, newest first.
- * `extractCompactUserMessages` removes older, already-checkpointed image payloads so a screenshot
- * can reconstruct the next browser epoch without being uploaded again after every later compact.
+ * Text follows Codex's 20k-token retained-user-message budget. Raw image payloads do not cross a
+ * compaction boundary: the checkpoint summary is the durable representation of prior visual work.
+ * Images introduced after this replacement history is installed remain available normally until
+ * the next compaction.
  */
 export function buildCompactV1Output(
   userMessages: CompactMessageItem[],
   summary: string,
-  maxImages = 10,
+  _maxImages = 10,
 ): CompactMessageItem[] {
   const selected: CompactMessageItem[] = [];
   let remaining = COMPACT_V1_RETAINED_CHAR_BUDGET;
-  let retainedImages = 0;
-  for (let i = userMessages.length - 1; i >= 0 && (remaining > 0 || retainedImages < maxImages); i--) {
+  for (let i = userMessages.length - 1; i >= 0 && remaining > 0; i--) {
     const message = structuredClone(userMessages[i]!);
     const blocks = compactContentBlocks(message);
     const retainedReversed: CompactContentBlock[] = [];
     for (let blockIndex = blocks.length - 1; blockIndex >= 0; blockIndex -= 1) {
       const block = blocks[blockIndex]!;
-      if (imageBlock(block)) {
-        if (retainedImages < maxImages) {
-          retainedImages += 1;
-          retainedReversed.push(block);
-        }
-        continue;
-      }
+      // A compaction checkpoint is an image-retention boundary. Keep the associated human text,
+      // but never copy raw screenshots into the replacement history.
+      if (imageBlock(block)) continue;
       if (!textBlock(block) || remaining === 0) continue;
       const text = block.text!;
       if (text.length <= remaining) {
