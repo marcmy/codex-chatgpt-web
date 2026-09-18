@@ -65,14 +65,11 @@ jobs:
         run: command -v xvfb-run || (sudo apt-get update && sudo apt-get install -y xvfb)
       - run: bun run app:smoke
       - name: Upload packaged launcher
+        if: runner.os == 'Windows'
         uses: actions/upload-artifact@v4
         with:
           name: codex-chatgpt-web-${{ matrix.os }}
-          path: |
-            launcher/artifacts/*.dmg
-            launcher/artifacts/*.zip
-            launcher/artifacts/*.exe
-            launcher/artifacts/*.AppImage
+          path: launcher/artifacts/*.exe
           if-no-files-found: error
           retention-days: 7
 
