@@ -3828,6 +3828,17 @@ test("clearing the missing-response window preserves whether a response was ever
   expect(tracker.update(absent, 6_000)).toContain("response DOM disappeared");
 });
 
+test("the launcher helper accepts the fourth Bigger Context spill part", () => {
+  const helper = readFileSync("src/adapters/chatgpt-web/browser-helper-main.ts", "utf8");
+
+  // Bigger Context still has three logical windows, but #61 added a fourth physical transport
+  // spill part. The out-of-process helper must share that transport bound instead of hard-coding
+  // the older 2/3-part protocol or it aborts the first run and every reconnect collides with it.
+  expect(helper).toContain("CHATGPT_BIGGER_CONTEXT_MAX_TRANSPORT_PARTS");
+  expect(helper).toMatch(/multipart\.parts\.length > CHATGPT_BIGGER_CONTEXT_MAX_TRANSPORT_PARTS/);
+  expect(helper).not.toContain("multipart.parts.length !== 2 && multipart.parts.length !== 3");
+});
+
 test("the launcher helper transport carries MCP progress into the out-of-process browser worker", () => {
   const client = readFileSync("src/adapters/chatgpt-web/launcher-helper-client.ts", "utf8");
   const helper = readFileSync("src/adapters/chatgpt-web/browser-helper-main.ts", "utf8");
