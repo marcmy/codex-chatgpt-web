@@ -533,14 +533,20 @@ test("launcher page acquisition proves a nonzero operational viewport before DOM
   expect(workerSource).toContain("innerWidth >= width && innerHeight >= height");
 });
 
-test("retained launcher viewport acquisition gets one same-surface repair before outer reconnect", () => {
+test("retained launcher viewport is refreshed after CDP attach and repaired once in the same order", () => {
   const workerSource = readFileSync(new URL("../src/adapters/chatgpt-web/browser-worker.ts", import.meta.url), "utf8");
   const runBrowserTurn = workerSource.slice(
     workerSource.indexOf("  private async runBrowserTurn("),
     workerSource.indexOf("      const rebindLauncherPage =", workerSource.indexOf("  private async runBrowserTurn(")),
   );
+  const firstConnect = runBrowserTurn.indexOf(
+    "let connection = await connectLauncherBrowserHost(",
+  );
+  const retainedGuard = runBrowserTurn.indexOf("if (reuseConversation)", firstConnect);
+  const firstRefresh = runBrowserTurn.indexOf("refreshViewport: true", retainedGuard);
   const firstViewport = runBrowserTurn.indexOf(
     "await waitForOperationalChatGptViewport(connection.page, abortSignal);",
+    firstRefresh,
   );
   const retainedOnly = runBrowserTurn.indexOf(
     "if (!reuseConversation || abortSignal.aborted) throw error;",
@@ -550,26 +556,29 @@ test("retained launcher viewport acquisition gets one same-surface repair before
     "connectAfterClosingBrowserConnection(",
     retainedOnly,
   );
-  const refresh = runBrowserTurn.indexOf("refreshViewport: true", disconnect);
   const reconnect = runBrowserTurn.indexOf(
     "const repaired = await connectLauncherBrowserHost(",
-    refresh,
+    disconnect,
   );
+  const secondRefresh = runBrowserTurn.indexOf("refreshViewport: true", reconnect);
   const secondViewport = runBrowserTurn.indexOf(
     "await waitForOperationalChatGptViewport(repaired.page, abortSignal);",
-    reconnect,
+    secondRefresh,
   );
   const repaired = runBrowserTurn.indexOf(
     "repaired its retained launcher viewport in place",
     secondViewport,
   );
 
-  expect(firstViewport).toBeGreaterThan(-1);
+  expect(firstConnect).toBeGreaterThan(-1);
+  expect(retainedGuard).toBeGreaterThan(firstConnect);
+  expect(firstRefresh).toBeGreaterThan(retainedGuard);
+  expect(firstViewport).toBeGreaterThan(firstRefresh);
   expect(retainedOnly).toBeGreaterThan(firstViewport);
   expect(disconnect).toBeGreaterThan(retainedOnly);
-  expect(refresh).toBeGreaterThan(disconnect);
-  expect(reconnect).toBeGreaterThan(refresh);
-  expect(secondViewport).toBeGreaterThan(reconnect);
+  expect(reconnect).toBeGreaterThan(disconnect);
+  expect(secondRefresh).toBeGreaterThan(reconnect);
+  expect(secondViewport).toBeGreaterThan(secondRefresh);
   expect(repaired).toBeGreaterThan(secondViewport);
 });
 
@@ -580,6 +589,20 @@ test("Luna turns without a retained conversation never send connector identity a
   expect(connectorIdentity).toBeGreaterThan(-1);
   expect(runExclusive.slice(connectorIdentity - 260, connectorIdentity)).toContain("turn.conversationKey");
   expect(runExclusive.slice(connectorIdentity - 260, connectorIdentity)).toContain("turn.nativeConnector");
+});
+
+test("launcher page rebind refreshes viewport after replacement CDP attachment", () => {
+  const workerSource = readFileSync(new URL("../src/adapters/chatgpt-web/browser-worker.ts", import.meta.url), "utf8");
+  const rebind = workerSource.slice(workerSource.indexOf("      const rebindLauncherPage ="));
+  const disconnect = rebind.indexOf("connectAfterClosingBrowserConnection(");
+  const reconnect = rebind.indexOf("const rebound = await connectLauncherBrowserHost(", disconnect);
+  const refresh = rebind.indexOf("refreshViewport: true", reconnect);
+  const viewport = rebind.indexOf("await waitForOperationalChatGptViewport(rebound.page, signal);", refresh);
+
+  expect(disconnect).toBeGreaterThan(-1);
+  expect(reconnect).toBeGreaterThan(disconnect);
+  expect(refresh).toBeGreaterThan(reconnect);
+  expect(viewport).toBeGreaterThan(refresh);
 });
 
 test("a stalled DOM observation fails within its probe budget", async () => {
