@@ -75,6 +75,65 @@ test("compacts ChatGPT Web v1 through a dedicated read-only browser summarizatio
   ]);
 });
 
+test("v1 compaction carries only the screenshot still awaiting model output", async () => {
+  const consumedImage = "data:image/png;base64,consumed-before-compaction";
+  const pendingImage = "data:image/png;base64,pending-at-compaction";
+  let compactorSawPendingImage = false;
+  const response = await compactRequest(new Request("http://127.0.0.1:17841/v1/responses/compact", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      model,
+      input: [
+        {
+          type: "message",
+          role: "user",
+          id: "consumed-image-turn",
+          content: [
+            { type: "input_text", text: "Inspect the old screenshot" },
+            { type: "input_image", image_url: consumedImage, detail: "high" },
+          ],
+        },
+        {
+          type: "message",
+          role: "assistant",
+          content: [{ type: "output_text", text: "I inspected the old screenshot." }],
+        },
+        {
+          type: "message",
+          role: "user",
+          id: "pending-image-turn",
+          content: [
+            { type: "input_text", text: "Inspect this screenshot next" },
+            { type: "input_image", image_url: pendingImage, detail: "high" },
+          ],
+        },
+      ],
+    }),
+  }), defaultConfig("full"), () => ({
+    name: "visual-compaction-consumption-check",
+    async runTurn(parsed, _incoming, emit) {
+      const pending = parsed.context.messages.find(message =>
+        message.role === "user"
+        && typeof message.content !== "string"
+        && message.content.some(part => part.type === "image" && part.imageUrl === pendingImage)
+      );
+      compactorSawPendingImage = Boolean(pending);
+      emit({ type: "text_delta", text: summary, phase: "final_answer" });
+      emit({ type: "done", stopReason: "stop", endTurn: true });
+    },
+  }));
+
+  expect(response.status).toBe(200);
+  expect(compactorSawPendingImage).toBeTrue();
+  const body = await response.json() as { output: unknown[] };
+  const serialized = JSON.stringify(body.output);
+  expect(serialized).not.toContain(consumedImage);
+  expect(serialized).toContain(pendingImage);
+  expect(serialized).toContain("Inspect the old screenshot");
+  expect(serialized).toContain("Inspect this screenshot next");
+});
+
 test("compacts a Pro task with Pro effort", async () => {
   const config = defaultConfig("full");
   config.extraHighAvailable = true;

@@ -16,6 +16,7 @@ import type { CodexProviderConfig } from "../src/types";
 import { compileChatGptWebPrompt, formatChatGptWebMultipartCommit, formatChatGptWebMultipartStage } from "../src/adapters/chatgpt-web/prompt";
 import { estimateCompiledChatGptWebInputTokens } from "../src/adapters/chatgpt-web/input-tokens";
 import { estimateTokens } from "../src/lib/token-estimate";
+import { SUMMARY_PREFIX } from "../src/responses/compaction";
 import { chatGptHtmlToMarkdown } from "../src/adapters/chatgpt-web/markdown";
 
 function personalizedTemporaryChatRole(
@@ -3045,6 +3046,130 @@ test("browser preflight separates model context from one-message transport limit
     pro,
     520_001,
   )).toThrow("104,000-token ChatGPT browser message boundary");
+});
+
+test("browser prompt keeps only the unconsumed checkpoint image and newer images", () => {
+  const consumedImage = "data:image/png;base64,consumed-before-checkpoint";
+  const pendingImage = "data:image/png;base64,pending-through-checkpoint";
+  const newerImage = "data:image/png;base64,new-post-checkpoint";
+  const checkpoint = `${SUMMARY_PREFIX}\nvisual state captured in checkpoint`;
+  const capabilities = {
+    localToolsEnabled: false,
+    solAvailable: true,
+    extraHighAvailable: false,
+    proAvailable: false,
+  };
+
+  const compiled = compileChatGptWebPrompt({
+    modelId: CHATGPT_WEB_MODEL_ID,
+    stream: true,
+    options: { reasoning: "medium" },
+    context: {
+      systemPrompt: [],
+      messages: [
+        {
+          role: "user",
+          content: [
+            { type: "text", text: "Consumed screenshot request" },
+            { type: "image", imageUrl: consumedImage, detail: "high" },
+          ],
+          timestamp: 1,
+        },
+        {
+          role: "assistant",
+          content: [{ type: "text", text: "I inspected the consumed screenshot." }],
+          model: CHATGPT_WEB_MODEL_ID,
+          timestamp: 2,
+        },
+        {
+          role: "user",
+          content: [
+            { type: "text", text: "Pending screenshot request" },
+            { type: "image", imageUrl: pendingImage, detail: "high" },
+          ],
+          timestamp: 3,
+        },
+        { role: "user", content: checkpoint, timestamp: 4 },
+        {
+          role: "user",
+          content: [
+            { type: "text", text: "New screenshot after checkpoint" },
+            { type: "image", imageUrl: newerImage, detail: "high" },
+          ],
+          timestamp: 5,
+        },
+      ],
+    },
+  }, capabilities);
+
+  expect(compiled.images.map(image => image.imageUrl)).toEqual([pendingImage, newerImage]);
+  const contextJson = compiled.text.match(/<codex_context_json>\n([\s\S]*?)\n<\/codex_context_json>/)?.[1];
+  expect(contextJson).toBeDefined();
+  const envelope = JSON.parse(contextJson!);
+  expect(envelope.messages[0]).toEqual({ role: "user", content: "Consumed screenshot request" });
+  expect(envelope.messages[2].content.at(-1)).toMatchObject({
+    type: "image_attachment",
+    attachment_ref: "codex-input-image-1",
+  });
+});
+
+test("v1 compacted history keeps one ambiguous image only until post-checkpoint assistant output", () => {
+  const oldImage = "data:image/png;base64,older-v1-image";
+  const newestImage = "data:image/png;base64,newest-v1-image";
+  const checkpoint = `${SUMMARY_PREFIX}\nv1 checkpoint`;
+  const capabilities = {
+    localToolsEnabled: false,
+    solAvailable: true,
+    extraHighAvailable: false,
+    proAvailable: false,
+  };
+  const compactedMessages = [
+    {
+      role: "user" as const,
+      content: [
+        { type: "text" as const, text: "Older compacted screenshot" },
+        { type: "image" as const, imageUrl: oldImage, detail: "high" as const },
+      ],
+      timestamp: 1,
+    },
+    {
+      role: "user" as const,
+      content: [
+        { type: "text" as const, text: "Newest compacted screenshot" },
+        { type: "image" as const, imageUrl: newestImage, detail: "high" as const },
+      ],
+      timestamp: 2,
+    },
+    { role: "user" as const, content: checkpoint, timestamp: 3 },
+  ];
+
+  const firstContinuation = compileChatGptWebPrompt({
+    modelId: CHATGPT_WEB_MODEL_ID,
+    stream: true,
+    options: { reasoning: "medium" },
+    context: { systemPrompt: [], messages: compactedMessages },
+  }, capabilities);
+  expect(firstContinuation.images.map(image => image.imageUrl)).toEqual([newestImage]);
+
+  const laterContinuation = compileChatGptWebPrompt({
+    modelId: CHATGPT_WEB_MODEL_ID,
+    stream: true,
+    options: { reasoning: "medium" },
+    context: {
+      systemPrompt: [],
+      messages: [
+        ...compactedMessages,
+        {
+          role: "assistant",
+          content: [{ type: "text", text: "I continued from the checkpoint." }],
+          model: CHATGPT_WEB_MODEL_ID,
+          timestamp: 4,
+        },
+        { role: "user", content: "Continue again", timestamp: 5 },
+      ],
+    },
+  }, capabilities);
+  expect(laterContinuation.images).toEqual([]);
 });
 
 test("Bigger Context fits mixed-density whole records within both token and composer limits", () => {

@@ -1503,7 +1503,11 @@ class BrowserHost {
       }
       tab.view.setBounds(bounds);
     }
-    tab.view.setVisible(visible || tab.status === "running");
+    // Retained automatic tabs must stay drawable while idle. Electron collapses a hidden
+    // WebContentsView renderer to 0x0, and re-enabling device emulation after that collapse is not
+    // sufficient to make the next Playwright lease operational reliably. Keep the retained view
+    // attached offscreen; endTurn() still enables background throttling while it is idle.
+    tab.view.setVisible(true);
   }
 
   presentPrimaryView(visible) {
@@ -2295,6 +2299,12 @@ class BrowserHost {
       existing.status = "running";
       existing.loading = true;
       existing.message = "ChatGPT is working";
+      if (reused) {
+        // The previous helper disconnects its Playwright CDP session when the turn settles.
+        // Chromium may drop effective device emulation with that connection, so force the hidden
+        // viewport contract to be reapplied before the retained surface is leased again.
+        existing.deviceEmulationDirty = true;
+      }
       if (!reused) {
         existing.bootstrapReady = false;
         existing.bootstrapDeadlineAt = Date.now() + TURN_TAB_BOOTSTRAP_TIMEOUT_MS;
