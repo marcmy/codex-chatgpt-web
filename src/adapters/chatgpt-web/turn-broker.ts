@@ -1105,27 +1105,6 @@ export class TurnBroker implements TurnBrokerOwner {
     if (binding.channel.compactionRequested) {
       const result = binding.channel.compactionResult;
       if (!result) throw new Error("Codex context compaction control result is unavailable");
-      // Native MCP invokes carry a call id and then consume that exact invocation. A post-compaction
-      // call is intercepted before it enters the ordinary queue, so retain a resolved invocation
-      // record for the consume handshake instead of making the MCP bridge treat it as abandoned.
-      if (request.callId !== undefined) {
-        const callId = request.callId;
-        if (!/^call_[A-Za-z0-9_-]{16,128}$/.test(callId)) throw new Error("tool invocation id is invalid");
-        if (binding.channel.invocations.has(callId)) throw new Error(`tool invocation id is already in use: ${callId}`);
-        const wireName = request.wireName?.trim();
-        if (!wireName) throw new Error("wire tool name is required");
-        binding.channel.invocations.set(callId, {
-          request: {
-            callId,
-            wireName,
-            freeform: request.freeform === true,
-            ...(request.freeform === true ? { input: request.input ?? "" } : { arguments: request.arguments ?? {} }),
-          },
-          retainResult: true,
-          result: structuredClone(result),
-          waiters: new Set(),
-        });
-      }
       binding.channel.compactionDeliveryCount += 1;
       console.info(
         `[chatgpt-web] broker trace=${binding.channel.traceId} intercepted a post-compaction MCP call`,
