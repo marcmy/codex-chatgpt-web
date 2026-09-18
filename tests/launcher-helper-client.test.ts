@@ -277,7 +277,7 @@ test("launcher helper protocol preserves multipart context and the compaction fl
     prepare: async () => ({
       text: "commit",
       images: [],
-      multipart: { parts: ["{\"part\":1}", "{\"part\":2}", "{\"part\":3}"], commit: "commit" },
+      multipart: { parts: ["{\"part\":1}", "{\"part\":2}", "{\"part\":3}", "{\"part\":4}"], commit: "commit" },
       trimmedCompactionMessages: 4,
       release() {},
     }),
@@ -294,7 +294,7 @@ test("launcher helper protocol preserves multipart context and the compaction fl
     type: "prepared_selected_ack",
     prepared: {
         text: "commit",
-        multipart: { parts: ["{\"part\":1}", "{\"part\":2}", "{\"part\":3}"], commit: "commit" },
+        multipart: { parts: ["{\"part\":1}", "{\"part\":2}", "{\"part\":3}", "{\"part\":4}"], commit: "commit" },
         trimmedCompactionMessages: 4,
     },
   });
