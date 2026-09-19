@@ -1,0 +1,166 @@
+name: One-shot Bigger Context planner cleanup
+
+on:
+  push:
+    branches:
+      - cleanup/bigger-context-planning-20260918
+
+permissions:
+  contents: write
+
+jobs:
+  cleanup:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: cleanup/bigger-context-planning-20260918
+          fetch-depth: 0
+
+      - name: Apply planner/compiler cleanup
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          prompt = Path("src/adapters/chatgpt-web/prompt.ts")
+          c = prompt.read_text()
+
+          old = '''  /** Internal planner seam: inspect a requested multipart layout before compaction fallback trims it. */
+            multipartPlanningOnly?: boolean;
+          '''
+          if old not in c:
+              raise SystemExit("multipartPlanningOnly option block not found")
+          c = c.replace(old, "")
+
+          start = c.find("function multipartCompactionFitsAvailableMessages(")
+          end = c.find("/**\n * Compile the canonical Codex context for ChatGPT Web.", start)
+          if start < 0 or end < 0:
+              raise SystemExit("multipart compaction fit helper not found")
+          c = c[:start] + c[end:]
+
+          old_doc = '''/**
+           * Compile the canonical Codex context for ChatGPT Web. For compaction only, a multipart context can
+           * contain one atomic historical record larger than every account-visible ChatGPT message boundary.
+           * In that case, retry compilation without multipart so the existing native-style 110k compaction
+           * path can discard oldest history instead of failing browser preflight before ChatGPT sees anything.
+           */'''
+          new_doc = '''/**
+           * Compile the canonical Codex context for ChatGPT Web. Multipart layout selection belongs to the
+           * transport planner: an explicit multipart count is compiled deterministically, while an inline
+           * compaction request uses the existing native-style oldest-history trimming path when necessary.
+           */'''
+          if old_doc not in c:
+              raise SystemExit("compiler documentation block not found")
+          c = c.replace(old_doc, new_doc)
+
+          old_block = '''  // Prefer Bigger Context when every fully wrapped stage fits an account-visible message. An
+            // oversized atomic historical record cannot be split safely; for compaction only, fall back to
+            // the inline compiler so the native-style oldest-history trimming below can recover the task.
+            if (compiled.multipart) {
+              // Transport planning must see the requested multipart shape even when it would normally trigger
+              // compaction's inline-trimming recovery; the planner may still fit the same history by adding
+              // the transport-only spill part.
+              if (options?.multipartPlanningOnly
+                || multipartCompactionFitsAvailableMessages(parsed, capabilities, compiled)) return compiled;
+              const {
+                experimentalMultipartParts: _multipart,
+                multipartPlanningOnly: _planning,
+                ...singleMessageOptions
+              } = options ?? {};
+              return compileChatGptWebPrompt(parsed, capabilities, turnToken, singleMessageOptions);
+            }
+          '''
+          new_block = '''  // The planner owns multipart selection and fallback. Once a caller explicitly requests a
+            // multipart shape, compilation must not silently substitute a different transport.
+            if (compiled.multipart) return compiled;
+          '''
+          if old_block not in c:
+              raise SystemExit("compiler multipart fallback block not found")
+          c = c.replace(old_block, new_block)
+          prompt.write_text(c)
+
+          usage = Path("src/adapters/chatgpt-web/usage.ts")
+          u = usage.read_text()
+          old_compile = '''  const compile = (parts?: ChatGptWebMultipartPartCount): CompiledChatGptWebPrompt => compileChatGptWebPrompt(
+              parsed, capabilities, mode.localTools ? ESTIMATE_TURN_TOKEN : undefined,
+              {
+                experimentalMultipartParts: parts,
+                experimentalSkillAttachments,
+                ...(parts !== undefined ? { multipartPlanningOnly: true } : {}),
+              },
+            );'''
+          new_compile = '''  const compile = (parts?: ChatGptWebMultipartPartCount): CompiledChatGptWebPrompt => compileChatGptWebPrompt(
+              parsed, capabilities, mode.localTools ? ESTIMATE_TURN_TOKEN : undefined,
+              { experimentalMultipartParts: parts, experimentalSkillAttachments },
+            );'''
+          if old_compile not in u:
+              raise SystemExit("planner compile helper not found")
+          u = u.replace(old_compile, new_compile)
+
+          old_loop = '''    const candidate = compile(parts);
+              // Compaction compilation may deliberately fall back inline when the requested multipart shape
+              // cannot fit. Treat that as a failed candidate here so the planner can try the spill part first.
+              if (candidate.multipart?.parts.length !== parts) continue;
+              if (fits(candidate)) return parts;
+            }
+            // Keep the maximum transport shape so the normal compiler/browser diagnostics can report the
+            // actual irreducible limit (or compaction can activate its existing inline-trimming fallback).
+            return CHATGPT_BIGGER_CONTEXT_MAX_TRANSPORT_PARTS;'''
+          new_loop = '''    const candidate = compile(parts);
+              if (candidate.multipart?.parts.length !== parts) {
+                throw new Error("ChatGPT multipart compiler returned a different transport shape than requested");
+              }
+              if (fits(candidate)) return parts;
+            }
+            // Compaction can safely recover by compiling inline and applying its native-style oldest-history
+            // trimming. Ordinary turns cannot discard history, so keep the largest physical shape and let
+            // browser preflight report the irreducible context error.
+            return compaction ? undefined : CHATGPT_BIGGER_CONTEXT_MAX_TRANSPORT_PARTS;'''
+          if old_loop not in u:
+              raise SystemExit("planner candidate loop not found")
+          u = u.replace(old_loop, new_loop)
+          usage.write_text(u)
+
+          test = Path("tests/chatgpt-web-usage.test.ts")
+          t = test.read_text()
+          anchor = 'test("multipart planning leaves room for final attachments and execution instructions without losing history", () => {'
+          addition = '''test("Bigger Context compaction falls back inline only after all multipart transport shapes are exhausted", () => {
+            const plus = { ...capabilities, extraHighAvailable: false, proAvailable: false };
+            const parsed = request("");
+            parsed._compactionRequest = true;
+            parsed.context.messages = Array.from({ length: 5 }, (_unused, index) => ({
+              role: "user" as const,
+              content: `oversized-total-${index}-${"a!b@c#d$e%f^g&h*".repeat(4_000)}`,
+              timestamp: index + 1,
+            }));
+
+            const parts = resolveBiggerContextMultipartParts(parsed, plus);
+            expect(parts).toBeUndefined();
+
+            const forced = compileChatGptWebPrompt(parsed, plus, undefined, { experimentalMultipartParts: 4 });
+            expect(forced.multipart?.parts).toHaveLength(4);
+            expect(forced.trimmedCompactionMessages).toBeUndefined();
+
+            const compiled = compileChatGptWebPrompt(parsed, plus, undefined, { experimentalMultipartParts: parts });
+            expect(compiled.multipart).toBeUndefined();
+            expect(compiled.trimmedCompactionMessages).toBeGreaterThan(0);
+            expect(compiled.text).toContain("oversized-total-4-");
+          }, 60_000);
+
+          ''' + anchor
+          if anchor not in t:
+              raise SystemExit("usage test insertion anchor not found")
+          t = t.replace(anchor, addition)
+          test.write_text(t)
+          PY
+
+          git mv tests/compaction-multipart-fallback.test.ts tests/multipart-record-fragmentation.test.ts
+          rm .github/workflows/one-shot-bigger-context-cleanup.yml
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "refactor: centralize Bigger Context transport planning"
+          git push origin HEAD:cleanup/bigger-context-planning-20260918
