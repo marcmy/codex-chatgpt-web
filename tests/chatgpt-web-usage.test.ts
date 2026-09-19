@@ -74,6 +74,29 @@ test("Bigger Context compaction uses a fourth transport part before trimming his
     .toEqual(parsed.context.messages.map(message => message.content));
 }, 60_000);
 
+test("Bigger Context compaction falls back inline only after all multipart transport shapes are exhausted", () => {
+  const plus = { ...capabilities, extraHighAvailable: false, proAvailable: false };
+  const parsed = request("");
+  parsed._compactionRequest = true;
+  parsed.context.messages = Array.from({ length: 5 }, (_unused, index) => ({
+    role: "user" as const,
+    content: `oversized-total-${index}-${"a!b@c#d$e%f^g&h*".repeat(4_000)}`,
+    timestamp: index + 1,
+  }));
+
+  const parts = resolveBiggerContextMultipartParts(parsed, plus);
+  expect(parts).toBeUndefined();
+
+  const forced = compileChatGptWebPrompt(parsed, plus, undefined, { experimentalMultipartParts: 4 });
+  expect(forced.multipart?.parts).toHaveLength(4);
+  expect(forced.trimmedCompactionMessages).toBeUndefined();
+
+  const compiled = compileChatGptWebPrompt(parsed, plus, undefined, { experimentalMultipartParts: parts });
+  expect(compiled.multipart).toBeUndefined();
+  expect(compiled.trimmedCompactionMessages).toBeGreaterThan(0);
+  expect(compiled.text).toContain("oversized-total-4-");
+}, 60_000);
+
 test("multipart planning leaves room for final attachments and execution instructions without losing history", () => {
   for (const scenario of [
     { extraHighAvailable: false, proAvailable: false, images: 3, schema: false },
