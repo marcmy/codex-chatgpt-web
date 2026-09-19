@@ -37,8 +37,6 @@ export interface CompileChatGptWebPromptOptions {
   captureLunaCheckpoint?: boolean;
   experimentalSkillAttachments?: boolean;
   experimentalMultipartParts?: ChatGptWebMultipartPartCount;
-  /** Internal planner seam: inspect a requested multipart layout before compaction fallback trims it. */
-  multipartPlanningOnly?: boolean;
   /**
    * Manual Zero Risk transport keeps ChatGPT model/effort selection and prompt submission under the
    * user's control. The browser bridge may open the owned tab and copy this prompt, but it never
@@ -631,50 +629,10 @@ export function chatGptReadOnlyContextWarning(
   return `> **Local tools unavailable**\n>\n> \`${label}\` cannot access the local Codex computer in this turn. The accumulated context does not contain local tool results yet: it will see instructions and attachments, but not workspace contents. ChatGPT-native capabilities such as web search remain available when the product provides them.${browserOnlyGuidance}`;
 }
 
-function multipartCompactionFitsAvailableMessages(
-  parsed: CodexParsedRequest,
-  capabilities: ChatGptWebCapabilities,
-  compiled: CompiledChatGptWebPrompt,
-): boolean {
-  const multipart = compiled.multipart;
-  if (!multipart) return true;
-
-  const requestedMode = resolveChatGptWebModelMode(parsed.modelId, parsed.options.reasoning, capabilities);
-  // Staging is inert transport, so browser-worker may select the strongest account-visible effort
-  // independently of the requested final effort.
-  const stagingEffort = capabilities.proAvailable ? "max" as const : "medium" as const;
-  const imageTokens = compiled.images.reduce(
-    (sum, image) => sum + chatGptWebImageTokenReserve(image.detail),
-    0,
-  );
-  const finalSkillTokens = skillFileTokens(compiled.skillFiles, CHATGPT_WEB_MODEL_ID);
-  const transactionId = `ctx_${"0".repeat(32)}`;
-
-  return multipart.parts.every((payload, index) => {
-    const final = index === multipart.parts.length - 1;
-    const effort = final ? requestedMode.effort : stagingEffort;
-    const text = final
-      ? formatChatGptWebMultipartCommit(multipart, transactionId)
-      : formatChatGptWebMultipartStage(payload, transactionId, index + 1, multipart.parts.length).text;
-    const limits = resolveChatGptWebTransportLimits(CHATGPT_WEB_MODEL_ID, effort, capabilities);
-    const messageTokens = estimateTokens(text, CHATGPT_WEB_MODEL_ID) + (final ? finalSkillTokens : 0);
-    const messageBudget = resolveChatGptWebMessageTokenBudget(
-      CHATGPT_WEB_MODEL_ID,
-      effort,
-      capabilities,
-      final ? imageTokens : 0,
-    );
-    return messageTokens <= messageBudget
-      && (limits.browserMessageTokenLimit === undefined || messageTokens <= limits.browserMessageTokenLimit)
-      && (limits.browserComposerCharLimit === undefined || text.length <= limits.browserComposerCharLimit);
-  });
-}
-
 /**
- * Compile the canonical Codex context for ChatGPT Web. For compaction only, a multipart context can
- * contain one atomic historical record larger than every account-visible ChatGPT message boundary.
- * In that case, retry compilation without multipart so the existing native-style 110k compaction
- * path can discard oldest history instead of failing browser preflight before ChatGPT sees anything.
+ * Compile the canonical Codex context for ChatGPT Web. Multipart layout selection belongs to the
+ * transport planner: an explicit multipart count is compiled deterministically, while an inline
+ * compaction request uses the existing native-style oldest-history trimming path when necessary.
  */
 export function compileChatGptWebPrompt(
   parsed: CodexParsedRequest,
@@ -951,22 +909,9 @@ export function compileChatGptWebPrompt(
   let compiled = build(sourceMessages);
   if (!parsed._compactionRequest) return compiled;
 
-  // Prefer Bigger Context when every fully wrapped stage fits an account-visible message. An
-  // oversized atomic historical record cannot be split safely; for compaction only, fall back to
-  // the inline compiler so the native-style oldest-history trimming below can recover the task.
-  if (compiled.multipart) {
-    // Transport planning must see the requested multipart shape even when it would normally trigger
-    // compaction's inline-trimming recovery; the planner may still fit the same history by adding
-    // the transport-only spill part.
-    if (options?.multipartPlanningOnly
-      || multipartCompactionFitsAvailableMessages(parsed, capabilities, compiled)) return compiled;
-    const {
-      experimentalMultipartParts: _multipart,
-      multipartPlanningOnly: _planning,
-      ...singleMessageOptions
-    } = options ?? {};
-    return compileChatGptWebPrompt(parsed, capabilities, turnToken, singleMessageOptions);
-  }
+  // The planner owns multipart selection and fallback. Once a caller explicitly requests a
+  // multipart shape, compilation must not silently substitute a different transport.
+  if (compiled.multipart) return compiled;
 
   const exceedsCompactionBudget = (): boolean => (
     chatGptPromptJsonBytes(compiled.text) > CHATGPT_COMPACTION_PROMPT_JSON_BYTE_BUDGET
