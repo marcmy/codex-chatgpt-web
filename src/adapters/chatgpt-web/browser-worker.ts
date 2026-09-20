@@ -5393,7 +5393,7 @@ export class ChatGptBrowserWorker {
             if (retentionProbe && retentionResult) {
               const details = retentionResult.passed
                 ? `${retentionProbe.canaries.length}/${retentionProbe.canaries.length} staged canaries retained`
-                : `reason=${retentionResult.reason ?? "unknown"} missingParts=${retentionResult.missingParts.join(",") || "none"} unexpected=${retentionResult.unexpected.length}`;
+                : `reason=${retentionResult.reason ?? "unknown"} missingParts=${retentionResult.missingParts.join(",") || "none"} unexpected=${retentionResult.unexpected.length}${retentionResult.observedFirstLine !== undefined ? ` observedFirstLine=${JSON.stringify(retentionResult.observedFirstLine)}` : ""}`;
               if (retentionResult.passed) {
                 console.info(`[chatgpt-web] browser turn ${turn.traceId} Even Bigger Context retention probe PASSED (${details})`);
                 await diagnostics.capture(page, "retention-probe-passed");
