@@ -16,6 +16,7 @@ import {
   CHATGPT_LUNA_CHECKPOINT_MAX_TOKENS,
 } from "./rolling-checkpoint";
 import { chatGptSteeringContract } from "./steering";
+import { chatGptRetentionProbeCommitContract } from "./retention-probe";
 
 export interface ChatGptWebPromptImage {
   ref: string;
@@ -118,6 +119,7 @@ export function formatChatGptWebMultipartStage(
 export function formatChatGptWebMultipartCommit(
   multipart: ChatGptWebMultipartPrompt,
   transactionId: string,
+  retentionProbe = false,
 ): string {
   assertMultipartTransactionId(transactionId);
   const totalParts = multipart.parts.length;
@@ -137,6 +139,7 @@ export function formatChatGptWebMultipartCommit(
     `acknowledged_parts: ${acknowledgedParts}/${totalParts}`,
     `The first ${acknowledgedParts} context part${acknowledgedParts === 1 ? " was" : "s were"} acknowledged. The final part is included in this same message and starts the task.`,
     "</codex_multipart_commit>",
+    ...(retentionProbe ? chatGptRetentionProbeCommitContract(transactionId, acknowledgedParts) : []),
     "<codex_context_part_json>",
     "```json",
     finalPayload,

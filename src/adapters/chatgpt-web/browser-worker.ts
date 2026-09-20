@@ -106,6 +106,13 @@ import {
   chatGptBrowserSteeringText,
   type ChatGptBrowserSteeringController,
 } from "./steering";
+import {
+  addChatGptRetentionCanaryToMultipartPayload,
+  chatGptRetentionCanary,
+  ChatGptRetentionReportStream,
+  inspectChatGptRetentionReport,
+  type ChatGptRetentionProbeExpectation,
+} from "./retention-probe";
 
 export { MAX_CHATGPT_BROWSER_TABS } from "./concurrency";
 
@@ -4524,16 +4531,34 @@ export class ChatGptBrowserWorker {
       const multipartTransactionId = prepared.multipart
         ? `ctx_${randomUUID().replaceAll("-", "")}`
         : undefined;
-      const multipartStages = prepared.multipart && multipartTransactionId
-        ? prepared.multipart.parts.slice(0, -1).map((payload, index) => formatChatGptWebMultipartStage(
+      const retentionProbe: ChatGptRetentionProbeExpectation | undefined = prepared.multipart
+        && multipartTransactionId
+        && turn.capabilities.experimentalEvenBiggerContext
+        ? {
+          transactionId: multipartTransactionId,
+          canaries: prepared.multipart.parts.slice(0, -1).map((_payload, index) => (
+            chatGptRetentionCanary(index + 1, randomUUID().replaceAll("-", ""))
+          )),
+        }
+        : undefined;
+      const browserMultipart = prepared.multipart && retentionProbe
+        ? {
+          ...prepared.multipart,
+          parts: prepared.multipart.parts.map((payload, index) => index < retentionProbe.canaries.length
+            ? addChatGptRetentionCanaryToMultipartPayload(payload, retentionProbe.canaries[index]!)
+            : payload),
+        }
+        : prepared.multipart;
+      const multipartStages = browserMultipart && multipartTransactionId
+        ? browserMultipart.parts.slice(0, -1).map((payload, index) => formatChatGptWebMultipartStage(
           payload,
           multipartTransactionId,
           index + 1,
-          prepared.multipart!.parts.length,
+          browserMultipart.parts.length,
         ))
         : undefined;
-      const multipartFinalPrompt = prepared.multipart && multipartTransactionId
-        ? formatChatGptWebMultipartCommit(prepared.multipart, multipartTransactionId)
+      const multipartFinalPrompt = browserMultipart && multipartTransactionId
+        ? formatChatGptWebMultipartCommit(browserMultipart, multipartTransactionId, retentionProbe !== undefined)
         : undefined;
       const estimatedInputTokens = estimateCompiledChatGptWebInputTokens(prepared, turn.modelId);
       const estimatedMessageTokens = estimateCompiledChatGptWebMessageTokens(prepared, turn.modelId);
@@ -5030,11 +5055,13 @@ export class ChatGptBrowserWorker {
       let sentAt = Date.now();
       let visibleTrace = new ChatGptVisibleTraceTracker();
       let markdownBuffer = new ChatGptMarkdownBuffer();
+      let retentionReportStream = retentionProbe ? new ChatGptRetentionReportStream() : undefined;
       const checkpointStream = turn.captureLunaCheckpoint
         ? new ChatGptLunaCheckpointStream()
         : undefined;
       const emitMarkdownDelta = (delta: string): void => {
-        const visible = checkpointStream ? checkpointStream.push(delta) : delta;
+        const retentionVisible = retentionReportStream ? retentionReportStream.push(delta) : delta;
+        const visible = checkpointStream ? checkpointStream.push(retentionVisible) : retentionVisible;
         if (visible) turn.onTextDelta(visible);
       };
       const throwMarkdownConsistencyError = (error: unknown): never => {
@@ -5233,6 +5260,7 @@ export class ChatGptBrowserWorker {
                   submissionBaseline = steeringBaseline;
                   visibleTrace = new ChatGptVisibleTraceTracker();
                   markdownBuffer = new ChatGptMarkdownBuffer();
+                  retentionReportStream = retentionProbe ? new ChatGptRetentionReportStream() : undefined;
                   domHealthTracker = new ChatGptTurnDomHealthTracker();
                   responseDomCache = {};
                   finalText = "";
@@ -5359,6 +5387,26 @@ export class ChatGptBrowserWorker {
               throw new Error("ChatGPT completed with visible text that could not be serialized as Markdown");
             }
             if (final.delta) emitMarkdownDelta(final.delta);
+            const retentionResult = retentionProbe
+              ? inspectChatGptRetentionReport(final.markdown, retentionProbe)
+              : undefined;
+            if (retentionProbe && retentionResult) {
+              const details = retentionResult.passed
+                ? `${retentionProbe.canaries.length}/${retentionProbe.canaries.length} staged canaries retained`
+                : `reason=${retentionResult.reason ?? "unknown"} missingParts=${retentionResult.missingParts.join(",") || "none"} unexpected=${retentionResult.unexpected.length}`;
+              if (retentionResult.passed) {
+                console.info(`[chatgpt-web] browser turn ${turn.traceId} Even Bigger Context retention probe PASSED (${details})`);
+                await diagnostics.capture(page, "retention-probe-passed");
+              } else {
+                console.warn(`[chatgpt-web] browser turn ${turn.traceId} Even Bigger Context retention probe FAILED (${details})`);
+                await diagnostics.capture(page, "retention-probe-failed");
+              }
+            }
+            const retentionRemainder = retentionReportStream?.finish() ?? "";
+            if (retentionRemainder) {
+              const visible = checkpointStream ? checkpointStream.push(retentionRemainder) : retentionRemainder;
+              if (visible) turn.onTextDelta(visible);
+            }
             if (checkpointStream) {
               const completed = checkpointStream.finishOptional(snapshot.visibleText);
               if (completed.visibleRemainder) turn.onTextDelta(completed.visibleRemainder);
@@ -5366,7 +5414,7 @@ export class ChatGptBrowserWorker {
               else console.warn(`[chatgpt-web] browser turn ${turn.traceId} completed without a Luna rolling checkpoint; preserving full native history`);
               finalText = completed.answer;
             } else {
-              finalText = final.markdown;
+              finalText = retentionResult?.visibleMarkdown ?? final.markdown;
             }
             break;
           }
