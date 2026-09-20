@@ -999,7 +999,7 @@ export function assertChatGptWebMultipartInputWithinLimits(
   const { contextWindow: baseContextWindow } = resolveChatGptWebContextLimits(
     modelId,
     effort,
-    { ...capabilities, experimentalBiggerContext: false },
+    { ...capabilities, experimentalBiggerContext: false, experimentalEvenBiggerContext: false },
   );
   const assertMessageBoundary = (
     label: "stage" | "final part",

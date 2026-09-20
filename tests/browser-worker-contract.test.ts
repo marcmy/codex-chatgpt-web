@@ -3181,6 +3181,34 @@ test("browser preflight separates model context from one-message transport limit
   }
 });
 
+test("Even Bigger Context browser preflight derives its base window without violating the parent invariant", () => {
+  const capabilities = {
+    localToolsEnabled: false,
+    solAvailable: true,
+    extraHighAvailable: false,
+    proAvailable: false,
+    experimentalBiggerContext: true,
+    experimentalEvenBiggerContext: true,
+  };
+
+  expect(() => assertChatGptWebMultipartInputWithinLimits(
+    100_000,
+    20_000,
+    CHATGPT_WEB_MODEL_ID,
+    "high",
+    capabilities,
+    100_000,
+    8,
+    {
+      stagingEffort: "medium",
+      maxStageMessageTokens: 20_000,
+      maxStageChars: 100_000,
+      finalMessageTokens: 20_000,
+      finalMessageChars: 100_000,
+    },
+  )).not.toThrow();
+});
+
 test("browser prompt keeps only the unconsumed checkpoint image and newer images", () => {
   const consumedImage = "data:image/png;base64,consumed-before-checkpoint";
   const pendingImage = "data:image/png;base64,pending-through-checkpoint";
