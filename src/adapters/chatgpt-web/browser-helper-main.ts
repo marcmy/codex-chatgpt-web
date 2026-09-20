@@ -298,11 +298,12 @@ async function run(message: RunMessage): Promise<void> {
       }),
     } : {}),
   };
+  let terminal: Record<string, unknown> | undefined;
   try {
     const text = await ChatGptBrowserWorker.forProvider(provider).run(turn);
-    writeProtocol({ type: "result", id: message.id, text });
+    terminal = { type: "result", id: message.id, text };
   } catch (error) {
-    writeProtocol({
+    terminal = {
       type: "error",
       id: message.id,
       name: error instanceof Error ? error.name : "Error",
@@ -313,8 +314,12 @@ async function run(message: RunMessage): Promise<void> {
         code: error.code,
         retryable: error.retryable,
       } : {}),
-    });
+    };
   } finally {
+    // Release helper-side ownership before exposing the terminal frame to the daemon. The daemon
+    // may receive that frame and immediately accept an exact Codex reconnect with the same trace
+    // id; if the ownership map is cleared afterward, that legitimate replay races this finally
+    // block and is rejected as "Browser helper turn already exists".
     preparedSelections.get(message.id)?.cancel();
     preparedSelections.delete(message.id);
     const sendWaiter = sendActivationWaiters.get(message.id);
@@ -329,6 +334,7 @@ async function run(message: RunMessage): Promise<void> {
     abortControllers.delete(message.id);
     turnProgress.delete(message.id);
   }
+  if (terminal) writeProtocol(terminal);
 }
 
 async function verify(message: VerifyMessage): Promise<void> {

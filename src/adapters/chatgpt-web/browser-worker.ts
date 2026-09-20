@@ -37,12 +37,14 @@ import {
   estimateCompiledChatGptWebMessageTokens,
 } from "./input-tokens";
 import {
+  CHATGPT_BIGGER_CONTEXT_PARTS,
   CHATGPT_MAX_INPUT_IMAGES,
   formatChatGptWebMultipartCommit,
   formatChatGptWebMultipartStage,
   isChatGptWebMultipartPartCount,
   type CompiledChatGptWebPrompt,
   type ChatGptWebPromptImage,
+  type ChatGptWebMultipartPartCount,
   type ChatGptWebMultipartStage,
 } from "./prompt";
 import { estimateCompiledChatGptWebInputTokens } from "./input-tokens";
@@ -740,22 +742,9 @@ export async function throwIfChatGptRateLimitDialog(page: Page): Promise<void> {
   const dialog = chatGptRateLimitDialog(page);
   if (!await dialog.isVisible().catch(() => false)) return;
 
-  const acknowledge = dialog.getByRole("button", { name: /^(Got it|知道了|了解|알겠습니다|확인)$/ }).last();
-  if (await acknowledge.isVisible().catch(() => false)) {
-    try {
-      await acknowledge.press("Enter");
-    } catch (error) {
-      throw new ChatGptWebAdapterError(
-        `ChatGPT rate limit: too many requests, and the dialog could not be dismissed (${error instanceof Error ? error.message : String(error)}). Try again in a few minutes.`,
-        { status: 429, errorType: "rate_limit_error", code: "rate_limit_exceeded", retryable: false },
-      );
-    }
-  }
-  // Dismissing the modal does not prove the account cooldown has cleared. Keep this failure
-  // replayable in the adapter so native reconnects cannot start more browser submissions.
   throw new ChatGptWebAdapterError(
     "ChatGPT rate limit: too many requests. Try again in a few minutes.",
-    { status: 429, errorType: "rate_limit_error", code: "rate_limit_exceeded", retryable: false },
+    { status: 429, errorType: "rate_limit_error", code: "rate_limit_exceeded", retryable: true },
   );
 }
 
@@ -972,7 +961,7 @@ export function assertChatGptWebMultipartInputWithinLimits(
   effort: ChatGptWebModelMode["effort"],
   capabilities: ChatGptWebCapabilities,
   maxMessageChars: number,
-  partCount: number,
+  partCount: ChatGptWebMultipartPartCount,
   transport?: {
     stagingEffort: ChatGptWebModelMode["effort"];
     maxStageMessageTokens: number;
@@ -1048,8 +1037,10 @@ export function assertChatGptWebMultipartInputWithinLimits(
   } else {
     assertMessageBoundary("stage", estimatedMessageTokens, maxMessageChars, effort);
   }
-  // More transport messages do not enlarge the model's advertised context window.
-  const experimentalContextWindow = baseContextWindow * Math.min(partCount, CHATGPT_WEB_BIGGER_CONTEXT_MULTIPLIER);
+  // Six physical messages are transport capacity only. Bigger Context still owns at most three
+  // ordinary model windows, matching the advertised model catalog and compaction thresholds.
+  const logicalParts = Math.min(partCount, CHATGPT_WEB_BIGGER_CONTEXT_MULTIPLIER);
+  const experimentalContextWindow = baseContextWindow * logicalParts;
   if (estimatedInputTokens < experimentalContextWindow) return;
   const partLabel = partCount === 2 ? "two-part" : "six-part";
   throw new ChatGptWebAdapterError(
@@ -4577,7 +4568,7 @@ export class ChatGptBrowserWorker {
           }
           return managed;
         }
-        const connection = await connectLauncherBrowserHost(
+        let connection = await connectLauncherBrowserHost(
           this.config.browserHostDescriptorPath!,
           browserStageTimeouts.browserPage,
           launcherSurfaceId,
@@ -4588,7 +4579,58 @@ export class ChatGptBrowserWorker {
           throw new DOMException("ChatGPT browser page acquisition aborted", "AbortError");
         }
         turnConnection = connection.browser;
-        await waitForOperationalChatGptViewport(connection.page, abortSignal);
+        if (reuseConversation) {
+          // Attaching a new Playwright/CDP session can itself clear Chromium's effective device
+          // emulation. Refresh the exact retained Electron surface after the transport is live,
+          // not only before connection, so the viewport contract survives the attach boundary.
+          await notifyLauncherTurn(this.config.browserHostDescriptorPath!, {
+            phase: "heartbeat",
+            traceId: turn.traceId,
+            helperPid: process.pid,
+            refreshViewport: true,
+          });
+        }
+        try {
+          await waitForOperationalChatGptViewport(connection.page, abortSignal);
+        } catch (error) {
+          if (!reuseConversation || abortSignal.aborted) throw error;
+          console.warn(
+            `[chatgpt-web] browser turn ${turn.traceId} is repairing a retained launcher viewport after acquisition failure:`
+            + ` ${redactChatGptUiDiagnostic(error instanceof Error ? error.message : String(error))}`,
+          );
+          const previousConnection = turnConnection;
+          connection = await connectAfterClosingBrowserConnection(
+            previousConnection,
+            async () => {
+              // First remove the stale CDP owner. Then reconnect, because CDP attachment itself
+              // may disturb effective device emulation; only after the new transport is live do we
+              // force Electron to reassert the hidden viewport contract.
+              turnConnection = undefined;
+              const repaired = await connectLauncherBrowserHost(
+                this.config.browserHostDescriptorPath!,
+                browserStageTimeouts.browserPage,
+                launcherSurfaceId,
+                abortSignal,
+              );
+              if (abortSignal.aborted) {
+                await repaired.browser.close().catch(() => {});
+                throw new DOMException("ChatGPT browser page acquisition aborted", "AbortError");
+              }
+              turnConnection = repaired.browser;
+              await notifyLauncherTurn(this.config.browserHostDescriptorPath!, {
+                phase: "heartbeat",
+                traceId: turn.traceId,
+                helperPid: process.pid,
+                refreshViewport: true,
+              });
+              await waitForOperationalChatGptViewport(repaired.page, abortSignal);
+              return repaired;
+            },
+          );
+          console.warn(
+            `[chatgpt-web] browser turn ${turn.traceId} repaired its retained launcher viewport in place`,
+          );
+        }
         return connection.page;
       });
       if (!maintenancePage && !launcherSurfaceId) managedPage = page;
@@ -4622,22 +4664,22 @@ export class ChatGptBrowserWorker {
                   : turn.abortSignal
                     ? AbortSignal.any([stageSignal, turn.abortSignal])
                     : stageSignal;
-                await notifyLauncherTurn(this.config.browserHostDescriptorPath!, {
-                  phase: "heartbeat",
-                  traceId: turn.traceId,
-                  helperPid: process.pid,
-                  refreshViewport: true,
-                });
                 const rebound = await connectLauncherBrowserHost(
                   this.config.browserHostDescriptorPath!,
                   browserStageTimeouts.browserPage,
                   launcherSurfaceId,
                   signal,
                 );
-                // Own the connection before validating its page: viewport failure still needs
-                // the outer diagnostic capture and finally block to release this exact transport.
+                // Own the replacement transport first, then reassert Electron emulation across
+                // that newly attached CDP session before validating the page.
                 turnConnection = rebound.browser;
                 diagnosticPage = rebound.page;
+                await notifyLauncherTurn(this.config.browserHostDescriptorPath!, {
+                  phase: "heartbeat",
+                  traceId: turn.traceId,
+                  helperPid: process.pid,
+                  refreshViewport: true,
+                });
                 await waitForOperationalChatGptViewport(rebound.page, signal);
                 return rebound;
               },

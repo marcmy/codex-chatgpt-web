@@ -592,14 +592,18 @@ export async function responseRequest(
   }
   const cancelledError = traceId ? chatGptTurnSessions.cancelledError(traceId) : undefined;
   if (cancelledError) {
-    // Codex retries unknown streamed response.failed codes. A replay after the user explicitly
-    // closed the only browser document is instead a terminal client state: repeating that exact
-    // request is invalid and must not recreate the DOM. Codex maps HTTP 400 to its non-retryable
-    // InvalidRequest category while the body preserves the real client_cancelled classification.
+    // Tombstoned browser executions are terminal. Preserve their structured reason while returning
+    // HTTP 400 so Codex does not treat the stale request as a reconnectable transport failure.
+    const errorType = cancelledError instanceof ChatGptWebAdapterError
+      ? cancelledError.errorType
+      : "client_closed_request";
+    const errorCode = cancelledError instanceof ChatGptWebAdapterError
+      ? cancelledError.code
+      : "client_cancelled";
     return new Response(JSON.stringify({
       error: {
-        type: "client_closed_request",
-        code: "client_cancelled",
+        type: errorType,
+        code: errorCode,
         message: cancelledError.message,
       },
     }), {
@@ -619,7 +623,16 @@ export async function responseRequest(
         queue.push(event);
       });
     } catch (error) {
-      const event: AdapterEvent = { type: "error", message: error instanceof Error ? error.message : String(error) };
+      const event: AdapterEvent = error instanceof ChatGptWebAdapterError
+        ? {
+          type: "error",
+          message: error.message,
+          status: error.status,
+          errorType: error.errorType,
+          code: error.code,
+          retryable: error.retryable,
+        }
+        : { type: "error", message: error instanceof Error ? error.message : String(error) };
       options.onAdapterEvent?.(event);
       queue.push(event);
     } finally {

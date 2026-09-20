@@ -17,6 +17,7 @@ import type { CodexProviderConfig } from "../src/types";
 import { compileChatGptWebPrompt, formatChatGptWebMultipartCommit, formatChatGptWebMultipartStage } from "../src/adapters/chatgpt-web/prompt";
 import { estimateCompiledChatGptWebInputTokens } from "../src/adapters/chatgpt-web/input-tokens";
 import { estimateTokens } from "../src/lib/token-estimate";
+import { SUMMARY_PREFIX } from "../src/responses/compaction";
 import { chatGptHtmlToMarkdown } from "../src/adapters/chatgpt-web/markdown";
 
 function personalizedTemporaryChatRole(
@@ -523,7 +524,7 @@ test("compaction retry submission evidence cannot make prompt-stage settlement u
 
 test("launcher page acquisition proves a nonzero operational viewport before DOM interaction", () => {
   const workerSource = readFileSync(new URL("../src/adapters/chatgpt-web/browser-worker.ts", import.meta.url), "utf8");
-  const connect = workerSource.indexOf("const connection = await connectLauncherBrowserHost(");
+  const connect = workerSource.indexOf("let connection = await connectLauncherBrowserHost(");
   const viewport = workerSource.indexOf("await waitForOperationalChatGptViewport(connection.page, abortSignal);", connect);
   const acquired = workerSource.indexOf('await diagnostics.capture(page, "browser-page-acquired")', viewport);
 
@@ -533,6 +534,55 @@ test("launcher page acquisition proves a nonzero operational viewport before DOM
   expect(workerSource).toContain("innerWidth >= width && innerHeight >= height");
 });
 
+test("retained launcher viewport is refreshed after CDP attach and repaired once in the same order", () => {
+  const workerSource = readFileSync(new URL("../src/adapters/chatgpt-web/browser-worker.ts", import.meta.url), "utf8");
+  const runBrowserTurn = workerSource.slice(
+    workerSource.indexOf("  private async runBrowserTurn("),
+    workerSource.indexOf("      const rebindLauncherPage =", workerSource.indexOf("  private async runBrowserTurn(")),
+  );
+  const firstConnect = runBrowserTurn.indexOf(
+    "let connection = await connectLauncherBrowserHost(",
+  );
+  const retainedGuard = runBrowserTurn.indexOf("if (reuseConversation)", firstConnect);
+  const firstRefresh = runBrowserTurn.indexOf("refreshViewport: true", retainedGuard);
+  const firstViewport = runBrowserTurn.indexOf(
+    "await waitForOperationalChatGptViewport(connection.page, abortSignal);",
+    firstRefresh,
+  );
+  const retainedOnly = runBrowserTurn.indexOf(
+    "if (!reuseConversation || abortSignal.aborted) throw error;",
+    firstViewport,
+  );
+  const disconnect = runBrowserTurn.indexOf(
+    "connectAfterClosingBrowserConnection(",
+    retainedOnly,
+  );
+  const reconnect = runBrowserTurn.indexOf(
+    "const repaired = await connectLauncherBrowserHost(",
+    disconnect,
+  );
+  const secondRefresh = runBrowserTurn.indexOf("refreshViewport: true", reconnect);
+  const secondViewport = runBrowserTurn.indexOf(
+    "await waitForOperationalChatGptViewport(repaired.page, abortSignal);",
+    secondRefresh,
+  );
+  const repaired = runBrowserTurn.indexOf(
+    "repaired its retained launcher viewport in place",
+    secondViewport,
+  );
+
+  expect(firstConnect).toBeGreaterThan(-1);
+  expect(retainedGuard).toBeGreaterThan(firstConnect);
+  expect(firstRefresh).toBeGreaterThan(retainedGuard);
+  expect(firstViewport).toBeGreaterThan(firstRefresh);
+  expect(retainedOnly).toBeGreaterThan(firstViewport);
+  expect(disconnect).toBeGreaterThan(retainedOnly);
+  expect(reconnect).toBeGreaterThan(disconnect);
+  expect(secondRefresh).toBeGreaterThan(reconnect);
+  expect(secondViewport).toBeGreaterThan(secondRefresh);
+  expect(repaired).toBeGreaterThan(secondViewport);
+});
+
 test("Luna turns without a retained conversation never send connector identity alone", () => {
   const workerSource = readFileSync(new URL("../src/adapters/chatgpt-web/browser-worker.ts", import.meta.url), "utf8");
   const runExclusive = workerSource.slice(workerSource.indexOf("  private async runExclusive("));
@@ -540,6 +590,20 @@ test("Luna turns without a retained conversation never send connector identity a
   expect(connectorIdentity).toBeGreaterThan(-1);
   expect(runExclusive.slice(connectorIdentity - 260, connectorIdentity)).toContain("turn.conversationKey");
   expect(runExclusive.slice(connectorIdentity - 260, connectorIdentity)).toContain("turn.nativeConnector");
+});
+
+test("launcher page rebind refreshes viewport after replacement CDP attachment", () => {
+  const workerSource = readFileSync(new URL("../src/adapters/chatgpt-web/browser-worker.ts", import.meta.url), "utf8");
+  const rebind = workerSource.slice(workerSource.indexOf("      const rebindLauncherPage ="));
+  const disconnect = rebind.indexOf("connectAfterClosingBrowserConnection(");
+  const reconnect = rebind.indexOf("const rebound = await connectLauncherBrowserHost(", disconnect);
+  const refresh = rebind.indexOf("refreshViewport: true", reconnect);
+  const viewport = rebind.indexOf("await waitForOperationalChatGptViewport(rebound.page, signal);", refresh);
+
+  expect(disconnect).toBeGreaterThan(-1);
+  expect(reconnect).toBeGreaterThan(disconnect);
+  expect(refresh).toBeGreaterThan(reconnect);
+  expect(viewport).toBeGreaterThan(refresh);
 });
 
 test("a stalled DOM observation fails within its probe budget", async () => {
@@ -2511,11 +2575,8 @@ function dialogPage(text: string, buttonText = "Got it", errorActionVisible = fa
   };
 }
 
-test.each([
-  ["Too many requests. You're making requests too quickly.", "Got it"],
-  ["요청을 너무 빠르게 보내고 있습니다. 잠시 후 다시 시도해 주세요.", "알겠습니다"],
-])("rate-limit dialog stops automatic resubmission: %s", async (message, button) => {
-  const fixture = dialogPage(message, button);
+test("the known ChatGPT rate-limit dialog is detected passively and returns a structured 429", async () => {
+  const fixture = dialogPage("Too many requests. You're making requests too quickly.");
 
   await expect(throwIfChatGptRateLimitDialog(fixture.page)).rejects.toMatchObject({
     name: "ChatGptWebAdapterError",
@@ -2525,10 +2586,10 @@ test.each([
     retryable: false,
     message: "ChatGPT rate limit: too many requests. Try again in a few minutes.",
   });
-  expect(fixture.pressed).toEqual(["Enter"]);
+  expect(fixture.pressed).toEqual([]);
 });
 
-test("submission acceptance reports a rate-limit dialog that appears after Enter", async () => {
+test("submission acceptance passively reports a rate-limit dialog that appears after Enter", async () => {
   const fixture = dialogPage("Too many requests. You're making requests too quickly.");
   const waitForSubmissionAccepted = (ChatGptBrowserWorker.prototype as unknown as {
     waitForSubmissionAccepted(page: Page, baseline: unknown): Promise<unknown>;
@@ -2545,10 +2606,10 @@ test("submission acceptance reports a rate-limit dialog that appears after Enter
     code: "rate_limit_exceeded",
     retryable: false,
   });
-  expect(fixture.pressed).toEqual(["Enter"]);
+  expect(fixture.pressed).toEqual([]);
 });
 
-test("the Traditional Chinese ChatGPT rate-limit dialog is acknowledged and returns a structured 429", async () => {
+test("the Traditional Chinese ChatGPT rate-limit dialog is detected passively and returns a structured 429", async () => {
   const fixture = dialogPage("太多要求。你提出要求的頻率過於頻繁。", "知道了");
 
   await expect(throwIfChatGptRateLimitDialog(fixture.page)).rejects.toMatchObject({
@@ -2558,10 +2619,10 @@ test("the Traditional Chinese ChatGPT rate-limit dialog is acknowledged and retu
     code: "rate_limit_exceeded",
     retryable: false,
   });
-  expect(fixture.pressed).toEqual(["Enter"]);
+  expect(fixture.pressed).toEqual([]);
 });
 
-test("the Simplified Chinese ChatGPT rate-limit dialog is acknowledged and returns a structured 429", async () => {
+test("the Simplified Chinese ChatGPT rate-limit dialog is detected passively and returns a structured 429", async () => {
   const fixture = dialogPage("太多请求。你提出请求的频率过于频繁。", "知道了");
 
   await expect(throwIfChatGptRateLimitDialog(fixture.page)).rejects.toMatchObject({
@@ -2571,10 +2632,10 @@ test("the Simplified Chinese ChatGPT rate-limit dialog is acknowledged and retur
     code: "rate_limit_exceeded",
     retryable: false,
   });
-  expect(fixture.pressed).toEqual(["Enter"]);
+  expect(fixture.pressed).toEqual([]);
 });
 
-test("the Japanese ChatGPT rate-limit dialog is acknowledged and returns a structured 429", async () => {
+test("the Japanese ChatGPT rate-limit dialog is detected passively and returns a structured 429", async () => {
   const fixture = dialogPage(
     "リクエストが多すぎます リクエストの頻度が高すぎます。お客様のデータを保護するため、会話へのアクセスを一時的に制限しています。 数分待ってから、もう一度お試しください。",
     "了解",
@@ -2587,7 +2648,7 @@ test("the Japanese ChatGPT rate-limit dialog is acknowledged and returns a struc
     code: "rate_limit_exceeded",
     retryable: false,
   });
-  expect(fixture.pressed).toEqual(["Enter"]);
+  expect(fixture.pressed).toEqual([]);
 });
 
 test("unrelated ChatGPT dialogs are left untouched", async () => {
@@ -3120,6 +3181,130 @@ test("browser preflight separates model context from one-message transport limit
   }
 });
 
+test("browser prompt keeps only the unconsumed checkpoint image and newer images", () => {
+  const consumedImage = "data:image/png;base64,consumed-before-checkpoint";
+  const pendingImage = "data:image/png;base64,pending-through-checkpoint";
+  const newerImage = "data:image/png;base64,new-post-checkpoint";
+  const checkpoint = `${SUMMARY_PREFIX}\nvisual state captured in checkpoint`;
+  const capabilities = {
+    localToolsEnabled: false,
+    solAvailable: true,
+    extraHighAvailable: false,
+    proAvailable: false,
+  };
+
+  const compiled = compileChatGptWebPrompt({
+    modelId: CHATGPT_WEB_MODEL_ID,
+    stream: true,
+    options: { reasoning: "medium" },
+    context: {
+      systemPrompt: [],
+      messages: [
+        {
+          role: "user",
+          content: [
+            { type: "text", text: "Consumed screenshot request" },
+            { type: "image", imageUrl: consumedImage, detail: "high" },
+          ],
+          timestamp: 1,
+        },
+        {
+          role: "assistant",
+          content: [{ type: "text", text: "I inspected the consumed screenshot." }],
+          model: CHATGPT_WEB_MODEL_ID,
+          timestamp: 2,
+        },
+        {
+          role: "user",
+          content: [
+            { type: "text", text: "Pending screenshot request" },
+            { type: "image", imageUrl: pendingImage, detail: "high" },
+          ],
+          timestamp: 3,
+        },
+        { role: "user", content: checkpoint, timestamp: 4 },
+        {
+          role: "user",
+          content: [
+            { type: "text", text: "New screenshot after checkpoint" },
+            { type: "image", imageUrl: newerImage, detail: "high" },
+          ],
+          timestamp: 5,
+        },
+      ],
+    },
+  }, capabilities);
+
+  expect(compiled.images.map(image => image.imageUrl)).toEqual([pendingImage, newerImage]);
+  const contextJson = compiled.text.match(/<codex_context_json>\n([\s\S]*?)\n<\/codex_context_json>/)?.[1];
+  expect(contextJson).toBeDefined();
+  const envelope = JSON.parse(contextJson!);
+  expect(envelope.messages[0]).toEqual({ role: "user", content: "Consumed screenshot request" });
+  expect(envelope.messages[2].content.at(-1)).toMatchObject({
+    type: "image_attachment",
+    attachment_ref: "codex-input-image-1",
+  });
+});
+
+test("v1 compacted history keeps one ambiguous image only until post-checkpoint assistant output", () => {
+  const oldImage = "data:image/png;base64,older-v1-image";
+  const newestImage = "data:image/png;base64,newest-v1-image";
+  const checkpoint = `${SUMMARY_PREFIX}\nv1 checkpoint`;
+  const capabilities = {
+    localToolsEnabled: false,
+    solAvailable: true,
+    extraHighAvailable: false,
+    proAvailable: false,
+  };
+  const compactedMessages = [
+    {
+      role: "user" as const,
+      content: [
+        { type: "text" as const, text: "Older compacted screenshot" },
+        { type: "image" as const, imageUrl: oldImage, detail: "high" as const },
+      ],
+      timestamp: 1,
+    },
+    {
+      role: "user" as const,
+      content: [
+        { type: "text" as const, text: "Newest compacted screenshot" },
+        { type: "image" as const, imageUrl: newestImage, detail: "high" as const },
+      ],
+      timestamp: 2,
+    },
+    { role: "user" as const, content: checkpoint, timestamp: 3 },
+  ];
+
+  const firstContinuation = compileChatGptWebPrompt({
+    modelId: CHATGPT_WEB_MODEL_ID,
+    stream: true,
+    options: { reasoning: "medium" },
+    context: { systemPrompt: [], messages: compactedMessages },
+  }, capabilities);
+  expect(firstContinuation.images.map(image => image.imageUrl)).toEqual([newestImage]);
+
+  const laterContinuation = compileChatGptWebPrompt({
+    modelId: CHATGPT_WEB_MODEL_ID,
+    stream: true,
+    options: { reasoning: "medium" },
+    context: {
+      systemPrompt: [],
+      messages: [
+        ...compactedMessages,
+        {
+          role: "assistant",
+          content: [{ type: "text", text: "I continued from the checkpoint." }],
+          model: CHATGPT_WEB_MODEL_ID,
+          timestamp: 4,
+        },
+        { role: "user", content: "Continue again", timestamp: 5 },
+      ],
+    },
+  }, capabilities);
+  expect(laterContinuation.images).toEqual([]);
+});
+
 test("Bigger Context fits mixed-density whole records within both token and composer limits", () => {
   const capabilities = { localToolsEnabled: false, solAvailable: true, extraHighAvailable: false, proAvailable: false, experimentalBiggerContext: true };
   const dense = "a!b@c#d$e%f^g&h*".repeat(3_750);
@@ -3236,6 +3421,24 @@ test("Bigger Context preflight expands only the total context ceiling and keeps 
     900_000,
     6,
   )).toThrow("270,000-token six-part ceiling");
+  expect(() => assertChatGptWebMultipartInputWithinLimits(
+    269_999,
+    80_000,
+    "gpt-5.6-sol",
+    "high",
+    plus,
+    900_000,
+    4,
+  )).not.toThrow();
+  expect(() => assertChatGptWebMultipartInputWithinLimits(
+    270_000,
+    80_000,
+    "gpt-5.6-sol",
+    "high",
+    plus,
+    900_000,
+    4,
+  )).toThrow("270,000-token four-transport-part ceiling");
   expect(() => assertChatGptWebMultipartInputWithinLimits(
     180_000,
     80_000,
@@ -3693,6 +3896,17 @@ test("clearing the missing-response window preserves whether a response was ever
   tracker.clearMissingResponse();
   expect(tracker.update(absent, 5_000)).toBeUndefined();
   expect(tracker.update(absent, 6_000)).toContain("response DOM disappeared");
+});
+
+test("the launcher helper accepts the fourth Bigger Context spill part", () => {
+  const helper = readFileSync("src/adapters/chatgpt-web/browser-helper-main.ts", "utf8");
+
+  // Bigger Context still has three logical windows, but #61 added a fourth physical transport
+  // spill part. The out-of-process helper must share that transport bound instead of hard-coding
+  // the older 2/3-part protocol or it aborts the first run and every reconnect collides with it.
+  expect(helper).toContain("CHATGPT_BIGGER_CONTEXT_MAX_TRANSPORT_PARTS");
+  expect(helper).toMatch(/multipart\.parts\.length > CHATGPT_BIGGER_CONTEXT_MAX_TRANSPORT_PARTS/);
+  expect(helper).not.toContain("multipart.parts.length !== 2 && multipart.parts.length !== 3");
 });
 
 test("the launcher helper transport carries MCP progress into the out-of-process browser worker", () => {

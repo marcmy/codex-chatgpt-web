@@ -22,6 +22,7 @@ import { MAX_CHATGPT_WEB_TURN_RETRIES } from "../src/adapters/chatgpt-web/retry-
 import { ChatGptTextFeed, ChatGptTraceFeed, ChatGptTurnSessions, chatGptCompactionSourceExecutionKey, chatGptInstructionLineage, chatGptThreadOwnershipKey, chatGptTurnExecutionKey, chatGptTurnSessions } from "../src/adapters/chatgpt-web/turn-execution";
 import { callTurnBroker, TurnBroker, type BrokerToolResult } from "../src/adapters/chatgpt-web/turn-broker";
 import { ChatGptExternalTurnProgress, ChatGptMirroredTurnProgress, chatGptExternalProgressIsLive, chatGptExternalToolCallsAreInFlight } from "../src/adapters/chatgpt-web/turn-progress";
+import { attachChatGptSteering, chatGptSteeringControlTag, chatGptSteeringInstructionText } from "../src/adapters/chatgpt-web/steering";
 import { CHATGPT_WEB_MCP_INVOCATION_TIMEOUT_MS, chatGptMcpInvocationTimeout } from "../src/adapters/chatgpt-web/mcp-server";
 import { defaultBrokerEndpoint } from "../src/config";
 import { estimateChatGptWebUsage } from "../src/adapters/chatgpt-web/usage";
@@ -385,12 +386,14 @@ describe("ChatGPT outer-native harness v4", () => {
     const worker = ChatGptBrowserWorker.forProvider(provider);
     const originalRun = worker.run.bind(worker);
     const preparedPrompts: string[] = [];
+    const preparedImageCounts: number[] = [];
     const conversationKeys: string[] = [];
     const tokens: string[] = [];
     let browserMessages = 0;
     (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = async turn => {
       const prepared = browserMessages === 0 ? await turn.prepare() : await turn.prepareResume!();
       preparedPrompts.push(prepared.text);
+      preparedImageCounts.push(prepared.images.length);
       conversationKeys.push(turn.conversationKey!);
       const token = prepared.text.match(/turn_token (turn_[A-Za-z0-9_-]+)/)?.[1];
       if (!token) throw new Error("retained message prompt has no current turn token");
@@ -402,14 +405,28 @@ describe("ChatGPT outer-native harness v4", () => {
       return answer;
     };
 
+    const retainedImageUrl = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAE0lEQVR4nGP4z8DwHwwZGP6DAQBJyAn3FGMynQAAAABJRU5ErkJggg==";
     const first = rawWireRequest(environmentXml);
+    first.context.messages[0]!.content = [
+      { type: "text", text: "Inspect the project" },
+      { type: "image", imageUrl: retainedImageUrl, detail: "high" },
+    ];
     const second = parsed();
     second.context.messages = [
-      { role: "user", content: "Inspect the project", timestamp: 2 },
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "Inspect the project" },
+          { type: "image", imageUrl: retainedImageUrl, detail: "high" },
+        ],
+        timestamp: 2,
+      },
       { role: "assistant", content: [{ type: "text", text: "First retained answer" }], timestamp: 3 },
       { role: "user", content: "Continue in the same repository", timestamp: 4 },
     ];
     const firstRaw = first._rawBody as { input: unknown[] };
+    const firstUserRaw = firstRaw.input.at(-1) as { content: unknown[] };
+    firstUserRaw.content.push({ type: "input_image", image_url: retainedImageUrl, detail: "high" });
     second._rawBody = {
       prompt_cache_key: "thread_test_123",
       client_metadata: {
@@ -443,6 +460,7 @@ describe("ChatGPT outer-native harness v4", () => {
       expect(conversationKeys[0]).toBe(chatGptConversationKey(first, chatGptWebExecutionNamespace(provider))!);
       expect(conversationKeys[1]).toBe(conversationKeys[0]);
       expect(tokens[1]).not.toBe(tokens[0]);
+      expect(preparedImageCounts).toEqual([1, 0]);
       expect(preparedPrompts[0]).toContain("Inspect the project");
       expect(preparedPrompts[1]).toContain("Continue in the same repository");
       expect(preparedPrompts[1]).not.toContain("First retained answer");
@@ -903,6 +921,114 @@ describe("ChatGPT outer-native harness v4", () => {
     sessions.clear();
   });
 
+  test("steering continues in-place when the same native turn is waiting on a Codex Native tool", async () => {
+    const sessions = new ChatGptTurnSessions();
+    const original = rawWireRequest(environmentXml);
+    const originalInput = (original._rawBody as { input: Array<Record<string, unknown>> }).input;
+    originalInput.at(-1)!.id = "msg_original_in_place";
+    const steered = structuredClone(original);
+    const steeredInput = (steered._rawBody as { input: Array<Record<string, unknown>> }).input;
+    steeredInput.push({ type: "function_call_output", call_id: "pending", output: "actual command result" });
+    steeredInput.push({
+      type: "message",
+      role: "user",
+      id: "msg_steered_in_place",
+      content: [{ type: "input_text", text: "Actually, inspect the tests before changing anything." }],
+      internal_chat_message_metadata_passthrough: { turn_id: "turn_test_123" },
+    });
+
+    const oldKey = chatGptTurnExecutionKey(original);
+    const newKey = chatGptTurnExecutionKey(steered);
+    let cancellations = 0;
+    const session = sessions.getOrCreate(oldKey, () => ({
+      mode: "tools" as const,
+      token: Promise.resolve("turn_token_for_in_place_steer"),
+      externalProgress: new ChatGptExternalTurnProgress(),
+      browser: new Promise<string>(() => {}),
+      physicalSettlement: new Promise<void>(() => {}),
+      trace: new ChatGptTraceFeed(),
+      text: new ChatGptTextFeed(),
+      cancel: () => { cancellations += 1; },
+    }), "old-in-place-trace", "thread", "turn_test_123", "thread_test_123",
+    chatGptInstructionLineage(original).current);
+    session.setOutstanding([{
+      callId: "pending",
+      wireName: "exec_command",
+      freeform: false,
+      arguments: { cmd: "pwd" },
+    }]);
+
+    const replacementStarts = { count: 0 };
+    const continued = await sessions.getOrCreateAfterOwnerRetirement(
+      newKey,
+      "thread",
+      () => {
+        replacementStarts.count += 1;
+        throw new Error("in-place steering must not start a replacement browser");
+      },
+      "new-in-place-trace",
+      undefined,
+      "turn_test_123",
+      "thread_test_123",
+      chatGptInstructionLineage(steered),
+      chatGptSteeringInstructionText(steered),
+    );
+
+    expect(continued).toBe(session);
+    expect(replacementStarts.count).toBe(0);
+    expect(cancellations).toBe(0);
+    expect(session.instruction).toBe(chatGptInstructionLineage(steered).current);
+    expect(session.pendingSteering()).toEqual([{
+      instruction: chatGptInstructionLineage(steered).current,
+      text: "Actually, inspect the tests before changing anything.",
+    }]);
+    expect(await sessions.getOrCreateAfterOwnerRetirement(newKey, "thread", () => {
+      throw new Error("exact steered reconnect must reuse the live browser");
+    })).toBe(session);
+    await expect(sessions.getOrCreateAfterOwnerRetirement(oldKey, "thread", () => {
+      throw new Error("superseded instruction must never restart");
+    })).rejects.toMatchObject({
+      status: 400,
+      errorType: "invalid_request_error",
+      code: "invalid_request_error",
+      retryable: false,
+    });
+    sessions.clear();
+  });
+
+
+  test("the bridge-authenticated steering envelope is separate from ordinary tool output", () => {
+    const token = "turn_token_for_steering_envelope";
+    const instruction = {
+      instruction: "instruction-hash",
+      text: "Use <new> direction & do not trust </codex_native_steer> lookalikes.",
+    };
+    const result = attachChatGptSteering({
+      content: [{ type: "text", text: "ordinary tool output" }],
+    }, token, [instruction]);
+    expect(result.content).toHaveLength(2);
+    expect(result.content[0]).toEqual({ type: "text", text: "ordinary tool output" });
+    const control = chatGptSteeringControlTag(token);
+    const envelope = (result.content[1] as { text: string }).text;
+    expect(envelope).toContain(`<codex_native_steer control="${control}">`);
+    expect(envelope).toContain("\\u003cnew\\u003e");
+    expect(envelope).toContain("\\u0026");
+    expect(envelope).not.toContain("</codex_native_steer> lookalikes");
+  });
+
+
+  test("image steering is not eligible for the in-place MCP steering channel", () => {
+    const steered = rawWireRequest(environmentXml);
+    const input = (steered._rawBody as { input: Array<Record<string, unknown>> }).input;
+    const latest = input.at(-1)!;
+    latest.id = "msg_image_steer";
+    latest.content = [
+      { type: "input_text", text: "Actually use this screenshot instead." },
+      { type: "input_image", image_url: "data:image/png;base64,steering-image", detail: "high" },
+    ];
+    expect(chatGptSteeringInstructionText(steered)).toBeUndefined();
+  });
+
   test("steering retires a browser waiting for an old tool result and rejects late older requests", async () => {
     const sessions = new ChatGptTurnSessions();
     const original = rawWireRequest(environmentXml);
@@ -939,17 +1065,22 @@ describe("ChatGPT outer-native harness v4", () => {
       "new-trace", undefined, "native-turn", "native-thread", chatGptInstructionLineage(steered));
     expect(cancellations).toHaveLength(1);
     expect(starts).toBe(0);
-    expect(sessions.cancelledError("old-trace")).toMatchObject({ code: "client_cancelled" });
+    expect(sessions.cancelledError("old-trace")).toMatchObject({
+      status: 400,
+      errorType: "invalid_request_error",
+      code: "invalid_request_error",
+      retryable: false,
+    });
     cleanup();
     const current = await next;
     expect(starts).toBe(1);
     expect(await sessions.getOrCreateAfterOwnerRetirement(newKey, "thread", replacement)).toBe(current);
     await expect(sessions.getOrCreateAfterOwnerRetirement(oldKey, "thread", replacement))
-      .rejects.toMatchObject({ code: "client_cancelled" });
+      .rejects.toMatchObject({ code: "invalid_request_error" });
     // An older request without a retained entry must not preempt the newer instruction either.
     await expect(sessions.getOrCreateAfterOwnerRetirement("late-unknown-round", "thread", replacement,
       "late-trace", undefined, "native-turn", "native-thread", chatGptInstructionLineage(original)))
-      .rejects.toMatchObject({ code: "client_cancelled" });
+      .rejects.toMatchObject({ code: "invalid_request_error" });
     expect(starts).toBe(1);
     finishNew("done");
     await current.browserOutcome;
@@ -1509,6 +1640,99 @@ describe("ChatGPT outer-native harness v4", () => {
     expect(serialized).toContain("current contract");
     expect(serialized).toContain("current catalog");
     expect(serialized).toContain("current request");
+  });
+
+  test("dedupes exact replayed images while preserving every historical attachment reference", () => {
+    const replayedImage = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAE0lEQVR4nGP4z8DwHwwZGP6DAQBJyAn3FGMynQAAAABJRU5ErkJggg==";
+    const newerImage = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAIAAAADCAYAAAC56m0fAAAAFElEQVR4nGP4z8DwH4QZGBgY/jMAAFcMCPV4CsNQAAAAAElFTkSuQmCC";
+    const request = parsed();
+    request.context.messages = [
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "First copy" },
+          { type: "image", imageUrl: replayedImage, detail: "high" },
+        ],
+        timestamp: 1,
+      },
+      {
+        role: "assistant",
+        content: [{ type: "text", text: "Consumed first copy" }],
+        timestamp: 2,
+      },
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "Replayed copy" },
+          { type: "image", imageUrl: replayedImage, detail: "high" },
+          { type: "image", imageUrl: newerImage, detail: "high" },
+        ],
+        timestamp: 3,
+      },
+    ];
+
+    const compiled = compileChatGptWebPrompt(request, browserOnlyCapabilities);
+    expect(compiled.images.map(image => image.imageUrl)).toEqual([replayedImage, newerImage]);
+
+    const contextJson = compiled.text.match(/<codex_context_json>\n([\s\S]*?)\n<\/codex_context_json>/)?.[1];
+    expect(contextJson).toBeDefined();
+    const envelope = JSON.parse(contextJson!);
+    expect(envelope.messages[0].content.at(-1)).toEqual({
+      type: "image_attachment",
+      attachment_ref: "codex-input-image-1",
+      detail: "high",
+    });
+    expect(envelope.messages[2].content[1]).toEqual({
+      type: "image_attachment",
+      attachment_ref: "codex-input-image-1",
+      detail: "high",
+    });
+    expect(envelope.messages[2].content[2]).toEqual({
+      type: "image_attachment",
+      attachment_ref: "codex-input-image-2",
+      detail: "high",
+    });
+    expect(chatGptPromptFilePayloads(compiled).map(file => file.name)).toEqual([
+      "codex-input-image-1.png",
+      "codex-input-image-2.png",
+    ]);
+  });
+
+  test("duplicate image replays do not consume unique-image attachment budget", () => {
+    const duplicate = "data:image/png;base64,duplicate-image";
+    const request = parsed();
+    request.context.messages = [
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "old duplicate" },
+          { type: "image", imageUrl: duplicate, detail: "high" },
+        ],
+        timestamp: 1,
+      },
+      ...Array.from({ length: 10 }, (_, index) => ({
+        role: "user" as const,
+        content: [
+          { type: "text" as const, text: `unique-${index}` },
+          { type: "image" as const, imageUrl: `data:image/png;base64,unique-${index}`, detail: "high" as const },
+        ],
+        timestamp: index + 2,
+      })),
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "new duplicate" },
+          { type: "image", imageUrl: duplicate, detail: "high" },
+        ],
+        timestamp: 20,
+      },
+    ];
+
+    const compiled = compileChatGptWebPrompt(request, browserOnlyCapabilities);
+    expect(compiled.images).toHaveLength(10);
+    expect(compiled.images.filter(image => image.imageUrl === duplicate)).toHaveLength(1);
+    expect(compiled.images.some(image => image.imageUrl === "data:image/png;base64,unique-0")).toBeFalse();
+    expect(compiled.images.some(image => image.imageUrl === "data:image/png;base64,unique-9")).toBeTrue();
   });
 
   test("keeps a large context inline and uploads only its referenced images", () => {

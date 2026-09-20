@@ -132,6 +132,30 @@ export function hasCurrentChatGptEnvironmentContext(parsed: CodexParsedRequest):
   return false;
 }
 
+/** True only when a current-tagged environment is replayed before later model/tool output. */
+export function hasReplayedCurrentChatGptEnvironmentContext(parsed: CodexParsedRequest): boolean {
+  const turnId = extractChatGptTurnIdentity(parsed).turnId;
+  if (!turnId) return false;
+  const body = record(parsed._rawBody);
+  const input = Array.isArray(body?.input) ? body.input : [];
+  let laterGeneratedOutput = false;
+  for (let index = input.length - 1; index >= 0; index -= 1) {
+    const item = record(input[index]);
+    if (!item) continue;
+    if ((item.type === "message" && item.role === "assistant")
+      || item.type === "function_call" || item.type === "custom_tool_call"
+      || item.type === "local_shell_call" || item.type === "web_search_call"
+      || item.type === "tool_search_call" || item.type === "reasoning"
+      || item.type === "compaction") {
+      laterGeneratedOutput = true;
+      continue;
+    }
+    if (item.type !== "message" || item.role !== "user" || itemTurnId(item) !== turnId) continue;
+    if (/<\/?environment_context\b/i.test(rawMessageText(item)) && laterGeneratedOutput) return true;
+  }
+  return false;
+}
+
 export interface ChatGptUnattributedEnvironmentMessage {
   id: string;
   content: unknown;
@@ -308,10 +332,30 @@ export function extractChatGptContinuationEnvironmentClaim(parsed: CodexParsedRe
   return parseChatGptEnvironmentText(parsed, updates[0]!);
 }
 
+/** Parse a current-turn claim only; the caller must authenticate it against trusted authority. */
+export function extractChatGptCurrentEnvironmentClaim(parsed: CodexParsedRequest): ChatGptTurnEnvironment {
+  const turnId = extractChatGptTurnIdentity(parsed).turnId;
+  const body = record(parsed._rawBody);
+  const updates = (Array.isArray(body?.input) ? body.input : []).flatMap(value => {
+    const item = record(value);
+    if (item?.type !== "message" || item.role !== "user" || itemTurnId(item) !== turnId
+      || typeof item.id !== "string" || !item.id) return [];
+    const parts = typeof item.content === "string" ? [item.content]
+      : Array.isArray(item.content) ? item.content.map(part => record(part)?.text) : [];
+    return parts.flatMap(value => {
+      if (typeof value !== "string") return [];
+      const text = value.trim();
+      return /^<environment_context>[\s\S]*<\/environment_context>$/.test(text) ? [text] : [];
+    });
+  });
+  if (updates.length !== 1) throw new Error("ChatGPT web requires one current native environment claim");
+  return parseChatGptEnvironmentText(parsed, updates[0]!);
+}
+
 /**
  * Steering can separate the original environment/instruction pair from the active instruction.
- * Git workspace metadata need not list every native filesystem root. Return that earlier claim
- * only for a same-turn pair; the store must compare it with the current canonical rollout.
+ * Return that earlier claim only for one unambiguous same-turn environment envelope; the caller
+ * must authenticate it against the current native rollout before accepting it as authority.
  */
 export function extractChatGptSteeringEnvironmentClaim(parsed: CodexParsedRequest): ChatGptTurnEnvironment | undefined {
   const turnId = extractChatGptTurnIdentity(parsed).turnId;
@@ -323,11 +367,9 @@ export function extractChatGptSteeringEnvironmentClaim(parsed: CodexParsedReques
   const active = record(input[activeIndex]);
   if (itemTurnId(active) !== turnId || typeof active?.id !== "string" || !active.id) return undefined;
 
-  // Do not skip an unrecognized update or use one of several competing envelopes. Older,
-  // explicitly attributed history is not a current claim; untagged XML remains unproven.
   const claims = input.flatMap((value, index) => {
     const item = record(value);
-    if (item?.type !== "message" || !/<\/?environment_context\b/i.test(rawMessageText(item))) return [];
+    if (item?.type !== "message" || !/<\/?environment_context/i.test(rawMessageText(item))) return [];
     const owner = itemTurnId(item);
     return owner === undefined || owner === turnId ? [{ item, index }] : [];
   });
@@ -336,7 +378,7 @@ export function extractChatGptSteeringEnvironmentClaim(parsed: CodexParsedReques
   if (claim.item.role !== "user" || itemTurnId(claim.item) !== turnId
     || typeof claim.item.id !== "string" || !claim.item.id) return undefined;
   const parts = Array.isArray(claim.item.content) ? claim.item.content : [];
-  if (parts.filter(part => /<\/?environment_context\b/i.test(String(record(part)?.text ?? ""))).length !== 1) return undefined;
+  if (parts.filter(part => /<\/?environment_context/i.test(String(record(part)?.text ?? ""))).length !== 1) return undefined;
 
   for (let index = claim.index + 1; index < activeIndex; index += 1) {
     const instruction = record(input[index]);

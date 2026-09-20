@@ -10,6 +10,8 @@ import {
   withoutRetiredTurnHandles,
 } from "../src/adapters/chatgpt-web/prompt";
 import { CHATGPT_WEB_LUNA_MODEL_ID, CHATGPT_WEB_MODEL_ID } from "../src/adapters/chatgpt-web/model";
+import { resolveChatGptWebMessageTokenBudget, resolveChatGptWebTransportLimits } from "../src/chatgpt-web-models";
+import { estimateTokens } from "../src/lib/token-estimate";
 import { SUMMARY_PREFIX } from "../src/responses/compaction";
 import { biggerContextPartCount } from "../src/adapters/chatgpt-web/usage";
 import type { CodexParsedRequest } from "../src/types";
@@ -173,7 +175,78 @@ test("Bigger Context sends six semantic record envelopes and starts work from th
   expect(commit.match(new RegExp(token, "g"))).toHaveLength(1);
 });
 
-test("Bigger Context uses the minimum transport and reserves six parts for compaction", () => {
+test("Bigger Context fragments one oversized semantic record without losing its exact JSON", () => {
+  const capabilities = {
+    localToolsEnabled: false,
+    solAvailable: true,
+    extraHighAvailable: false,
+    proAvailable: false,
+  };
+  const oversizedDeveloper = "a!b@c#d$e%f^g&h*".repeat(8_000);
+  const parsed = request("high");
+  parsed.context.systemPrompt = [];
+  parsed.context.messages = [
+    { role: "developer", content: oversizedDeveloper, timestamp: 1 },
+    { role: "user", content: "latest-request", timestamp: 2 },
+  ];
+
+  const compiled = compileChatGptWebPrompt(
+    parsed,
+    capabilities,
+    undefined,
+    { experimentalMultipartParts: CHATGPT_BIGGER_CONTEXT_PARTS },
+  );
+  const records = compiled.multipart!.parts.flatMap(part => (
+    (JSON.parse(part) as { records: Array<Record<string, unknown>> }).records
+  ));
+  const fragments = records.filter(record => record.kind === "record_fragment") as Array<{
+    record_index: number;
+    fragment_index: number;
+    final: boolean;
+    json_fragment: string;
+  }>;
+
+  expect(fragments.length).toBeGreaterThan(1);
+  expect(fragments.map(fragment => fragment.fragment_index)).toEqual(
+    Array.from({ length: fragments.length }, (_unused, index) => index),
+  );
+  expect(fragments.at(-1)?.final).toBe(true);
+  const rebuilt = JSON.parse(fragments.map(fragment => fragment.json_fragment).join(""));
+  expect(rebuilt).toEqual({
+    kind: "message",
+    message_index: 0,
+    message: { role: "developer", content: oversizedDeveloper },
+  });
+  expect(records.at(-1)).toEqual({
+    kind: "message",
+    message_index: 1,
+    message: { role: "user", content: "latest-request" },
+  });
+
+  const transactionId = `ctx_${"c".repeat(32)}`;
+  const visibleMessages = [
+    ...compiled.multipart!.parts.slice(0, -1).map((payload, index) => (
+      formatChatGptWebMultipartStage(payload, transactionId, index + 1, CHATGPT_BIGGER_CONTEXT_PARTS).text
+    )),
+    formatChatGptWebMultipartCommit(compiled.multipart!, transactionId),
+  ];
+  const stageTokenBudget = resolveChatGptWebMessageTokenBudget(CHATGPT_WEB_MODEL_ID, "medium", capabilities);
+  const finalTokenBudget = resolveChatGptWebMessageTokenBudget(CHATGPT_WEB_MODEL_ID, "high", capabilities);
+  const stageCharLimit = resolveChatGptWebTransportLimits(CHATGPT_WEB_MODEL_ID, "medium", capabilities).browserComposerCharLimit!;
+  const finalCharLimit = resolveChatGptWebTransportLimits(CHATGPT_WEB_MODEL_ID, "high", capabilities).browserComposerCharLimit!;
+
+  for (const message of visibleMessages.slice(0, -1)) {
+    expect(estimateTokens(message, CHATGPT_WEB_MODEL_ID)).toBeLessThanOrEqual(stageTokenBudget);
+    expect(message.length).toBeLessThanOrEqual(stageCharLimit);
+  }
+  const finalMessage = visibleMessages.at(-1)!;
+  expect(estimateTokens(finalMessage, CHATGPT_WEB_MODEL_ID)).toBeLessThanOrEqual(finalTokenBudget);
+  expect(finalMessage.length).toBeLessThanOrEqual(finalCharLimit);
+  expect(compiled.text).toContain("record_fragment");
+  expect(compiled.text).toContain("concatenating their json_fragment values");
+});
+
+test("Bigger Context uses the minimum transport and reserves three stages for compaction", () => {
   expect(biggerContextPartCount(94_999, 95_000, false)).toBeUndefined();
   expect(biggerContextPartCount(95_000, 95_000, false)).toBe(2);
   expect(biggerContextPartCount(189_999, 95_000, false)).toBe(2);

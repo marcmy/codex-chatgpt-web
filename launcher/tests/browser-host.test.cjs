@@ -630,6 +630,37 @@ test("turn tabs use the hidden viewport when the launcher window is hidden", () 
   assert.deepEqual(tab.deviceEmulationViewport, { width: 1120, height: 720 });
 });
 
+test("retained automatic tabs stay drawable offscreen between turns", () => {
+  const events = [];
+  const hiddenBounds = { x: 1121, y: 721, width: 1120, height: 720 };
+  const tab = {
+    id: "tab-retained-hidden",
+    interactionMode: "automatic",
+    status: "ready",
+    rendererReady: true,
+    deviceEmulationViewport: { width: 1120, height: 720 },
+    deviceEmulationDirty: false,
+    view: {
+      setBounds: bounds => events.push(["bounds", bounds]),
+      setVisible: visible => events.push(["visible", visible]),
+      webContents: {
+        enableDeviceEmulation: options => events.push(["emulate", options]),
+        disableDeviceEmulation: () => events.push(["disable-emulation"]),
+      },
+    },
+  };
+  const fixture = Object.assign(Object.create(BrowserHost.prototype), {
+    hiddenTurnBounds: () => hiddenBounds,
+  });
+
+  BrowserHost.prototype.presentTurnView.call(fixture, tab, false);
+
+  assert.deepEqual(events, [
+    ["bounds", hiddenBounds],
+    ["visible", true],
+  ]);
+});
+
 test("new turn tabs defer device emulation until their renderer finishes loading", () => {
   const events = [];
   const tab = {
@@ -2208,6 +2239,7 @@ test("a later provider round reuses only its exact connector-bound conversation"
     loading: false,
     message: "Task completed",
     bootstrapReady: true,
+    deviceEmulationDirty: false,
     view: {
       webContents: {
         isDestroyed: () => false,
@@ -2249,6 +2281,7 @@ test("a later provider round reuses only its exact connector-bound conversation"
   assert.equal(tab.loading, true);
   assert.equal(tab.message, "ChatGPT is working");
   assert.equal(tab.bootstrapReady, true);
+  assert.equal(tab.deviceEmulationDirty, true);
   assert.equal(fixture.selectedTabId, tab.id);
   assert.deepEqual(throttling, [false]);
   assert.deepEqual(events, ["visible", "published", "descriptor", "browser.tab_reused"]);
