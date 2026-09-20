@@ -8,8 +8,18 @@ const source = (path: string) => readFileSync(join(root, path), "utf8");
 test("accepted rate limits retain the current surface and resume assistant binding in-place", () => {
   const entry = source("src/adapters/chatgpt-web/browser-helper-entry.ts");
   const recovery = source("src/adapters/chatgpt-web/rate-limit-post-submit-recovery.ts");
+  const worker = source("src/adapters/chatgpt-web/browser-worker.ts");
 
   expect(entry).toContain('import "./rate-limit-post-submit-recovery"');
+  expect(worker).toContain(`private async waitForNewAssistantTurn(
+    page: Page,
+    baseline: ChatGptSubmissionBaseline,
+    deadline: number | undefined,
+    signal?: AbortSignal,
+    externalProgress?: ChatGptTurnProgressReader,
+    graceMs: number = CHATGPT_RESPONSE_DOM_GRACE_MS,
+    completionTracker?: ChatGptCompletionTracker,
+    recoverObservation?: ChatGptObservationRecovery,`);
   expect(recovery).toContain("waitForNewAssistantTurn");
   expect(recovery).toContain("isChatGptRateLimitError");
   expect(recovery).toContain("chatGptRateLimitBackoffPolicy.recordRateLimit");
