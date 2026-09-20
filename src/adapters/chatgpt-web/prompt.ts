@@ -45,7 +45,7 @@ export interface CompileChatGptWebPromptOptions {
   manualControl?: true;
 }
 
-\/** Bigger Context may use six physical browser messages while logical capacity stays 3x. */
+/** Bigger Context may use six physical browser messages while logical capacity stays 3x. */
 export const CHATGPT_BIGGER_CONTEXT_PARTS = 6 as const;
 export const CHATGPT_BIGGER_CONTEXT_MAX_TRANSPORT_PARTS = CHATGPT_BIGGER_CONTEXT_PARTS;
 export type ChatGptWebMultipartPartCount = 2 | typeof CHATGPT_BIGGER_CONTEXT_PARTS;
