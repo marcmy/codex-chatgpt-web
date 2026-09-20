@@ -1,4 +1,4 @@
-name: One-shot Retention Probe Protocol V2
+name: One-shot Retention Probe Finalize
 
 on:
   workflow_dispatch:
@@ -17,27 +17,37 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.0
-      - name: Apply protocol patch
-        shell: bash
+      - name: Add raw first-line diagnostics
+        shell: python
         run: |
-          set -euo pipefail
-          git fetch origin main
-          git show origin/main:.github/retention-v2.py.gz.b64 | base64 -d | gzip -dc > /tmp/patch.py
-          python /tmp/patch.py
-          git diff --check
+          from pathlib import Path
+          path = Path("src/adapters/chatgpt-web/browser-worker.ts")
+          text = path.read_text()
+          old = '''              const details = retentionResult.passed
+                ? `${retentionProbe.canaries.length}/${retentionProbe.canaries.length} staged canaries retained`
+                : `reason=${retentionResult.reason ?? "unknown"} missingParts=${retentionResult.missingParts.join(",") || "none"} unexpected=${retentionResult.unexpected.length}`;
+          '''
+          new = '''              const details = retentionResult.passed
+                ? `${retentionProbe.canaries.length}/${retentionProbe.canaries.length} staged canaries retained`
+                : `reason=${retentionResult.reason ?? "unknown"} missingParts=${retentionResult.missingParts.join(",") || "none"} unexpected=${retentionResult.unexpected.length}${retentionResult.observedFirstLine !== undefined ? ` observedFirstLine=${JSON.stringify(retentionResult.observedFirstLine)}` : ""}`;
+          '''
+          if text.count(old) != 1:
+              raise SystemExit(f"expected one retention diagnostics block, found {text.count(old)}")
+          path.write_text(text.replace(old, new, 1))
       - name: Verify
         shell: bash
         run: |
           set -euo pipefail
           bun install --frozen-lockfile
           bun install --frozen-lockfile --cwd launcher
-          bun test tests/prompt-contract.test.ts tests/browser-worker-contract.test.ts
+          bun test tests/retention-probe.test.ts tests/prompt-contract.test.ts tests/browser-worker-contract.test.ts
           bun run verify
+          git diff --check
       - name: Commit and push
         shell: bash
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add src tests
-          git commit -m "fix: harden Even Bigger retention report protocol"
+          git add src/adapters/chatgpt-web/browser-worker.ts
+          git commit -m "fix: log malformed retention report first line"
           git push origin HEAD:feature/unified-web-model-steering
