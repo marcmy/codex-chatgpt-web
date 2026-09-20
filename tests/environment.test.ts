@@ -1352,6 +1352,46 @@ describe("trusted Codex task environment continuity", () => {
       tools: [],
     });
 
+    const duplicatedDirectWriteEntries = [
+      ...workspaceEntries.slice(0, 5),
+      { path: { type: "path", path: root }, access: "write" },
+      { path: { type: "path", path: auxiliaryRoot }, access: "write" },
+      ...workspaceEntries.slice(5),
+    ];
+    writeFileSync(rolloutPath, [
+      JSON.stringify(childSessionMeta()),
+      JSON.stringify(childTurnContext(rolloutTurnId, {
+        workspace_roots: [root, auxiliaryRoot],
+        sandbox_policy: {
+          type: "workspace-write",
+          writable_roots: [auxiliaryRoot],
+          network_access: true,
+          exclude_tmpdir_env_var: false,
+          exclude_slash_tmp: false,
+        },
+        permission_profile: {
+          type: "managed",
+          file_system: { type: "restricted", entries: duplicatedDirectWriteEntries },
+          network: "enabled",
+        },
+        file_system_sandbox_policy: { kind: "restricted", entries: duplicatedDirectWriteEntries },
+      })),
+    ].join("\n") + "\n");
+
+    expect(new ChatGptThreadEnvironmentStore(undefined, Date.now, codexHome).resolve(
+      environmentlessChild(rolloutTurnId, "workspace-write", [root, auxiliaryRoot]),
+    )).toEqual({
+      cwd: root,
+      roots: [root, auxiliaryRoot],
+      writableRoots: [root, auxiliaryRoot],
+      sandboxPolicy: {
+        type: "workspaceWrite",
+        writableRoots: [root, auxiliaryRoot],
+        networkAccess: true,
+      },
+      tools: [],
+    });
+
     writeFileSync(rolloutPath, [
       JSON.stringify(childSessionMeta()),
       JSON.stringify(childTurnContext(rolloutTurnId, {
