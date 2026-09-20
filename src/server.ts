@@ -33,6 +33,7 @@ import {
   CHATGPT_WEB_LUNA_BACKEND_MODEL,
   isChatGptWebModelSlug,
   requireChatGptWebModelRoute,
+  resolveChatGptWebRouteEffort,
   type ChatGptWebModelRoute,
 } from "./chatgpt-web-models";
 import { forwardNativeCodexRequest, type NativeFetch, type NativeImageEndpoint } from "./native-passthrough";
@@ -365,10 +366,10 @@ export interface ResponseRequestOptions {
 export function routeChatGptWebRequest(parsed: CodexParsedRequest, config: AppConfig): ChatGptWebModelRoute {
   const route = requireChatGptWebModelRoute(parsed.modelId, config);
   parsed.modelId = route.backendModel;
-  // Zero Risk preserves a distinct backend identity. Its immutable Codex effort is only a
-  // protocol/catalog value; the manual adapter must never reinterpret it as a ChatGPT selection.
+  // The unified Sol catalog row preserves Codex's selected effort. Historical fixed-effort aliases
+  // still pin their original value, and Zero Risk keeps its technical protocol effort unchanged.
   parsed.options.reasoning = route.interactionMode === "automatic"
-    ? route.adapterEffort
+    ? resolveChatGptWebRouteEffort(route, parsed.options.reasoning, config)
     : route.codexEffort;
   return route;
 }

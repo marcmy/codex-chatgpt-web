@@ -71,3 +71,73 @@ export function attachChatGptSteering(
     ],
   };
 }
+
+
+interface PendingBrowserSteeringRequest {
+  instruction: ChatGptSteeringInstruction;
+  resolve: () => void;
+  reject: (error: Error) => void;
+}
+
+/** Mutable bridge between native steering requests and the already-running browser turn. */
+export class ChatGptBrowserSteeringController {
+  private readonly pendingRequests: PendingBrowserSteeringRequest[] = [];
+  private readonly byInstruction = new Map<string, Promise<void>>();
+  private closedError?: Error;
+
+  request(instruction: ChatGptSteeringInstruction): Promise<void> {
+    if (this.closedError) return Promise.reject(this.closedError);
+    const existing = this.byInstruction.get(instruction.instruction);
+    if (existing) return existing;
+    let resolve!: () => void;
+    let reject!: (error: Error) => void;
+    const promise = new Promise<void>((resolveRequest, rejectRequest) => {
+      resolve = resolveRequest;
+      reject = rejectRequest;
+    });
+    this.byInstruction.set(instruction.instruction, promise);
+    this.pendingRequests.push({ instruction, resolve, reject });
+    return promise;
+  }
+
+  pending(): ChatGptSteeringInstruction[] {
+    return this.pendingRequests.map(request => ({ ...request.instruction }));
+  }
+
+  delivered(instructions: readonly ChatGptSteeringInstruction[]): void {
+    const delivered = new Set(instructions.map(instruction => instruction.instruction));
+    for (let index = this.pendingRequests.length - 1; index >= 0; index -= 1) {
+      const request = this.pendingRequests[index]!;
+      if (!delivered.has(request.instruction.instruction)) continue;
+      this.pendingRequests.splice(index, 1);
+      this.byInstruction.delete(request.instruction.instruction);
+      request.resolve();
+    }
+  }
+
+  failed(instructions: readonly ChatGptSteeringInstruction[], error: Error): void {
+    const failed = new Set(instructions.map(instruction => instruction.instruction));
+    for (let index = this.pendingRequests.length - 1; index >= 0; index -= 1) {
+      const request = this.pendingRequests[index]!;
+      if (!failed.has(request.instruction.instruction)) continue;
+      this.pendingRequests.splice(index, 1);
+      this.byInstruction.delete(request.instruction.instruction);
+      request.reject(error);
+    }
+  }
+
+  close(error = new Error("ChatGPT browser turn settled before steering could be delivered")): void {
+    if (this.closedError) return;
+    this.closedError = error;
+    for (const request of this.pendingRequests.splice(0)) {
+      this.byInstruction.delete(request.instruction.instruction);
+      request.reject(error);
+    }
+  }
+}
+
+export function chatGptBrowserSteeringText(
+  instructions: readonly ChatGptSteeringInstruction[],
+): string {
+  return instructions.map(instruction => instruction.text).filter(Boolean).join("\n\n");
+}

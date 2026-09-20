@@ -22,7 +22,12 @@ import { MAX_CHATGPT_WEB_TURN_RETRIES } from "../src/adapters/chatgpt-web/retry-
 import { ChatGptTextFeed, ChatGptTraceFeed, ChatGptTurnSessions, chatGptCompactionSourceExecutionKey, chatGptInstructionLineage, chatGptThreadOwnershipKey, chatGptTurnExecutionKey, chatGptTurnSessions } from "../src/adapters/chatgpt-web/turn-execution";
 import { callTurnBroker, TurnBroker, type BrokerToolResult } from "../src/adapters/chatgpt-web/turn-broker";
 import { ChatGptExternalTurnProgress, ChatGptMirroredTurnProgress, chatGptExternalProgressIsLive, chatGptExternalToolCallsAreInFlight } from "../src/adapters/chatgpt-web/turn-progress";
-import { attachChatGptSteering, chatGptSteeringControlTag, chatGptSteeringInstructionText } from "../src/adapters/chatgpt-web/steering";
+import {
+  attachChatGptSteering,
+  ChatGptBrowserSteeringController,
+  chatGptSteeringControlTag,
+  chatGptSteeringInstructionText,
+} from "../src/adapters/chatgpt-web/steering";
 import { CHATGPT_WEB_MCP_INVOCATION_TIMEOUT_MS, chatGptMcpInvocationTimeout } from "../src/adapters/chatgpt-web/mcp-server";
 import { defaultBrokerEndpoint } from "../src/config";
 import { estimateChatGptWebUsage } from "../src/adapters/chatgpt-web/usage";
@@ -994,6 +999,80 @@ describe("ChatGPT outer-native harness v4", () => {
       retryable: false,
     });
     sessions.clear();
+  });
+
+
+  test("same-turn text steering uses the live browser control when no tool result is pending", async () => {
+    const sessions = new ChatGptTurnSessions();
+    const original = rawWireRequest(environmentXml);
+    const originalInput = (original._rawBody as { input: Array<Record<string, unknown>> }).input;
+    originalInput.at(-1)!.id = "msg_original_browser_steer";
+    const steered = structuredClone(original);
+    const steeredInput = (steered._rawBody as { input: Array<Record<string, unknown>> }).input;
+    steeredInput.push({
+      type: "message",
+      role: "user",
+      id: "msg_browser_steered",
+      content: [{ type: "input_text", text: "Change direction after the current browser step." }],
+      internal_chat_message_metadata_passthrough: { turn_id: "turn_test_123" },
+    });
+
+    const oldKey = chatGptTurnExecutionKey(original);
+    const newKey = chatGptTurnExecutionKey(steered);
+    const delivered: Array<{ instruction: string; text: string }> = [];
+    let cancellations = 0;
+    const session = sessions.getOrCreate(oldKey, () => ({
+      mode: "tools" as const,
+      token: Promise.resolve("turn_token_for_browser_steer"),
+      externalProgress: new ChatGptExternalTurnProgress(),
+      browser: new Promise<string>(() => {}),
+      physicalSettlement: new Promise<void>(() => {}),
+      trace: new ChatGptTraceFeed(),
+      text: new ChatGptTextFeed(),
+      steer: async instruction => { delivered.push(instruction); },
+      cancel: () => { cancellations += 1; },
+    }), "browser-steer-trace", "thread", "turn_test_123", "thread_test_123",
+    chatGptInstructionLineage(original).current);
+
+    const continued = await sessions.getOrCreateAfterOwnerRetirement(
+      newKey,
+      "thread",
+      () => { throw new Error("browser steering must not start a replacement browser"); },
+      "new-browser-steer-trace",
+      undefined,
+      "turn_test_123",
+      "thread_test_123",
+      chatGptInstructionLineage(steered),
+      chatGptSteeringInstructionText(steered),
+    );
+
+    expect(continued).toBe(session);
+    expect(delivered).toEqual([{
+      instruction: chatGptInstructionLineage(steered).current,
+      text: "Change direction after the current browser step.",
+    }]);
+    expect(cancellations).toBe(0);
+    expect(session.pendingSteering()).toEqual([]);
+    expect(session.instruction).toBe(chatGptInstructionLineage(steered).current);
+    await expect(sessions.getOrCreateAfterOwnerRetirement(oldKey, "thread", () => {
+      throw new Error("superseded browser-steer instruction must never restart");
+    })).rejects.toMatchObject({ code: "invalid_request_error" });
+    sessions.clear();
+  });
+
+  test("browser steering controller preserves queued order and resolves only delivered revisions", async () => {
+    const steering = new ChatGptBrowserSteeringController();
+    const firstInstruction = { instruction: "first", text: "First steer" };
+    const secondInstruction = { instruction: "second", text: "Second steer" };
+    const first = steering.request(firstInstruction);
+    const second = steering.request(secondInstruction);
+    expect(steering.pending()).toEqual([firstInstruction, secondInstruction]);
+    steering.delivered([firstInstruction]);
+    await expect(first).resolves.toBeUndefined();
+    expect(steering.pending()).toEqual([secondInstruction]);
+    steering.delivered([secondInstruction]);
+    await expect(second).resolves.toBeUndefined();
+    expect(steering.pending()).toEqual([]);
   });
 
 

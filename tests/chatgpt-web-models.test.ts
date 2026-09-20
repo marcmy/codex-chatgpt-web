@@ -12,8 +12,11 @@ import {
   CHATGPT_WEB_ZERO_RISK_MODEL_ROUTE,
   CHATGPT_WEB_ZERO_RISK_PRO_BACKEND_MODEL,
   CHATGPT_WEB_ZERO_RISK_PRO_MODEL_ROUTE,
+  CHATGPT_WEB_LEGACY_MODEL_ROUTES,
+  CHATGPT_WEB_MODEL_ROUTE,
   CHATGPT_WEB_MODEL_ROUTES,
   requireChatGptWebModelRoute,
+  resolveChatGptWebRouteEffort,
   resolveChatGptWebContextLimits,
   resolveChatGptWebTransportLimits,
 } from "../src/chatgpt-web-models";
@@ -31,40 +34,58 @@ function parsed(modelId: string, reasoning = "medium"): CodexParsedRequest {
   };
 }
 
-describe("fixed ChatGPT Web model routes", () => {
+describe("ChatGPT Web model routes", () => {
   const plus = { solAvailable: true, extraHighAvailable: false, proAvailable: false };
   const pro = { solAvailable: true, extraHighAvailable: true, proAvailable: true };
 
-  test("uses unique stable slugs and one explicit adapter effort per model", () => {
+  test("publishes one unified Sol route while retaining stable fixed-effort aliases", () => {
+    expect(CHATGPT_WEB_MODEL_ROUTE).toMatchObject({
+      slug: "chatgpt-web/sol",
+      displayName: "ChatGPT Web",
+      codexEffort: "high",
+      adapterEffort: "high",
+      dynamicEffort: true,
+    });
     expect(new Set(CHATGPT_WEB_MODEL_ROUTES.map(route => route.slug)).size).toBe(CHATGPT_WEB_MODEL_ROUTES.length);
-    expect(CHATGPT_WEB_MODEL_ROUTES.map(route => [route.slug, route.codexEffort, route.adapterEffort])).toEqual([
+    expect(CHATGPT_WEB_MODEL_ROUTES).toEqual([CHATGPT_WEB_MODEL_ROUTE, ...CHATGPT_WEB_LEGACY_MODEL_ROUTES]);
+    expect(CHATGPT_WEB_LEGACY_MODEL_ROUTES.map(route => [route.slug, route.codexEffort, route.adapterEffort])).toEqual([
       ["chatgpt-web/light", "low", "low"],
       ["chatgpt-web/medium", "medium", "medium"],
       ["chatgpt-web/high", "high", "high"],
       ["chatgpt-web/extra-high", "xhigh", "xhigh"],
       ["chatgpt-web/pro", "ultra", "max"],
     ]);
-    expect(CHATGPT_WEB_MODEL_ROUTES[0]?.displayName).toBe("ChatGPT Web — Instant");
   });
 
-  test("exposes only Plus-eligible routes without the Pro account capability", () => {
-    expect(availableChatGptWebModelRoutes(plus).map(route => route.slug)).toEqual([
-      "chatgpt-web/light",
-      "chatgpt-web/medium",
-      "chatgpt-web/high",
-    ]);
-    expect(availableChatGptWebModelRoutes({ solAvailable: true, extraHighAvailable: true, proAvailable: true }))
-      .toEqual(CHATGPT_WEB_MODEL_ROUTES);
+  test("exposes only the unified Sol route in the normal picker", () => {
+    expect(availableChatGptWebModelRoutes(plus)).toEqual([CHATGPT_WEB_MODEL_ROUTE]);
+    expect(availableChatGptWebModelRoutes(pro)).toEqual([CHATGPT_WEB_MODEL_ROUTE]);
+    expect(requireChatGptWebModelRoute("chatgpt-web/light", plus).adapterEffort).toBe("low");
     expect(() => requireChatGptWebModelRoute("chatgpt-web/extra-high", plus))
       .toThrow("Extra High is not available for this account");
     expect(() => requireChatGptWebModelRoute("chatgpt-web/pro", plus))
       .toThrow("Pro is not available for this account");
   });
 
-  test("Extra High stays routable without granting Pro or Pro-sized context", () => {
+  test("maps the unified slider effort to the corresponding ChatGPT browser mode", () => {
+    const route = requireChatGptWebModelRoute(CHATGPT_WEB_MODEL_ROUTE.slug, plus);
+    expect(resolveChatGptWebRouteEffort(route, "low", plus)).toBe("low");
+    expect(resolveChatGptWebRouteEffort(route, "medium", plus)).toBe("medium");
+    expect(resolveChatGptWebRouteEffort(route, "high", plus)).toBe("high");
+    expect(() => resolveChatGptWebRouteEffort(route, "xhigh", plus)).toThrow("Extra High");
+    expect(() => resolveChatGptWebRouteEffort(route, "ultra", plus)).toThrow("Pro");
+    expect(resolveChatGptWebRouteEffort(route, "xhigh", pro)).toBe("xhigh");
+    expect(resolveChatGptWebRouteEffort(route, "ultra", pro)).toBe("max");
+
+    const request = parsed(CHATGPT_WEB_MODEL_ROUTE.slug, "medium");
+    expect(routeChatGptWebRequest(request, { ...defaultConfig("full"), ...plus }).slug)
+      .toBe(CHATGPT_WEB_MODEL_ROUTE.slug);
+    expect(request.modelId).toBe(CHATGPT_WEB_BACKEND_MODEL);
+    expect(request.options.reasoning).toBe("medium");
+  });
+
+  test("legacy fixed-effort aliases remain routable without inheriting the slider request", () => {
     const config = { ...defaultConfig("full"), extraHighAvailable: true, proAvailable: false };
-    expect(availableChatGptWebModelRoutes(config).map(route => route.slug))
-      .toEqual(["chatgpt-web/light", "chatgpt-web/medium", "chatgpt-web/high", "chatgpt-web/extra-high"]);
     const request = parsed("chatgpt-web/extra-high", "low");
     expect(routeChatGptWebRequest(request, config).adapterEffort).toBe("xhigh");
     expect(request.options.reasoning).toBe("xhigh");
@@ -72,9 +93,6 @@ describe("fixed ChatGPT Web model routes", () => {
       .toEqual(resolveChatGptWebContextLimits(CHATGPT_WEB_BACKEND_MODEL, "high", config));
     expect(resolveChatGptWebTransportLimits(CHATGPT_WEB_BACKEND_MODEL, "xhigh", config))
       .toEqual(resolveChatGptWebTransportLimits(CHATGPT_WEB_BACKEND_MODEL, "high", config));
-    expect(() => requireChatGptWebModelRoute("chatgpt-web/pro", config)).toThrow("not available");
-    expect(() => requireChatGptWebModelRoute("chatgpt-web/extra-high", { ...config, extraHighAvailable: undefined }))
-      .toThrow("not available");
   });
 
   test("exposes Luna and Think when the authenticated account has no Sol selector", () => {

@@ -74,6 +74,10 @@ export class ChatGptTraceFeed {
     return this.queued.splice(0);
   }
 
+  reset(): void {
+    this.queued.splice(0);
+  }
+
   wait(signal?: AbortSignal): Promise<void> {
     if (this.queued.length > 0) return Promise.resolve();
     if (signal?.aborted) return Promise.reject(new DOMException("trace wait aborted", "AbortError"));
@@ -123,6 +127,11 @@ export class ChatGptTextFeed {
     return this.text;
   }
 
+  reset(): void {
+    this.queued.splice(0);
+    this.text = "";
+  }
+
   wait(signal?: AbortSignal): Promise<void> {
     if (this.queued.length > 0) return Promise.resolve();
     if (signal?.aborted) return Promise.reject(new DOMException("text wait aborted", "AbortError"));
@@ -154,6 +163,8 @@ interface ChatGptTurnRuntimeBase {
   submission?: { phase: "prepared" | "send_activated" | "accepted" };
   /** Present only when the visible ChatGPT tab is driven manually through the Codex Zero Risk MCP contract. */
   manualControl?: { surfaceNonce: string };
+  /** Deliver a newer same-turn user instruction through the already-running browser surface. */
+  steer?: (instruction: ChatGptSteeringInstruction) => Promise<void>;
   cancel: (reason?: Error) => void;
 }
 
@@ -338,10 +349,11 @@ export class ChatGptTurnSession {
     return [...this.outstandingById.values()];
   }
 
-  adoptSteeringInstruction(instruction: string, text: string): void {
+  adoptSteeringInstruction(instruction: string, text: string, queueForToolResult = true): void {
     if (this.instruction === instruction) return;
     this.instruction = instruction;
-    if (!this.pendingSteeringInstructions.some(candidate => candidate.instruction === instruction)) {
+    if (queueForToolResult
+      && !this.pendingSteeringInstructions.some(candidate => candidate.instruction === instruction)) {
       this.pendingSteeringInstructions.push({ instruction, text });
     }
     this.touch();
@@ -629,6 +641,28 @@ export class ChatGptTurnSessions {
             this.entries.set(key, ownedSession);
             console.info(
               `[chatgpt-web] browser trace=${ownedSession.traceId ?? "unknown"} continued in-place for native steering`,
+            );
+            return ownedSession;
+          }
+          if (sameNativeTurn && steeringText !== undefined && ownedSession.runtime.steer) {
+            // No tool result is available as an in-band continuation channel. Ask the live browser
+            // turn to deliver the steer itself. The worker waits for any tool activity to drain,
+            // then uses live Send when available or Stop -> follow-up Send on the current UI.
+            await awaitWithAbort(ownedSession.runtime.steer({
+              instruction: instruction.current,
+              text: steeringText,
+            }), signal);
+            const reason = chatGptTurnSupersededError();
+            this.entries.delete(ownedKey);
+            this.supersededExecutions.set(ownedKey, {
+              error: reason,
+              ...(ownedSession.traceId ? { traceId: ownedSession.traceId } : {}),
+              touchedAt: Date.now(),
+            });
+            ownedSession.adoptSteeringInstruction(instruction.current, steeringText, false);
+            this.entries.set(key, ownedSession);
+            console.info(
+              `[chatgpt-web] browser trace=${ownedSession.traceId ?? "unknown"} delivered native steering through the retained browser turn`,
             );
             return ownedSession;
           }

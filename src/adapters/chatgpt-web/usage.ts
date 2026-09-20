@@ -170,6 +170,7 @@ export function estimateChatGptWebUsage(
   const inputTokens = estimateChatGptWebInputTokens(parsed, capabilities, {
     experimentalSkillAttachments,
     experimentalMultipartParts: experimentalBiggerContext
+      || (parsed.modelId === CHATGPT_WEB_BACKEND_MODEL && parsed.options.reasoning === "low")
       ? resolveBiggerContextMultipartParts(parsed, capabilities, experimentalSkillAttachments)
       : undefined,
   });

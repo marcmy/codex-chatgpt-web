@@ -23,7 +23,7 @@ import { parseDataUrl } from "../image";
 import { ChatGptWebAdapterError } from "./adapter-error";
 import { ChatGptBrowserWorker } from "./browser-worker";
 import { extractChatGptTurnEnvironment, extractChatGptTurnIdentity, priorChatGptAbortedTurnIds } from "./environment";
-import { CHATGPT_WEB_LUNA_MODEL_ID, resolveChatGptWebModelMode, type ChatGptWebCapabilities } from "./model";
+import { CHATGPT_WEB_LUNA_MODEL_ID, CHATGPT_WEB_MODEL_ID, resolveChatGptWebModelMode, type ChatGptWebCapabilities } from "./model";
 import { chatGptReadOnlyContextWarning, compileChatGptWebPrompt } from "./prompt";
 import { createChatGptStructuredOutputValidator } from "./output-validation";
 import { chatGptWebTurnRetryPolicy } from "./retry-policy";
@@ -36,7 +36,11 @@ import {
   type CapturedChatGptLunaCheckpoint,
 } from "./rolling-checkpoint";
 import { ChatGptExternalTurnProgress } from "./turn-progress";
-import { attachChatGptSteering, chatGptSteeringInstructionText } from "./steering";
+import {
+  attachChatGptSteering,
+  ChatGptBrowserSteeringController,
+  chatGptSteeringInstructionText,
+} from "./steering";
 import {
   canonicalizeCompactionHandoff,
   existingStructuredCompactionRun,
@@ -438,7 +442,9 @@ export function createChatGptWebAdapter(
       : undefined;
     const compileOptionsFor = (input: CodexParsedRequest) => {
       if (manualRequest) return {};
-      const experimentalMultipartParts = experimentalBiggerContext
+      const automaticInstantMultipart = input.modelId === CHATGPT_WEB_MODEL_ID
+        && input.options.reasoning === "low";
+      const experimentalMultipartParts = experimentalBiggerContext || automaticInstantMultipart
         ? resolveBiggerContextMultipartParts(input, turnCapabilities, experimentalSkillAttachments)
         : undefined;
       return {
@@ -476,6 +482,16 @@ export function createChatGptWebAdapter(
     });
     const trace = new ChatGptTraceFeed();
     const text = new ChatGptTextFeed();
+    const steering = parsed.modelId === CHATGPT_WEB_MODEL_ID && !parsed._compactionRequest
+      ? new ChatGptBrowserSteeringController()
+      : undefined;
+    const steeringHooks = steering ? {
+      steering,
+      onSteeringRestarted: () => {
+        trace.reset();
+        text.reset();
+      },
+    } : {};
     const observedCapabilityTokens = new Set<string>();
     const observeCapabilityRetirement = (
       turnToken: string,
@@ -700,11 +716,13 @@ export function createChatGptWebAdapter(
         onReasoningSummary: (text, continuation) => trace.push({ kind: "reasoning", text, ...(continuation ? { continuation: true } : {}) }),
         onCommentary: (text, continuation) => trace.push({ kind: "commentary", text, ...(continuation ? { continuation: true } : {}) }),
         onTextDelta: delta => text.push(delta),
+        ...steeringHooks,
         ...(captureLunaCheckpoint ? {
           captureLunaCheckpoint: true,
           onLunaCheckpoint: captureCheckpoint,
         } : {}),
       })), browserAbort);
+      void browserTurn.physicalSettlement.finally(() => steering?.close()).catch(() => {});
       return {
         mode: "read-only",
         browser: browserTurn.browser,
@@ -713,6 +731,7 @@ export function createChatGptWebAdapter(
         text,
         usageInput: checkpointInput.parsed,
         submission,
+        ...(steering ? { steer: (instruction: Parameters<ChatGptBrowserSteeringController["request"]>[0]) => steering.request(instruction) } : {}),
         cancel: browserTurn.cancel,
       };
     }
@@ -764,6 +783,7 @@ export function createChatGptWebAdapter(
       onReasoningSummary: (text, continuation) => trace.push({ kind: "reasoning", text, ...(continuation ? { continuation: true } : {}) }),
       onCommentary: (text, continuation) => trace.push({ kind: "commentary", text, ...(continuation ? { continuation: true } : {}) }),
       onTextDelta: delta => text.push(delta),
+      ...steeringHooks,
       externalProgress,
       completionFence: {
         begin: async () => broker.beginCompletionFence(await token.promise),
@@ -780,6 +800,7 @@ export function createChatGptWebAdapter(
         token.reject(error instanceof Error ? error : new Error(String(error)));
       }
     });
+    void browserTurn.physicalSettlement.finally(() => steering?.close()).catch(() => {});
     return {
       mode: "tools",
       token: token.promise,
@@ -791,6 +812,7 @@ export function createChatGptWebAdapter(
       usageInput: checkpointInput.parsed,
       ...(conversationKey ? { conversationKey } : {}),
       ...(releaseRetainedConversation ? { releaseRetainedConversation } : {}),
+      ...(steering ? { steer: (instruction: Parameters<ChatGptBrowserSteeringController["request"]>[0]) => steering.request(instruction) } : {}),
       retireCapability: async () => {
         if (activeToken) await broker.revoke(activeToken);
       },
