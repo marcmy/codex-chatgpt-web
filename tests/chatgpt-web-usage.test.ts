@@ -24,6 +24,15 @@ test.each([
   expect(estimateChatGptWebInputTokens(request(text), capabilities)).toBeLessThan(100_000);
 }, 15_000);
 
+test("Even Bigger Context can derive ordinary per-message budgets without violating its parent invariant", () => {
+  const evenBigger = {
+    ...capabilities,
+    experimentalBiggerContext: true,
+    experimentalEvenBiggerContext: true,
+  };
+  expect(resolveBiggerContextMultipartParts(request("small task"), evenBigger)).toBeUndefined();
+});
+
 test("multipart selection accounts for whole-record and composer fit before submission", () => {
   const plus = { ...capabilities, extraHighAvailable: false, proAvailable: false };
   for (const [contents, expected] of [

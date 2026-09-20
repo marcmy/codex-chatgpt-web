@@ -82,7 +82,7 @@ export function resolveBiggerContextMultipartParts(
   const { contextWindow, autoCompactTokenLimit } = resolveChatGptWebContextLimits(
     CHATGPT_WEB_BACKEND_MODEL,
     mode.effort,
-    { ...capabilities, experimentalBiggerContext: false },
+    { ...capabilities, experimentalBiggerContext: false, experimentalEvenBiggerContext: false },
   );
   const compaction = parsed._compactionRequest === true;
   const compile = (parts?: ChatGptWebMultipartPartCount): CompiledChatGptWebPrompt => compileChatGptWebPrompt(
