@@ -1915,6 +1915,21 @@ code {
   padding: 12px 0;
 }
 
+.setting-row.is-indented {
+  padding-left: 28px;
+}
+
+.setting-row.is-indented > div {
+  position: relative;
+}
+
+.setting-row.is-indented > div::before {
+  content: "↳";
+  position: absolute;
+  left: -20px;
+  color: var(--color-text-muted);
+}
+
 .language-menu {
   position: relative;
   z-index: 1;

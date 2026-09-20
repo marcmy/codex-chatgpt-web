@@ -1096,6 +1096,42 @@ class RuntimeHost {
     return { ...result, mode, enabled: enabled === true };
   }
 
+  async setEvenBiggerContext(enabled) {
+    const current = this.runtimeConfigSnapshot();
+    if (!current.configured) {
+      throw new Error("Initialize the runtime before changing Even Bigger Context");
+    }
+    if (current.config?.experimentalBiggerContext !== true) {
+      throw new Error("Enable Bigger Context before enabling Even Bigger Context");
+    }
+    const mode = current.mode;
+    const contextFlag = enabled === true ? "--even-bigger-context" : "--bigger-context";
+    const development = this.launcherProfile === "development";
+    const args = [
+      ...(development ? ["dev", "setup"] : ["setup"]),
+      mode === "full" ? "--full" : "--browser-only",
+      "--browser-host-descriptor",
+      this.browserDescriptorPath,
+      ...this.browserInteractionArgs(),
+      ...(development ? [] : ["--replace-codex-route", "--restart-service"]),
+      "--acknowledge-unofficial",
+      contextFlag,
+    ];
+    if (current.config?.autoApproveToolCalls === true) args.push("--auto-approve-tool-calls");
+    const result = development
+      ? await this.runDevSetup("even-bigger-context", args, {
+        message: enabled ? "Enabling Even Bigger Context" : "Restoring Bigger Context",
+        successMessage: enabled ? "Even Bigger Context enabled" : "Bigger Context restored",
+        timeoutMs: CORE_SETUP_TIMEOUT_MS,
+      })
+      : await this.runSetup("even-bigger-context", args, {
+        message: enabled ? "Enabling Even Bigger Context" : "Restoring Bigger Context",
+        successMessage: enabled ? "Even Bigger Context enabled; restart Codex" : "Bigger Context restored; restart Codex",
+        timeoutMs: CORE_SETUP_TIMEOUT_MS,
+      });
+    return { ...result, mode, enabled: enabled === true };
+  }
+
   async setSkillAttachments(enabled) {
     const current = this.runtimeConfigSnapshot();
     if (!current.configured) throw new Error("Initialize the runtime before changing Skills as files");
@@ -1331,9 +1367,11 @@ class RuntimeHost {
       ...this.browserInteractionArgs({ mode, refreshCapabilities: true }),
       "--acknowledge-unofficial",
       ...(this.launcherProfile === "production" ? ["--replace-codex-route", "--restart-service"] : []),
-      mode === "automatic" && current.config?.experimentalBiggerContext === true
-        ? "--bigger-context"
-        : "--standard-context",
+      mode === "automatic" && current.config?.experimentalEvenBiggerContext === true
+        ? "--even-bigger-context"
+        : mode === "automatic" && current.config?.experimentalBiggerContext === true
+          ? "--bigger-context"
+          : "--standard-context",
     ];
     if (current.config?.autoApproveToolCalls === true) args.push("--auto-approve-tool-calls");
     const options = {

@@ -134,6 +134,11 @@ test("browser interaction mode changes reuse the transactional setup and refresh
   assert.equal(automatic.invocation().args.includes("--automatic-browser-interaction"), true);
   assert.equal(automatic.invocation().args.includes("--refresh-account-capabilities"), true);
   assert.equal(automatic.invocation().args.includes("--bigger-context"), true);
+
+  const evenAutomatic = hostFor({ ...config, experimentalEvenBiggerContext: true });
+  await evenAutomatic.host.setBrowserInteractionMode("automatic");
+  assert.equal(evenAutomatic.invocation().args.includes("--even-bigger-context"), true);
+  assert.equal(automatic.invocation().args.includes("--bigger-context"), true);
 });
 
 test("switching back from Zero Risk preserves the saved automatic connector identity", async () => {

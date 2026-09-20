@@ -3,6 +3,7 @@ import { estimateTokens } from "../../lib/token-estimate";
 import {
   CHATGPT_WEB_BACKEND_MODEL,
   CHATGPT_WEB_BIGGER_CONTEXT_MULTIPLIER,
+  CHATGPT_WEB_EVEN_BIGGER_CONTEXT_MULTIPLIER,
   isChatGptWebZeroRiskBackendModel,
   resolveChatGptWebContextLimits,
   resolveChatGptWebMessageTokenBudget,
@@ -11,8 +12,8 @@ import {
 import type { CodexParsedRequest, CodexUsage } from "../../types";
 import { compiledChatGptWebMessages, estimateChatGptWebImageTokens, estimateCompiledChatGptWebInputTokens } from "./input-tokens";
 import {
-  CHATGPT_BIGGER_CONTEXT_MAX_TRANSPORT_PARTS,
   CHATGPT_BIGGER_CONTEXT_PARTS,
+  CHATGPT_EVEN_BIGGER_CONTEXT_PARTS,
   compileChatGptWebPrompt,
   type ChatGptWebMultipartPartCount,
   type CompiledChatGptWebPrompt,
@@ -112,14 +113,20 @@ export function resolveBiggerContextMultipartParts(
       );
       if (estimateTokens(text, parsed.modelId) > budget) return false;
     }
-    // Physical transport may use six messages, but the model catalog still advertises only 3x.
-    const logicalParts = Math.min(messages.length, CHATGPT_WEB_BIGGER_CONTEXT_MULTIPLIER);
+    const logicalMultiplier = capabilities.experimentalEvenBiggerContext
+      ? CHATGPT_WEB_EVEN_BIGGER_CONTEXT_MULTIPLIER
+      : CHATGPT_WEB_BIGGER_CONTEXT_MULTIPLIER;
+    // Physical transport may exceed the logical multiplier; extra stages are transport headroom only.
+    const logicalParts = Math.min(messages.length, logicalMultiplier);
     return estimateCompiledChatGptWebInputTokens(compiled, parsed.modelId) < contextWindow * logicalParts;
   };
 
   if (initialParts === undefined && inline && fits(inline)) return undefined;
   const minimumParts = initialParts ?? 2;
-  for (const parts of [2, CHATGPT_BIGGER_CONTEXT_PARTS] as const) {
+  const transportParts: readonly ChatGptWebMultipartPartCount[] = capabilities.experimentalEvenBiggerContext
+    ? [2, CHATGPT_BIGGER_CONTEXT_PARTS, CHATGPT_EVEN_BIGGER_CONTEXT_PARTS]
+    : [2, CHATGPT_BIGGER_CONTEXT_PARTS];
+  for (const parts of transportParts) {
     if (parts < minimumParts) continue;
     const candidate = compile(parts);
     if (candidate.multipart?.parts.length !== parts) {
@@ -130,7 +137,7 @@ export function resolveBiggerContextMultipartParts(
   // Compaction can safely recover by compiling inline and applying its native-style oldest-history
   // trimming. Ordinary turns cannot discard history, so keep the largest physical shape and let
   // browser preflight report the irreducible context error.
-  return compaction ? undefined : CHATGPT_BIGGER_CONTEXT_MAX_TRANSPORT_PARTS;
+  return compaction ? undefined : (capabilities.experimentalEvenBiggerContext ? CHATGPT_EVEN_BIGGER_CONTEXT_PARTS : CHATGPT_BIGGER_CONTEXT_PARTS);
 }
 
 export function biggerContextPartCount(

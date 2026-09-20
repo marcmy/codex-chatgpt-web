@@ -37,7 +37,6 @@ import {
   estimateCompiledChatGptWebMessageTokens,
 } from "./input-tokens";
 import {
-  CHATGPT_BIGGER_CONTEXT_PARTS,
   CHATGPT_MAX_INPUT_IMAGES,
   formatChatGptWebMultipartCommit,
   formatChatGptWebMultipartStage,
@@ -76,6 +75,7 @@ import {
 } from "../../launcher-browser-host";
 import {
   CHATGPT_WEB_BIGGER_CONTEXT_MULTIPLIER,
+  CHATGPT_WEB_EVEN_BIGGER_CONTEXT_MULTIPLIER,
   resolveChatGptWebContextLimits,
   resolveChatGptWebMessageTokenBudget,
   resolveChatGptWebTransportLimits,
@@ -978,7 +978,7 @@ export function assertChatGptWebMultipartInputWithinLimits(
   },
 ): void {
   if (!isChatGptWebMultipartPartCount(partCount)) {
-    throw new Error("Bigger Context requires two or six context parts");
+    throw new Error("Bigger Context requires two, six, or eight context parts");
   }
   if (modelId === CHATGPT_WEB_LUNA_MODEL_ID) {
     throw new ChatGptWebAdapterError(
@@ -1043,12 +1043,14 @@ export function assertChatGptWebMultipartInputWithinLimits(
   } else {
     assertMessageBoundary("stage", estimatedMessageTokens, maxMessageChars, effort);
   }
-  // Six physical messages are transport capacity only. Bigger Context still owns at most three
-  // ordinary model windows, matching the advertised model catalog and compaction thresholds.
-  const logicalParts = Math.min(partCount, CHATGPT_WEB_BIGGER_CONTEXT_MULTIPLIER);
+  const logicalMultiplier = capabilities.experimentalEvenBiggerContext
+    ? CHATGPT_WEB_EVEN_BIGGER_CONTEXT_MULTIPLIER
+    : CHATGPT_WEB_BIGGER_CONTEXT_MULTIPLIER;
+  // Physical messages are transport capacity; the advertised logical context multiplier remains authoritative.
+  const logicalParts = Math.min(partCount, logicalMultiplier);
   const experimentalContextWindow = baseContextWindow * logicalParts;
   if (estimatedInputTokens < experimentalContextWindow) return;
-  const partLabel = partCount === 2 ? "two-part" : "six-part";
+  const partLabel = partCount === 2 ? "two-part" : partCount === 6 ? "six-part" : "eight-part";
   throw new ChatGptWebAdapterError(
     `This Bigger Context transaction is estimated at ${estimatedInputTokens.toLocaleString("en-US")} input tokens, which exceeds its experimental ${experimentalContextWindow.toLocaleString("en-US")}-token ${partLabel} ceiling. Run /compact, then retry.`,
     { status: 400, errorType: "invalid_request_error", code: "context_length_exceeded", retryable: false },

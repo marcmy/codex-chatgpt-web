@@ -364,11 +364,20 @@ export function createChatGptWebAdapter(
   if (experimentalBiggerContext !== undefined && typeof experimentalBiggerContext !== "boolean") {
     throw new Error("ChatGPT Bigger Context preference must be a boolean");
   }
+  const experimentalEvenBiggerContext = provider.chatgptWeb?.experimentalEvenBiggerContext;
+  if (experimentalEvenBiggerContext !== undefined && typeof experimentalEvenBiggerContext !== "boolean") {
+    throw new Error("ChatGPT Even Bigger Context preference must be a boolean");
+  }
+  if (experimentalEvenBiggerContext && !experimentalBiggerContext) {
+    throw new Error("Even Bigger Context requires Bigger Context");
+  }
   const configuredCapabilities: ChatGptWebCapabilities = {
     localToolsEnabled: provider.chatgptWeb?.localToolsEnabled === true,
     solAvailable: provider.chatgptWeb?.solAvailable !== false,
     extraHighAvailable: provider.chatgptWeb?.extraHighAvailable === true,
     proAvailable: provider.chatgptWeb?.proAvailable === true,
+    experimentalBiggerContext: experimentalBiggerContext === true,
+    experimentalEvenBiggerContext: experimentalEvenBiggerContext === true,
   };
   const manualInteraction = provider.chatgptWeb?.browserInteractionMode === "manual";
   const executionNamespace = chatGptWebExecutionNamespace(provider);

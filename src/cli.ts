@@ -77,7 +77,8 @@ Setup options:
   --restart-service            Explicitly restart this project's daemon after an update
   --login                      Refresh the stored ChatGPT login even if one exists
   --auto-approve-tool-calls    Opt in to per-call browser clicks on "Allow once" prompts
-  --bigger-context             Enable experimental adaptive 1/2/3-message context
+  --bigger-context             Enable experimental 3× logical context with multipart transport
+  --even-bigger-context        Enable super-experimental 6× logical context (up to 8 messages)
   --skill-attachments         Experimental selected skills as text attachments
   --inline-skills             Keep selected skills inline (default)
   --standard-context           Disable experimental multi-message context
@@ -303,11 +304,15 @@ async function setupCommand(args: string[]): Promise<void> {
   const inlineSkills = takeFlag(args, "--inline-skills");
   if (skillAttachments && inlineSkills) throw new Error("Choose --skill-attachments or --inline-skills");
   const biggerContext = takeFlag(args, "--bigger-context");
+  const evenBiggerContext = takeFlag(args, "--even-bigger-context");
   const standardContext = takeFlag(args, "--standard-context");
-  if (biggerContext && standardContext) {
-    throw new Error("Choose at most one context mode: --bigger-context or --standard-context");
+  if ([biggerContext, evenBiggerContext, standardContext].filter(Boolean).length > 1) {
+    throw new Error("Choose at most one context mode: --bigger-context, --even-bigger-context, or --standard-context");
   }
-  if (biggerContext || standardContext) options.experimentalBiggerContext = biggerContext;
+  if (biggerContext || evenBiggerContext || standardContext) {
+    options.experimentalBiggerContext = biggerContext || evenBiggerContext;
+    options.experimentalEvenBiggerContext = evenBiggerContext;
+  }
   if (skillAttachments || inlineSkills) options.experimentalSkillAttachments = skillAttachments;
   const zeroRiskPro = takeFlag(args, "--zero-risk-pro");
   const zeroRiskDefault = takeFlag(args, "--zero-risk-default");

@@ -304,8 +304,10 @@ export interface CodexProviderConfig {
     proAvailable?: boolean;
     /** Authorize per-call "Allow once" confirmation clicks for this connector. */
     autoApproveToolCalls?: boolean;
-    /** DEV-only experimental transport: adapt one context across one, two, or three ChatGPT messages. */
+    /** Experimental multipart context transport. */
     experimentalBiggerContext?: boolean;
+    /** Super-experimental 6x logical context profile; requires Bigger Context. */
+    experimentalEvenBiggerContext?: boolean;
     experimentalSkillAttachments?: boolean;
   };
 }

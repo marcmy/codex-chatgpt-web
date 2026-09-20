@@ -227,6 +227,9 @@ test("Bigger Context startup recommendation reuses the persisted setting and set
     /<BiggerContextRecommendation[\s\S]*?checked=\{snapshot\.state\.experimentalBiggerContext\}[\s\S]*?onClose=\{\(\) => setBiggerContextRecommendationOpen\(false\)\}/,
   );
   assert.match(appSource, /<Switch checked=\{checked\} disabled=\{busy\} onChange=\{onChange\} \/>/);
+  assert.match(appSource, /snapshot\.state\.experimentalBiggerContext \? \([\s\S]*?copy\.evenBiggerContextBody[\s\S]*?indented[\s\S]*?snapshot\.state\.experimentalEvenBiggerContext/);
+  assert.match(appSource, /api!\.setEvenBiggerContext\(enabled\)/);
+  assert.match(stylesSource, /\.setting-row\.is-indented\s*\{[^}]*padding-left:/s);
   assert.match(stylesSource, /\.bigger-context-recommendation-backdrop\s*\{[^}]*position:\s*fixed;/s);
   assert.doesNotMatch(stylesSource, /\.bigger-context-recommendation-backdrop\s*\{[^}]*backdrop-filter:/s);
 });

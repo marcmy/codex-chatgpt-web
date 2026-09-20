@@ -45,14 +45,14 @@ export interface CompileChatGptWebPromptOptions {
   manualControl?: true;
 }
 
-/** Bigger Context may use six physical browser messages while logical capacity stays 3x. */
+/** Bigger Context uses up to six physical messages; Even Bigger Context may use eight. */
 export const CHATGPT_BIGGER_CONTEXT_PARTS = 6 as const;
-export const CHATGPT_BIGGER_CONTEXT_MAX_TRANSPORT_PARTS = CHATGPT_BIGGER_CONTEXT_PARTS;
-export type ChatGptWebMultipartPartCount = 2 | typeof CHATGPT_BIGGER_CONTEXT_PARTS;
+export const CHATGPT_EVEN_BIGGER_CONTEXT_PARTS = 8 as const;
+export type ChatGptWebMultipartPartCount = 2 | typeof CHATGPT_BIGGER_CONTEXT_PARTS | typeof CHATGPT_EVEN_BIGGER_CONTEXT_PARTS;
 export type ChatGptWebMultipartParts = readonly string[];
 
 export function isChatGptWebMultipartPartCount(value: number): value is ChatGptWebMultipartPartCount {
-  return value === 2 || value === CHATGPT_BIGGER_CONTEXT_PARTS;
+  return value === 2 || value === CHATGPT_BIGGER_CONTEXT_PARTS || value === CHATGPT_EVEN_BIGGER_CONTEXT_PARTS;
 }
 
 export interface ChatGptWebMultipartPrompt {
@@ -122,7 +122,7 @@ export function formatChatGptWebMultipartCommit(
   assertMultipartTransactionId(transactionId);
   const totalParts = multipart.parts.length;
   if (!isChatGptWebMultipartPartCount(totalParts)) {
-    throw new Error("ChatGPT multipart commit requires two or six context parts");
+    throw new Error("ChatGPT multipart commit requires two, six, or eight context parts");
   }
   const manifest = multipart.parts.map((payload, index) => (
     `${index + 1}/${totalParts}:${createHash("sha256").update(payload).digest("hex")}`
@@ -649,7 +649,7 @@ export function compileChatGptWebPrompt(
     }
   }
   if (multipartParts !== undefined && !isChatGptWebMultipartPartCount(multipartParts)) {
-    throw new Error("Bigger Context requires two or six context parts");
+    throw new Error("Bigger Context requires two, six, or eight context parts");
   }
   if (multipartEnabled && parsed.modelId === CHATGPT_WEB_LUNA_MODEL_ID) {
     throw new Error("Bigger Context is unavailable for Luna because its accumulated browser transcript still shares one 28,000-token transport budget");

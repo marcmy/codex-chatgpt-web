@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import {
   CHATGPT_COMPACTION_PROMPT_JSON_BYTE_BUDGET,
   CHATGPT_BIGGER_CONTEXT_PARTS,
+  CHATGPT_EVEN_BIGGER_CONTEXT_PARTS,
   chatGptPromptJsonBytes,
   chatGptReadOnlyContextWarning,
   compileChatGptWebPrompt,
@@ -173,6 +174,26 @@ test("Bigger Context sends six semantic record envelopes and starts work from th
   expect(commit).toContain(compiled.multipart!.parts.at(-1)!);
   expect(commit).toContain("latest-request");
   expect(commit.match(new RegExp(token, "g"))).toHaveLength(1);
+});
+
+test("Even Bigger Context supports eight physical transport parts", () => {
+  const compiled = compileChatGptWebPrompt(
+    request("high"),
+    { localToolsEnabled: false, solAvailable: true, extraHighAvailable: true, proAvailable: false },
+    undefined,
+    { experimentalMultipartParts: CHATGPT_EVEN_BIGGER_CONTEXT_PARTS },
+  );
+
+  expect(compiled.multipart?.parts).toHaveLength(8);
+  const transactionId = `ctx_${"e".repeat(32)}`;
+  const stages = compiled.multipart!.parts.slice(0, -1).map((part, index) => (
+    formatChatGptWebMultipartStage(part, transactionId, index + 1, CHATGPT_EVEN_BIGGER_CONTEXT_PARTS)
+  ));
+  expect(stages).toHaveLength(7);
+  expect(stages.at(-1)?.text).toContain("part: 7/8");
+  const commit = formatChatGptWebMultipartCommit(compiled.multipart!, transactionId);
+  expect(commit).toContain("parts: 8");
+  expect(commit).toContain("acknowledged_parts: 7/8");
 });
 
 test("Bigger Context fragments one oversized semantic record without losing its exact JSON", () => {
