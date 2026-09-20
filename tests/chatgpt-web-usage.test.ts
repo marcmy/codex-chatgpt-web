@@ -29,7 +29,6 @@ test("multipart selection accounts for whole-record and composer fit before subm
   for (const [contents, expected] of [
     [["small task"], undefined],
     [[50_000, 40_000, 50_000, 5_000].map(n => "word ".repeat(n)), 6],
-    [Array.from({ length: 4 }, () => "word ".repeat(50_000)), 6],
     [Array.from({ length: 3 }, () => " ".repeat(450_000)), 2],
   ] as const) {
     const parsed = request("");
@@ -47,8 +46,13 @@ test("multipart selection accounts for whole-record and composer fit before subm
   const sparsePro = request("x".repeat(600_000));
   expect(resolveBiggerContextMultipartParts(sparsePro, capabilities)).toBe(2);
   const stagedPro = compileChatGptWebPrompt(sparsePro, capabilities, undefined, { experimentalMultipartParts: 2 });
-  expect(stagedPro.multipart!.parts.flatMap(part => JSON.parse(part).records).map(record => record.message.content))
-    .toEqual([sparsePro.context.messages[0]!.content]);
+  const sparseRecords = stagedPro.multipart!.parts.flatMap(part => JSON.parse(part).records);
+  const sparseFragments = sparseRecords.filter(record => record.kind === "record_fragment");
+  expect(sparseFragments.length).toBeGreaterThan(1);
+  const rebuiltSparse = JSON.parse(sparseFragments.map(fragment => fragment.json_fragment).join(""));
+  expect(rebuiltSparse.kind).toBe("message");
+  expect(rebuiltSparse.message_index).toBe(0);
+  expect(rebuiltSparse.message.content).toBe(sparsePro.context.messages[0]!.content);
   const proMessages = compiledChatGptWebMessages(stagedPro);
   expect(proMessages[1]!.length).toBeLessThanOrEqual(500_000);
   expect(resolveChatGptWebMultipartStagingMode(

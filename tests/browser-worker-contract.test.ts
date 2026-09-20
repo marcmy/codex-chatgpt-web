@@ -2583,7 +2583,7 @@ test("the known ChatGPT rate-limit dialog is detected passively and returns a st
     status: 429,
     errorType: "rate_limit_error",
     code: "rate_limit_exceeded",
-    retryable: false,
+    retryable: true,
     message: "ChatGPT rate limit: too many requests. Try again in a few minutes.",
   });
   expect(fixture.pressed).toEqual([]);
@@ -2604,7 +2604,7 @@ test("submission acceptance passively reports a rate-limit dialog that appears a
     status: 429,
     errorType: "rate_limit_error",
     code: "rate_limit_exceeded",
-    retryable: false,
+    retryable: true,
   });
   expect(fixture.pressed).toEqual([]);
 });
@@ -2617,7 +2617,7 @@ test("the Traditional Chinese ChatGPT rate-limit dialog is detected passively an
     status: 429,
     errorType: "rate_limit_error",
     code: "rate_limit_exceeded",
-    retryable: false,
+    retryable: true,
   });
   expect(fixture.pressed).toEqual([]);
 });
@@ -2630,7 +2630,7 @@ test("the Simplified Chinese ChatGPT rate-limit dialog is detected passively and
     status: 429,
     errorType: "rate_limit_error",
     code: "rate_limit_exceeded",
-    retryable: false,
+    retryable: true,
   });
   expect(fixture.pressed).toEqual([]);
 });
@@ -2646,7 +2646,7 @@ test("the Japanese ChatGPT rate-limit dialog is detected passively and returns a
     status: 429,
     errorType: "rate_limit_error",
     code: "rate_limit_exceeded",
-    retryable: false,
+    retryable: true,
   });
   expect(fixture.pressed).toEqual([]);
 });

@@ -369,7 +369,7 @@ export function extractChatGptSteeringEnvironmentClaim(parsed: CodexParsedReques
 
   const claims = input.flatMap((value, index) => {
     const item = record(value);
-    if (item?.type !== "message" || !/<\/?environment_context/i.test(rawMessageText(item))) return [];
+    if (item?.type !== "message" || !/<\/?environment_context\b/i.test(rawMessageText(item))) return [];
     const owner = itemTurnId(item);
     return owner === undefined || owner === turnId ? [{ item, index }] : [];
   });
@@ -378,7 +378,7 @@ export function extractChatGptSteeringEnvironmentClaim(parsed: CodexParsedReques
   if (claim.item.role !== "user" || itemTurnId(claim.item) !== turnId
     || typeof claim.item.id !== "string" || !claim.item.id) return undefined;
   const parts = Array.isArray(claim.item.content) ? claim.item.content : [];
-  if (parts.filter(part => /<\/?environment_context/i.test(String(record(part)?.text ?? ""))).length !== 1) return undefined;
+  if (parts.filter(part => /<\/?environment_context\b/i.test(String(record(part)?.text ?? ""))).length !== 1) return undefined;
 
   for (let index = claim.index + 1; index < activeIndex; index += 1) {
     const instruction = record(input[index]);
