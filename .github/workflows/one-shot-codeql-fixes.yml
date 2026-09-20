@@ -15,84 +15,20 @@ jobs:
           ref: fix/code-scanning-alerts
           fetch-depth: 0
 
-      - name: Apply focused CodeQL fixes
+      - name: Patch exact ChatGPT origin checks
         shell: bash
         run: |
-          node <<'NODE'
-          const fs = require("fs");
+          python -c 'from pathlib import Path; p=Path("launcher/electron/browser-host.cjs"); t=p.read_text(); a="function isTemporaryChatUrl(value) {"; h="function isChatGptOriginUrl(value) {\\n  try {\\n    return new URL(value).origin === CHATGPT_ORIGIN;\\n  } catch {\\n    return false;\\n  }\\n}\\n\\n"; t=t if "function isChatGptOriginUrl(value)" in t else t.replace(a,h+a,1); t=t.replace("tab.url.startsWith(CHATGPT_ORIGIN)","isChatGptOriginUrl(tab.url)").replace("!url.startsWith(CHATGPT_ORIGIN)","!isChatGptOriginUrl(url)").replace("!current.startsWith(CHATGPT_ORIGIN)","!isChatGptOriginUrl(current)"); assert ".startsWith(CHATGPT_ORIGIN)" not in t; p.write_text(t)'
 
-          {
-            const path = "launcher/electron/browser-host.cjs";
-            let text = fs.readFileSync(path, "utf8");
+      - name: Fix XML entity decode order
+        shell: bash
+        run: |
+          python -c 'from pathlib import Path; p=Path("src/adapters/chatgpt-web/environment.ts"); t=p.read_text(); old=".replaceAll(\\"&gt;\\", \\">\\")\\n    .replaceAll(\\"&amp;\\", \\"&\\")\\n    .replaceAll(\\"&quot;\\", \\"\\\\\\\"\\")\\n    .replaceAll(\\"&#39;\\", \\"\x27\\");"; new=".replaceAll(\\"&gt;\\", \\">\\")\\n    .replaceAll(\\"&quot;\\", \\"\\\\\\\"\\")\\n    .replaceAll(\\"&#39;\\", \\"\x27\\")\\n    .replaceAll(\\"&amp;\\", \\"&\\");"; assert old in t; p.write_text(t.replace(old,new,1))'
 
-            const anchor = "function isTemporaryChatUrl(value) {";
-            const helper = `function isChatGptOriginUrl(value) {
-  try {
-    return new URL(value).origin === CHATGPT_ORIGIN;
-  } catch {
-    return false;
-  }
-}
-
-`;
-            if (!text.includes("function isChatGptOriginUrl(value)")) {
-              if (!text.includes(anchor)) throw new Error("browser-host helper anchor missing");
-              text = text.replace(anchor, helper + anchor);
-            }
-
-            text = text.replaceAll("tab.url.startsWith(CHATGPT_ORIGIN)", "isChatGptOriginUrl(tab.url)");
-            text = text.replaceAll("!url.startsWith(CHATGPT_ORIGIN)", "!isChatGptOriginUrl(url)");
-            text = text.replaceAll("!current.startsWith(CHATGPT_ORIGIN)", "!isChatGptOriginUrl(current)");
-
-            if (text.includes(".startsWith(CHATGPT_ORIGIN)")) {
-              throw new Error("unconverted CHATGPT_ORIGIN startsWith check remains");
-            }
-            fs.writeFileSync(path, text);
-          }
-
-          {
-            const path = "src/adapters/chatgpt-web/environment.ts";
-            let text = fs.readFileSync(path, "utf8");
-            const oldBlock = `  return value
-    .replaceAll("&lt;", "<")
-    .replaceAll("&gt;", ">")
-    .replaceAll("&amp;", "&")
-    .replaceAll("&quot;", "\\\"")
-    .replaceAll("&#39;", "'");`;
-            const newBlock = `  return value
-    .replaceAll("&lt;", "<")
-    .replaceAll("&gt;", ">")
-    .replaceAll("&quot;", "\\\"")
-    .replaceAll("&#39;", "'")
-    .replaceAll("&amp;", "&");`;
-            if (!text.includes(oldBlock)) throw new Error("decodeXmlText block changed");
-            text = text.replace(oldBlock, newBlock);
-            fs.writeFileSync(path, text);
-          }
-
-          {
-            const path = "src/bridge.ts";
-            let text = fs.readFileSync(path, "utf8");
-            const oldBlock = `export function formatErrorResponse(status: number, type: string, message: string): Response {
-  return new Response(JSON.stringify({ error: classifyError(status, type, message) }), {
-    status, headers: { "Content-Type": "application/json" },
-  });
-}`;
-            const newBlock = `export function formatErrorResponse(status: number, type: string, message: string): Response {
-  const classified = classifyError(status, type, message);
-  const publicError: CodexErrorPayload = {
-    ...classified,
-    message: \`Request failed (\${classified.code ?? classified.type ?? "unknown_error"})\`,
-  };
-  return new Response(JSON.stringify({ error: publicError }), {
-    status, headers: { "Content-Type": "application/json" },
-  });
-}`;
-            if (!text.includes(oldBlock)) throw new Error("formatErrorResponse block changed");
-            text = text.replace(oldBlock, newBlock);
-            fs.writeFileSync(path, text);
-          }
-          NODE
+      - name: Remove stack traces from external error responses
+        shell: bash
+        run: |
+          python -c 'from pathlib import Path; p=Path("src/bridge.ts"); t=p.read_text(); old="export function formatErrorResponse(status: number, type: string, message: string): Response {\\n  return new Response(JSON.stringify({ error: classifyError(status, type, message) }), {\\n    status, headers: { \\"Content-Type\\": \\"application/json\\" },\\n  });\\n}"; new="export function formatErrorResponse(status: number, type: string, message: string): Response {\\n  const classified = classifyError(status, type, message);\\n  const publicError: CodexErrorPayload = {\\n    ...classified,\\n    message: \\"Request failed (\\" + (classified.code ?? classified.type ?? \\"unknown_error\\") + \\")\\",\\n  };\\n  return new Response(JSON.stringify({ error: publicError }), {\\n    status, headers: { \\"Content-Type\\": \\"application/json\\" },\\n  });\\n}"; assert old in t; p.write_text(t.replace(old,new,1))'
 
       - name: Commit changes
         shell: bash
