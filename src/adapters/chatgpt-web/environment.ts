@@ -706,9 +706,9 @@ function decodeXmlText(value: string): string {
   return value
     .replaceAll("&lt;", "<")
     .replaceAll("&gt;", ">")
-    .replaceAll("&amp;", "&")
     .replaceAll("&quot;", "\"")
-    .replaceAll("&#39;", "'");
+    .replaceAll("&#39;", "'")
+    .replaceAll("&amp;", "&");
 }
 
 function environmentCwdMatches(text: string, preferredRoots: string[] = []): string[] {
