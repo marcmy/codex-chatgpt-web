@@ -15,6 +15,7 @@ import { isDeepStrictEqual } from "node:util";
 import { expandUserPath } from "../../config";
 import { findTopLevelAssignment } from "../../codex-integration-document";
 import type { CodexTool } from "../../types";
+import { ChatGptWebAdapterError } from "./adapter-error";
 import type {
   ChatGptRootThreadMetadata,
   ChatGptThreadSpawnLineage,
@@ -477,8 +478,17 @@ function exactManagedWorkspaceWriteProfile(
   ))).values()];
   if (uniqueDirectWrites.length !== directWrites.length) return undefined;
   const expectedIdentities = new Set(uniqueExpectedWritableRoots.map(pathIdentity));
-  if (uniqueDirectWrites.some(path => !expectedIdentities.has(pathIdentity(path)))) return undefined;
-  if (projectRootsWrite === 0 && uniqueDirectWrites.length !== uniqueExpectedWritableRoots.length) return undefined;
+  // Current Codex permission profiles can preserve narrower write grants beneath an already
+  // writable workspace root (for example an approval reopening protected metadata). Those grants
+  // do not expand the legacy workspace-write authority, so accept them as long as every direct
+  // write remains contained by an expected writable root. The top-level grants themselves must
+  // still be present when :workspace_roots is not carrying them symbolically.
+  if (uniqueDirectWrites.some(path => !uniqueExpectedWritableRoots.some(root => contains(root, path)))) {
+    return undefined;
+  }
+  if (projectRootsWrite === 0 && uniqueExpectedWritableRoots.some(expected => (
+    !uniqueDirectWrites.some(path => pathIdentity(path) === pathIdentity(expected))
+  ))) return undefined;
   if (projectRootsWrite === 1) {
     const rootIdentities = new Set(roots.map(pathIdentity));
     if (rootIdentities.size !== expectedIdentities.size
@@ -646,8 +656,23 @@ export function resolveCurrentCodexRolloutEnvironment(options: {
         }
         continue;
       }
-      const environment = environmentFromTurnContext(latest, latest.turn_id as string, tools);
-      validateMetadataConsistency(lineage, environment);
+      let environment: ChatGptTurnEnvironment;
+      try {
+        environment = environmentFromTurnContext(latest, latest.turn_id as string, tools);
+        validateMetadataConsistency(lineage, environment);
+      } catch (error) {
+        if (error instanceof ChatGptWebAdapterError) throw error;
+        throw new ChatGptWebAdapterError(
+          error instanceof Error ? error.message : String(error),
+          {
+            status: 400,
+            errorType: "invalid_request_error",
+            code: "codex_rollout_environment_invalid",
+            retryable: false,
+            cause: error,
+          },
+        );
+      }
       if (options.historicalEnvironmentMessages) {
         verifyHistoricalEnvironmentMessages(fd, size, turnId, options.historicalEnvironmentMessages);
       }

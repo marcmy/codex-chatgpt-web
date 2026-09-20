@@ -8,6 +8,7 @@ import { rememberCompactionContinuation } from "../src/adapters/chatgpt-web/comp
 import { encodeCompactionSummary, SUMMARY_PREFIX } from "../src/responses/compaction";
 import { parseRequest } from "../src/responses/parser";
 import { ChatGptThreadEnvironmentStore } from "../src/adapters/chatgpt-web/thread-environment";
+import { ChatGptWebAdapterError } from "../src/adapters/chatgpt-web/adapter-error";
 import type { CodexParsedRequest, CodexTool } from "../src/types";
 
 const root = resolve(process.cwd());
@@ -1310,6 +1311,10 @@ describe("trusted Codex task environment continuity", () => {
       { path: { type: "special", value: { kind: "root" } }, access: "read" },
       { path: { type: "path", path: root }, access: "write" },
       { path: { type: "path", path: auxiliaryRoot }, access: "write" },
+      // Current Codex may retain a narrower explicit write inside an already-authorized workspace
+      // root (for example an approval reopening protected metadata). It must not invalidate the
+      // legacy workspace-write projection.
+      { path: { type: "path", path: join(root, ".git", "FETCH_HEAD") }, access: "write" },
       { path: { type: "special", value: { kind: "slash_tmp" } }, access: "write" },
       { path: { type: "special", value: { kind: "tmpdir" } }, access: "write" },
       { path: { type: "path", path: join(root, ".git") }, access: "read", missing_path_behavior: "skip" },
@@ -1369,6 +1374,45 @@ describe("trusted Codex task environment continuity", () => {
           network: "enabled",
         },
         file_system_sandbox_policy: { kind: "restricted", entries: workspaceEntries },
+      })),
+    ].join("\n") + "\n");
+    let invalidProfile: unknown;
+    try {
+      new ChatGptThreadEnvironmentStore(undefined, Date.now, codexHome).resolve(
+        environmentlessChild(rolloutTurnId, "workspace-write", [root, auxiliaryRoot]),
+      );
+    } catch (error) {
+      invalidProfile = error;
+    }
+    expect(invalidProfile).toBeInstanceOf(ChatGptWebAdapterError);
+    expect(invalidProfile).toMatchObject({
+      message: "Codex rollout workspace-write permission profile is inconsistent",
+      code: "codex_rollout_environment_invalid",
+      retryable: false,
+    });
+
+    const outsideWrite = resolve(root, "..", "outside-approved-write");
+    const expandedWorkspaceEntries = [
+      ...workspaceEntries,
+      { path: { type: "path", path: outsideWrite }, access: "write" },
+    ];
+    writeFileSync(rolloutPath, [
+      JSON.stringify(childSessionMeta()),
+      JSON.stringify(childTurnContext(rolloutTurnId, {
+        workspace_roots: [root, auxiliaryRoot],
+        sandbox_policy: {
+          type: "workspace-write",
+          writable_roots: [auxiliaryRoot],
+          network_access: true,
+          exclude_tmpdir_env_var: false,
+          exclude_slash_tmp: false,
+        },
+        permission_profile: {
+          type: "managed",
+          file_system: { type: "restricted", entries: expandedWorkspaceEntries },
+          network: "enabled",
+        },
+        file_system_sandbox_policy: { kind: "restricted", entries: expandedWorkspaceEntries },
       })),
     ].join("\n") + "\n");
     expect(() => new ChatGptThreadEnvironmentStore(undefined, Date.now, codexHome).resolve(
