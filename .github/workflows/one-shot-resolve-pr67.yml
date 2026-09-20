@@ -1,0 +1,294 @@
+name: One-shot resolve sync PR 67
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  merge:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: sync
+          fetch-depth: 0
+
+      - name: Merge fork main and resolve semantic conflicts
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch origin main
+          git merge --no-commit --no-ff -X theirs origin/main
+
+          python <<'PY'
+          from pathlib import Path
+
+          p = Path("src/adapters/chatgpt-web/prompt.ts")
+          t = p.read_text()
+          old = """** Logical Bigger Context capacity remains three ordinary model windows. */"""
+          # Keep the existing comment delimiter intact while replacing the full constants block below.
+          start = t.index("/** Logical Bigger Context capacity remains three ordinary model windows. */")
+          end = t.index("export interface ChatGptWebMultipartPrompt", start)
+          t = t[:start] + """** Bigger Context may use six physical browser messages while logical capacity stays 3x. */
+export const CHATGPT_BIGGER_CONTEXT_PARTS = 6 as const;
+export const CHATGPT_BIGGER_CONTEXT_MAX_TRANSPORT_PARTS = CHATGPT_BIGGER_CONTEXT_PARTS;
+export type ChatGptWebMultipartPartCount = 2 | typeof CHATGPT_BIGGER_CONTEXT_PARTS;
+export type ChatGptWebMultipartParts = readonly string[];
+
+export function isChatGptWebMultipartPartCount(value: number): value is ChatGptWebMultipartPartCount {
+  return value === 2 || value === CHATGPT_BIGGER_CONTEXT_PARTS;
+}
+
+""" + t[end:]
+          t = t.replace(
+            "totalParts: ChatGptWebMultipartPartCount = CHATGPT_BIGGER_CONTEXT_PARTS,",
+            "totalParts: number = CHATGPT_BIGGER_CONTEXT_PARTS,",
+            1,
+          )
+          t = t.replace(
+            """    || totalParts < 2
+    || totalParts > CHATGPT_BIGGER_CONTEXT_MAX_TRANSPORT_PARTS
+""",
+            """    || !isChatGptWebMultipartPartCount(totalParts)
+""",
+            1,
+          )
+          t = t.replace(
+            """  if (totalParts < 2 || totalParts > CHATGPT_BIGGER_CONTEXT_MAX_TRANSPORT_PARTS) {
+    throw new Error("ChatGPT multipart commit requires two to four transport parts");
+  }
+""",
+            """  if (!isChatGptWebMultipartPartCount(totalParts)) {
+    throw new Error("ChatGPT multipart commit requires two or six context parts");
+  }
+""",
+            1,
+          )
+          old_partition = """  if (totalParts === 2) return [payloads[0]!, payloads[1]!];
+  if (totalParts === CHATGPT_BIGGER_CONTEXT_PARTS) {
+    return [payloads[0]!, payloads[1]!, payloads[2]!];
+  }
+  return [payloads[0]!, payloads[1]!, payloads[2]!, payloads[3]!];
+"""
+          if old_partition not in t:
+            raise SystemExit("prompt partition resolution anchor changed")
+          t = t.replace(old_partition, "  return payloads;\n", 1)
+          t = t.replace(
+            """  if (
+    multipartParts !== undefined
+    && (multipartParts < 2 || multipartParts > CHATGPT_BIGGER_CONTEXT_MAX_TRANSPORT_PARTS)
+  ) {
+    throw new Error("Bigger Context requires two to four transport parts");
+  }
+""",
+            """  if (multipartParts !== undefined && !isChatGptWebMultipartPartCount(multipartParts)) {
+    throw new Error("Bigger Context requires two or six context parts");
+  }
+""",
+            1,
+          )
+          old_empty = """      const multipart: ChatGptWebMultipartPrompt = {
+        parts: multipartParts === 2
+          ? [emptyPart(0), emptyPart(1)]
+          : multipartParts === CHATGPT_BIGGER_CONTEXT_PARTS
+            ? [emptyPart(0), emptyPart(1), emptyPart(2)]
+            : [emptyPart(0), emptyPart(1), emptyPart(2), emptyPart(3)],
+"""
+          if old_empty not in t:
+            raise SystemExit("prompt empty-parts resolution anchor changed")
+          t = t.replace(
+            old_empty,
+            """      const multipart: ChatGptWebMultipartPrompt = {
+        parts: Array.from({ length: multipartParts! }, (_, index) => emptyPart(index)),
+""",
+            1,
+          )
+          p.write_text(t)
+
+          p = Path("src/adapters/chatgpt-web/usage.ts")
+          t = p.read_text()
+          t = t.replace(
+            """ * The compaction threshold chooses the logical context width. Browser-message boundaries can
+ * require one additional physical spill part even when the task remains inside the same three-window
+ * Bigger Context ceiling. Plan that transport before submission; the fourth part never expands the
+ * model context advertised to Codex.
+""",
+            """ * The compaction threshold chooses the initial part count. Whole records, fragmented records, and
+ * composer limits can require six physical parts even though logical Bigger Context capacity remains
+ * three ordinary model windows. Plan the physical transport before browser submission.
+""",
+            1,
+          )
+          t = t.replace(
+            """    // A fourth physical part is transport spill only. Never let it raise the logical three-window
+    // Bigger Context ceiling that the model catalog advertises to Codex.
+    const logicalParts = Math.min(messages.length, CHATGPT_BIGGER_CONTEXT_PARTS);
+""",
+            """    // Physical transport may use six messages, but the model catalog still advertises only 3x.
+    const logicalParts = Math.min(messages.length, CHATGPT_WEB_BIGGER_CONTEXT_MULTIPLIER);
+""",
+            1,
+          )
+          t = t.replace(
+            "  for (const parts of [2, CHATGPT_BIGGER_CONTEXT_PARTS, CHATGPT_BIGGER_CONTEXT_MAX_TRANSPORT_PARTS] as const) {",
+            "  for (const parts of [2, CHATGPT_BIGGER_CONTEXT_PARTS] as const) {",
+            1,
+          )
+          p.write_text(t)
+
+          p = Path("src/adapters/chatgpt-web/browser-helper-main.ts")
+          t = p.read_text()
+          t = t.replace(
+            'import { CHATGPT_BIGGER_CONTEXT_MAX_TRANSPORT_PARTS, type CompiledChatGptWebPrompt } from "./prompt";',
+            'import { isChatGptWebMultipartPartCount, type CompiledChatGptWebPrompt } from "./prompt";',
+            1,
+          )
+          t = t.replace(
+            """        || multipart.parts.length < 2
+        || multipart.parts.length > CHATGPT_BIGGER_CONTEXT_MAX_TRANSPORT_PARTS
+""",
+            """        || !isChatGptWebMultipartPartCount(multipart.parts.length)
+""",
+            1,
+          )
+          p.write_text(t)
+
+          p = Path("src/adapters/chatgpt-web/environment.ts")
+          t = p.read_text()
+          anchor = """export function extractChatGptCurrentEnvironmentClaim(parsed: CodexParsedRequest): ChatGptTurnEnvironment {
+  const turnId = extractChatGptTurnIdentity(parsed).turnId;
+  const body = record(parsed._rawBody);
+  const updates = (Array.isArray(body?.input) ? body.input : []).flatMap(value => {
+    const item = record(value);
+    if (item?.type !== "message" || item.role !== "user" || itemTurnId(item) !== turnId
+      || typeof item.id !== "string" || !item.id) return [];
+    const parts = typeof item.content === "string" ? [item.content]
+      : Array.isArray(item.content) ? item.content.map(part => record(part)?.text) : [];
+    return parts.flatMap(value => {
+      if (typeof value !== "string") return [];
+      const text = value.trim();
+      return /^<environment_context>[\\s\\S]*<\\/environment_context>$/.test(text) ? [text] : [];
+    });
+  });
+  if (updates.length !== 1) throw new Error("ChatGPT web requires one current native environment claim");
+  return parseChatGptEnvironmentText(parsed, updates[0]!);
+}
+
+"""
+          if anchor not in t:
+            raise SystemExit("environment current-claim anchor changed")
+          steering = """/**
+ * Steering can separate the original environment/instruction pair from the active instruction.
+ * Return that earlier claim only for one unambiguous same-turn environment envelope; the caller
+ * must authenticate it against the current native rollout before accepting it as authority.
+ */
+export function extractChatGptSteeringEnvironmentClaim(parsed: CodexParsedRequest): ChatGptTurnEnvironment | undefined {
+  const turnId = extractChatGptTurnIdentity(parsed).turnId;
+  if (!turnId) return undefined;
+  const body = record(parsed._rawBody);
+  const input = Array.isArray(body?.input) ? body.input : [];
+  const metadata = clientTurnMetadata(parsed);
+  const activeIndex = input.findLastIndex(value => isUserOrParentInstruction(record(value), metadata));
+  const active = record(input[activeIndex]);
+  if (itemTurnId(active) !== turnId || typeof active?.id !== "string" || !active.id) return undefined;
+
+  const claims = input.flatMap((value, index) => {
+    const item = record(value);
+    if (item?.type !== "message" || !/<\\/?environment_context\\b/i.test(rawMessageText(item))) return [];
+    const owner = itemTurnId(item);
+    return owner === undefined || owner === turnId ? [{ item, index }] : [];
+  });
+  if (claims.length !== 1) return undefined;
+  const claim = claims[0]!;
+  if (claim.item.role !== "user" || itemTurnId(claim.item) !== turnId
+    || typeof claim.item.id !== "string" || !claim.item.id) return undefined;
+  const parts = Array.isArray(claim.item.content) ? claim.item.content : [];
+  if (parts.filter(part => /<\\/?environment_context\\b/i.test(String(record(part)?.text ?? ""))).length !== 1) return undefined;
+
+  for (let index = claim.index + 1; index < activeIndex; index += 1) {
+    const instruction = record(input[index]);
+    if (typeof instruction?.id !== "string" || !instruction.id) continue;
+    const text = environmentBeforeUser(input, index, turnId, metadata);
+    if (text) return parseChatGptEnvironmentText(parsed, text);
+  }
+  return undefined;
+}
+
+"""
+          if "export function extractChatGptSteeringEnvironmentClaim" not in t:
+            t = t.replace(anchor, anchor + steering, 1)
+          p.write_text(t)
+
+          p = Path("src/adapters/chatgpt-web/thread-environment.ts")
+          t = p.read_text()
+          if "extractChatGptSteeringEnvironmentClaim," not in t:
+            t = t.replace(
+              "  extractChatGptCurrentEnvironmentClaim,\n",
+              "  extractChatGptCurrentEnvironmentClaim,\n  extractChatGptSteeringEnvironmentClaim,\n",
+              1,
+            )
+          old = """      const historicalMessages = hasCurrentContext && !currentCompaction && lineage
+        ? unattributedChatGptEnvironmentMessages(parsed) : undefined;
+      const sameThread = this.get(identity.threadId);
+      if (hasCurrentContext && !currentCompaction && !historicalMessages) {
+"""
+          new = """      const historicalMessages = hasCurrentContext && !currentCompaction && lineage
+        ? unattributedChatGptEnvironmentMessages(parsed) : undefined;
+      const steeringClaim = hasCurrentContext && !currentCompaction
+        ? extractChatGptSteeringEnvironmentClaim(parsed) : undefined;
+      const sameThread = this.get(identity.threadId);
+      if (hasCurrentContext && !currentCompaction && !historicalMessages && !steeringClaim) {
+"""
+          if old not in t:
+            raise SystemExit("thread environment replay anchor changed")
+          t = t.replace(old, new, 1)
+          t = t.replace(
+            "      const currentClaim = currentCompaction ? extractChatGptContinuationEnvironmentClaim(parsed) : undefined;",
+            "      const currentClaim = currentCompaction ? extractChatGptContinuationEnvironmentClaim(parsed) : steeringClaim;",
+            1,
+          )
+          p.write_text(t)
+
+          p = Path("src/adapters/chatgpt-web/browser-worker.ts")
+          t = p.read_text()
+          # Keep our passive/recoverable rate-limit contract while accepting upstream's wider locale match.
+          rate = '{ status: 429, errorType: "rate_limit_error", code: "rate_limit_exceeded", retryable: false },'
+          if rate in t:
+            t = t.replace(
+              rate,
+              '{ status: 429, errorType: "rate_limit_error", code: "rate_limit_exceeded", retryable: true },',
+              1,
+            )
+          t = t.replace(
+            """  // Four physical messages are allowed only to relieve per-message transport pressure. Bigger
+  // Context itself still owns at most three ordinary model windows, matching the advertised catalog.
+  const logicalParts = Math.min(partCount, CHATGPT_BIGGER_CONTEXT_PARTS);
+""",
+            """  // Six physical messages are transport capacity only. Bigger Context still owns at most three
+  // ordinary model windows, matching the advertised model catalog and compaction thresholds.
+  const logicalParts = Math.min(partCount, CHATGPT_WEB_BIGGER_CONTEXT_MULTIPLIER);
+""",
+            1,
+          )
+          t = t.replace(
+            """  const partLabel = partCount === 2
+    ? "two-part"
+    : partCount === CHATGPT_BIGGER_CONTEXT_PARTS
+      ? "three-part"
+      : "four-transport-part";
+""",
+            '  const partLabel = partCount === 2 ? "two-part" : "six-part";\n',
+            1,
+          )
+          p.write_text(t)
+          PY
+
+          git rm -f .github/workflows/one-shot-resolve-pr67.yml
+          git diff --check
+          test -z "$(git ls-files -u)"
+          git add -A
+          git commit -m "Merge upstream hardening and six-part context transport"
+          git push origin HEAD:sync
