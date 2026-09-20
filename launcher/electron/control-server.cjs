@@ -307,9 +307,12 @@ class BrowserControlServer {
         writeJson(response, 200, { ok: true, ...lease });
         return;
       } else if (request.url === "/v1/turn/heartbeat") {
-        host.heartbeatTurn(body.traceId, body.helperPid, body.refreshViewport === true);
+        const heartbeat = host.heartbeatTurn(body.traceId, body.helperPid, body.refreshViewport === true);
         this.logger.debug?.("browser.turn_heartbeat", { traceId: body.traceId });
-        writeJson(response, 200, { ok: true });
+        writeJson(response, 200, {
+          ok: true,
+          ...(heartbeat?.authenticationRequired === true ? { authenticationRequired: true } : {}),
+        });
         return;
       } else {
         if (!['completed', 'failed', 'aborted'].includes(body.status)) throw new Error("turn status is invalid");
@@ -331,18 +334,22 @@ class BrowserControlServer {
       this.logger.warn("browser.control_rejected", { message });
       const cancelled = error?.code === "turn_cancelled";
       const retainedUnavailable = error?.code === "retained_conversation_unavailable";
+      const authenticationRequired = error?.code === "authentication_required";
       const manualInspectionDisabled = error?.code === "manual_browser_inspection_disabled";
       const manualOwnerLost = error?.code === "manual_turn_owner_lost";
       const manualTimedOut = error?.code === "manual_turn_timed_out";
       writeJson(
         response,
-        cancelled || retainedUnavailable || manualInspectionDisabled || manualOwnerLost
-          ? 409
-          : manualTimedOut ? 408 : 400,
+        authenticationRequired
+          ? 401
+          : cancelled || retainedUnavailable || manualInspectionDisabled || manualOwnerLost
+            ? 409
+            : manualTimedOut ? 408 : 400,
         {
         error: message,
         ...(cancelled ? { code: "turn_cancelled" } : {}),
         ...(retainedUnavailable ? { code: "retained_conversation_unavailable" } : {}),
+        ...(authenticationRequired ? { code: "authentication_required" } : {}),
         ...(manualInspectionDisabled ? { code: "manual_browser_inspection_disabled" } : {}),
         ...(manualOwnerLost ? { code: "manual_turn_owner_lost" } : {}),
         ...(manualTimedOut ? { code: "manual_turn_timed_out" } : {}),

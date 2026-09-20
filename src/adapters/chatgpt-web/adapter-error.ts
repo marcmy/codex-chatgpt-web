@@ -80,3 +80,15 @@ export function chatGptRetainedConversationUnavailableError(): ChatGptWebAdapter
     },
   );
 }
+
+export function chatGptAuthenticationRequiredError(): ChatGptWebAdapterError {
+  return new ChatGptWebAdapterError(
+    "The ChatGPT session has expired. Sign in again in Codex Web GPT before starting another turn.",
+    {
+      status: 401,
+      errorType: "authentication_error",
+      code: "chatgpt_session_expired",
+      retryable: false,
+    },
+  );
+}

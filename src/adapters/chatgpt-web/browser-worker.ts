@@ -67,6 +67,7 @@ import {
 import { loginVerificationMarkerPath } from "../../browser-login";
 import {
   connectLauncherBrowserHost,
+  LauncherAuthenticationRequiredError,
   LauncherBrowserTurnCancelledError,
   LauncherRetainedConversationUnavailableError,
   LAUNCHER_TURN_HEARTBEAT_INTERVAL_MS,
@@ -84,6 +85,7 @@ import { MAX_CHATGPT_BROWSER_TABS } from "./concurrency";
 import {
   ChatGptCompactionHandoffAccepted,
   ChatGptWebAdapterError,
+  chatGptAuthenticationRequiredError,
   chatGptBrowserTabClosedError,
   chatGptRetainedConversationUnavailableError,
   chatGptStoppedThinkingError,
@@ -4376,6 +4378,7 @@ export class ChatGptBrowserWorker {
         : {}),
       ...(turn.requireRetainedConversation ? { requireRetainedConversation: true } : {}),
     }).catch(error => {
+      if (error instanceof LauncherAuthenticationRequiredError) throw chatGptAuthenticationRequiredError();
       if (error instanceof LauncherBrowserTurnCancelledError) throw chatGptBrowserTabClosedError();
       if (error instanceof LauncherRetainedConversationUnavailableError) {
         throw chatGptRetainedConversationUnavailableError();
@@ -4421,6 +4424,21 @@ export class ChatGptBrowserWorker {
       heartbeatTimer.unref?.();
       return await this.runBrowserTurn(turn, surfaceId, undefined, reused);
     } catch (error) {
+      if (!(error instanceof ChatGptCompactionHandoffAccepted)
+        && !(error instanceof ChatGptWebAdapterError && error.code === "client_cancelled")) {
+        try {
+          const heartbeat = await notifyLauncherTurn(this.config.browserHostDescriptorPath!, {
+            phase: "heartbeat",
+            traceId: turn.traceId,
+            helperPid: process.pid,
+          }, LAUNCHER_TURN_HEARTBEAT_TIMEOUT_MS);
+          if (heartbeat.authenticationRequired === true) error = chatGptAuthenticationRequiredError();
+        } catch (heartbeatError) {
+          if (heartbeatError instanceof LauncherAuthenticationRequiredError) {
+            error = chatGptAuthenticationRequiredError();
+          }
+        }
+      }
       originalError = error;
       terminal = error instanceof ChatGptCompactionHandoffAccepted
         ? "completed"

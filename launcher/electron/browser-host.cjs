@@ -564,6 +564,7 @@ class BrowserHost {
       conversationKey,
       connectorIdentity,
       connectorBound: false,
+      authenticationRequired: false,
       helperPid,
       view,
       status: "running",
@@ -764,9 +765,18 @@ class BrowserHost {
 
   bindTurnContents(tab) {
     const contents = tab.view.webContents;
+    const markAuthenticationRequired = () => {
+      tab.authenticationRequired = true;
+      tab.message = "ChatGPT requires a fresh sign-in; sign in again from Setup before starting another turn";
+      this.setState({
+        authenticated: false,
+        message: "ChatGPT session expired; sign in again from Setup",
+      });
+      this.logger.warn("browser.turn_authentication_blocked", { tabId: tab.id, traceId: tab.traceId });
+    };
     contents.setWindowOpenHandler(({ url }) => {
       if (allowedAuthUrl(url)) {
-        this.logger.warn("browser.turn_authentication_blocked", { tabId: tab.id, traceId: tab.traceId });
+        markAuthenticationRequired();
         return { action: "deny" };
       }
       let parsed;
@@ -777,9 +787,7 @@ class BrowserHost {
     const blockAuthenticationNavigation = (event, url) => {
       if (!allowedAuthUrl(url)) return;
       event.preventDefault();
-      tab.message = "ChatGPT requires a fresh sign-in; finish this turn, then sign in from Setup";
-      this.logger.warn("browser.turn_authentication_blocked", { tabId: tab.id, traceId: tab.traceId });
-      this.publishState?.(this.snapshot());
+      markAuthenticationRequired();
     };
     contents.on("will-navigate", blockAuthenticationNavigation);
     contents.on("will-redirect", blockAuthenticationNavigation);
@@ -1322,7 +1330,10 @@ class BrowserHost {
       tab.deviceEmulationDirty = true;
       this.syncViewVisibility();
     }
-    return this.snapshot();
+    const snapshot = this.snapshot();
+    return tab.authenticationRequired === true
+      ? { ...snapshot, authenticationRequired: true }
+      : snapshot;
   }
 
   refreshTurnLeases(reason, now = Date.now()) {
@@ -2341,6 +2352,11 @@ class BrowserHost {
     if (requireRetainedConversation) {
       const error = new Error("The retained ChatGPT conversation is no longer available");
       error.code = "retained_conversation_unavailable";
+      throw error;
+    }
+    if (this.state?.authenticated === false) {
+      const error = new Error("The saved ChatGPT session is no longer authenticated; sign in again from Setup");
+      error.code = "authentication_required";
       throw error;
     }
     const tab = await this.createTurnTab(traceId, helperPid, conversationKey, connectorIdentity);

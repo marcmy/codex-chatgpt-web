@@ -1668,6 +1668,46 @@ test("a live turn heartbeat refreshes its lease and rejects another helper", () 
   );
 });
 
+test("turn heartbeat surfaces a blocked authentication redirect", () => {
+  const tab = {
+    traceId: "auth-heartbeat",
+    helperPid: 444,
+    status: "running",
+    authenticationRequired: true,
+    lastHeartbeatAt: 0,
+  };
+  const fixture = Object.assign(Object.create(BrowserHost.prototype), {
+    turnTabs: new Map([["tab-auth", tab]]),
+    snapshot: () => ({ activeTabId: "tab-auth" }),
+  });
+
+  assert.deepEqual(
+    BrowserHost.prototype.heartbeatTurn.call(fixture, tab.traceId, tab.helperPid),
+    { activeTabId: "tab-auth", authenticationRequired: true },
+  );
+});
+
+test("fresh automatic turns fail closed after the launcher marks the saved session signed out", async () => {
+  const fixture = Object.assign(Object.create(BrowserHost.prototype), {
+    manualOperation: null,
+    state: { authenticated: false },
+    userCancelledTurnOwners: new Map(),
+    turnTabs: new Map(),
+  });
+
+  const error = await BrowserHost.prototype.beginTurn.call(
+    fixture,
+    "auth-required",
+    false,
+    444,
+    undefined,
+    undefined,
+    false,
+  ).catch(caught => caught);
+  assert.equal(error?.code, "authentication_required");
+  assert.match(error?.message ?? "", /sign in again/i);
+});
+
 test("a viewport-refresh heartbeat reapplies hidden emulation before CDP reconnect", () => {
   const events = [];
   const tab = {
