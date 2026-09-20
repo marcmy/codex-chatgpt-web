@@ -4525,6 +4525,10 @@ export class ChatGptBrowserWorker {
         )
         : requestedMode;
       if (prepared.multipart) {
+        const partCount = prepared.multipart.parts.length;
+        if (!isChatGptWebMultipartPartCount(partCount)) {
+          throw new Error("Browser worker received an unsupported multipart transport shape");
+        }
         assertChatGptWebMultipartInputWithinLimits(
           estimatedInputTokens,
           estimatedMessageTokens,
@@ -4532,7 +4536,7 @@ export class ChatGptBrowserWorker {
           requestedMode.effort,
           browserCapabilities,
           maxMessageChars,
-          prepared.multipart.parts.length,
+          partCount,
           multipartStages
             && multipartFinalPrompt
             && maxStageMessageTokens !== undefined

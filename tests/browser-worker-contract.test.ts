@@ -3422,24 +3422,6 @@ test("Bigger Context preflight expands only the total context ceiling and keeps 
     6,
   )).toThrow("270,000-token six-part ceiling");
   expect(() => assertChatGptWebMultipartInputWithinLimits(
-    269_999,
-    80_000,
-    "gpt-5.6-sol",
-    "high",
-    plus,
-    900_000,
-    4,
-  )).not.toThrow();
-  expect(() => assertChatGptWebMultipartInputWithinLimits(
-    270_000,
-    80_000,
-    "gpt-5.6-sol",
-    "high",
-    plus,
-    900_000,
-    4,
-  )).toThrow("270,000-token four-transport-part ceiling");
-  expect(() => assertChatGptWebMultipartInputWithinLimits(
     180_000,
     80_000,
     "gpt-5.6-sol",
@@ -3898,14 +3880,14 @@ test("clearing the missing-response window preserves whether a response was ever
   expect(tracker.update(absent, 6_000)).toContain("response DOM disappeared");
 });
 
-test("the launcher helper accepts the fourth Bigger Context spill part", () => {
+test("the launcher helper validates the six-part Bigger Context protocol", () => {
   const helper = readFileSync("src/adapters/chatgpt-web/browser-helper-main.ts", "utf8");
 
-  // Bigger Context still has three logical windows, but #61 added a fourth physical transport
-  // spill part. The out-of-process helper must share that transport bound instead of hard-coding
-  // the older 2/3-part protocol or it aborts the first run and every reconnect collides with it.
-  expect(helper).toContain("CHATGPT_BIGGER_CONTEXT_MAX_TRANSPORT_PARTS");
-  expect(helper).toMatch(/multipart\.parts\.length > CHATGPT_BIGGER_CONTEXT_MAX_TRANSPORT_PARTS/);
+  // Physical Bigger Context transport now has exactly two supported shapes: two or six parts.
+  // Keep the out-of-process helper on the same validator as the compiler so stale 3/4-part
+  // payloads fail before they can create a mismatched browser transaction.
+  expect(helper).toContain("isChatGptWebMultipartPartCount");
+  expect(helper).toMatch(/!isChatGptWebMultipartPartCount\(multipart\.parts\.length\)/);
   expect(helper).not.toContain("multipart.parts.length !== 2 && multipart.parts.length !== 3");
 });
 

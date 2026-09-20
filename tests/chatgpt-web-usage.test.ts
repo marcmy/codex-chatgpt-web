@@ -28,8 +28,8 @@ test("multipart selection accounts for whole-record and composer fit before subm
   const plus = { ...capabilities, extraHighAvailable: false, proAvailable: false };
   for (const [contents, expected] of [
     [["small task"], undefined],
-    [[50_000, 40_000, 50_000, 5_000].map(n => "word ".repeat(n)), 3],
-    [Array.from({ length: 4 }, () => "word ".repeat(50_000)), 4],
+    [[50_000, 40_000, 50_000, 5_000].map(n => "word ".repeat(n)), 6],
+    [Array.from({ length: 4 }, () => "word ".repeat(50_000)), 6],
     [Array.from({ length: 3 }, () => " ".repeat(450_000)), 2],
   ] as const) {
     const parsed = request("");
@@ -67,7 +67,7 @@ test("Bigger Context compaction selects six parts before the legacy inline byte 
     .toEqual([parsed.context.messages[0]!.content]);
 });
 
-test("Bigger Context compaction uses a fourth transport part before trimming history", () => {
+test("Bigger Context compaction uses six transport parts before trimming history", () => {
   const plus = { ...capabilities, extraHighAvailable: false, proAvailable: false };
   const parsed = request("");
   parsed._compactionRequest = true;
@@ -78,9 +78,9 @@ test("Bigger Context compaction uses a fourth transport part before trimming his
   }));
 
   const parts = resolveBiggerContextMultipartParts(parsed, plus);
-  expect(parts).toBe(4);
+  expect(parts).toBe(6);
   const compiled = compileChatGptWebPrompt(parsed, plus, undefined, { experimentalMultipartParts: parts });
-  expect(compiled.multipart?.parts).toHaveLength(4);
+  expect(compiled.multipart?.parts).toHaveLength(6);
   expect(compiled.trimmedCompactionMessages).toBeUndefined();
   expect(compiled.multipart!.parts.flatMap(part => JSON.parse(part).records).map(record => record.message.content))
     .toEqual(parsed.context.messages.map(message => message.content));
@@ -99,8 +99,8 @@ test("Bigger Context compaction falls back inline only after all multipart trans
   const parts = resolveBiggerContextMultipartParts(parsed, plus);
   expect(parts).toBeUndefined();
 
-  const forced = compileChatGptWebPrompt(parsed, plus, undefined, { experimentalMultipartParts: 4 });
-  expect(forced.multipart?.parts).toHaveLength(4);
+  const forced = compileChatGptWebPrompt(parsed, plus, undefined, { experimentalMultipartParts: 6 });
+  expect(forced.multipart?.parts).toHaveLength(6);
   expect(forced.trimmedCompactionMessages).toBeUndefined();
 
   const compiled = compileChatGptWebPrompt(parsed, plus, undefined, { experimentalMultipartParts: parts });
