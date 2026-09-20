@@ -86,11 +86,7 @@ export function resolveBiggerContextMultipartParts(
   const compaction = parsed._compactionRequest === true;
   const compile = (parts?: ChatGptWebMultipartPartCount): CompiledChatGptWebPrompt => compileChatGptWebPrompt(
     parsed, capabilities, mode.localTools ? ESTIMATE_TURN_TOKEN : undefined,
-    {
-      experimentalMultipartParts: parts,
-      experimentalSkillAttachments,
-      ...(parts !== undefined ? { multipartPlanningOnly: true } : {}),
-    },
+    { experimentalMultipartParts: parts, experimentalSkillAttachments },
   );
   const inline = compaction ? undefined : compile();
   const initialParts = compaction
@@ -127,14 +123,15 @@ export function resolveBiggerContextMultipartParts(
   for (const parts of [2, CHATGPT_BIGGER_CONTEXT_PARTS, CHATGPT_BIGGER_CONTEXT_MAX_TRANSPORT_PARTS] as const) {
     if (parts < minimumParts) continue;
     const candidate = compile(parts);
-    // Compaction compilation may deliberately fall back inline when the requested multipart shape
-    // cannot fit. Treat that as a failed candidate here so the planner can try the spill part first.
-    if (candidate.multipart?.parts.length !== parts) continue;
+    if (candidate.multipart?.parts.length !== parts) {
+      throw new Error("ChatGPT multipart compiler returned a different transport shape than requested");
+    }
     if (fits(candidate)) return parts;
   }
-  // Keep the maximum transport shape so the normal compiler/browser diagnostics can report the
-  // actual irreducible limit (or compaction can activate its existing inline-trimming fallback).
-  return CHATGPT_BIGGER_CONTEXT_MAX_TRANSPORT_PARTS;
+  // Compaction can safely recover by compiling inline and applying its native-style oldest-history
+  // trimming. Ordinary turns cannot discard history, so keep the largest physical shape and let
+  // browser preflight report the irreducible context error.
+  return compaction ? undefined : CHATGPT_BIGGER_CONTEXT_MAX_TRANSPORT_PARTS;
 }
 
 export function biggerContextPartCount(
