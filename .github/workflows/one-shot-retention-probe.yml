@@ -22,7 +22,27 @@ jobs:
         run: |
           set -euo pipefail
           git fetch origin main
-          git show origin/main:.github/one-shot-retention.patch.gz.b64 | base64 -d | gzip -dc > /tmp/retention.patch
+          git show origin/main:.github/one-shot-retention.patch.gz.b64 > /tmp/retention.b64
+          python <<'PY'
+          from pathlib import Path
+          path = Path("/tmp/retention.b64")
+          chars = list(path.read_text())
+          repairs = {
+              4805: "J",
+              6572: "s",
+              6647: "v",
+              6716: "u",
+              6718: "n",
+              6719: "c",
+              6720: "z",
+              6722: "R",
+              6725: "x",
+          }
+          for index, value in repairs.items():
+              chars[index] = value
+          path.write_text("".join(chars))
+          PY
+          base64 -d /tmp/retention.b64 | gzip -dc > /tmp/retention.patch
           git apply --check /tmp/retention.patch
           git apply /tmp/retention.patch
           git diff --check
