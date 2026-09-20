@@ -2213,6 +2213,7 @@ class BrowserHost {
       tab.loading = false;
       tab.lastHeartbeatAt = Date.now();
       this.rememberManualCompletion(traceId, helperPid);
+      this.logger.info("browser.manual_turn_completed", { tabId: tab.id, traceId, status: "completed", retained: true });
       this.publishState?.(this.snapshot());
       return { cancelledByUser: false };
     }
@@ -2230,6 +2231,9 @@ class BrowserHost {
       this.signalManualTerminal(tab, status === "aborted" ? "cancelled" : status);
     }
     this.removeTurnTab(tab, false);
+    if (status === "completed") {
+      this.logger.info("browser.manual_turn_completed", { tabId: tab.id, traceId, status: "completed", retained: false });
+    }
     return { cancelledByUser };
   }
 

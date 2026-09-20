@@ -2,6 +2,7 @@ import { skillFileTokens } from "./skill-attachments";
 import { estimateTokens } from "../../lib/token-estimate";
 import {
   CHATGPT_WEB_BACKEND_MODEL,
+  CHATGPT_WEB_BIGGER_CONTEXT_MULTIPLIER,
   isChatGptWebZeroRiskBackendModel,
   resolveChatGptWebContextLimits,
   resolveChatGptWebMessageTokenBudget,
@@ -61,10 +62,9 @@ export function estimateChatGptWebInputTokens(
 }
 
 /**
- * The compaction threshold chooses the logical context width. Browser-message boundaries can
- * require one additional physical spill part even when the task remains inside the same three-window
- * Bigger Context ceiling. Plan that transport before submission; the fourth part never expands the
- * model context advertised to Codex.
+ * The compaction threshold chooses the initial part count. Whole records, fragmented records, and
+ * composer limits can require six physical parts even though logical Bigger Context capacity remains
+ * three ordinary model windows. Plan the physical transport before browser submission.
  */
 export function resolveBiggerContextMultipartParts(
   parsed: CodexParsedRequest,
@@ -112,15 +112,14 @@ export function resolveBiggerContextMultipartParts(
       );
       if (estimateTokens(text, parsed.modelId) > budget) return false;
     }
-    // A fourth physical part is transport spill only. Never let it raise the logical three-window
-    // Bigger Context ceiling that the model catalog advertises to Codex.
-    const logicalParts = Math.min(messages.length, CHATGPT_BIGGER_CONTEXT_PARTS);
+    // Physical transport may use six messages, but the model catalog still advertises only 3x.
+    const logicalParts = Math.min(messages.length, CHATGPT_WEB_BIGGER_CONTEXT_MULTIPLIER);
     return estimateCompiledChatGptWebInputTokens(compiled, parsed.modelId) < contextWindow * logicalParts;
   };
 
   if (initialParts === undefined && inline && fits(inline)) return undefined;
   const minimumParts = initialParts ?? 2;
-  for (const parts of [2, CHATGPT_BIGGER_CONTEXT_PARTS, CHATGPT_BIGGER_CONTEXT_MAX_TRANSPORT_PARTS] as const) {
+  for (const parts of [2, CHATGPT_BIGGER_CONTEXT_PARTS] as const) {
     if (parts < minimumParts) continue;
     const candidate = compile(parts);
     if (candidate.multipart?.parts.length !== parts) {

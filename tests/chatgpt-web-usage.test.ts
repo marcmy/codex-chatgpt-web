@@ -28,8 +28,7 @@ test("multipart selection accounts for whole-record and composer fit before subm
   const plus = { ...capabilities, extraHighAvailable: false, proAvailable: false };
   for (const [contents, expected] of [
     [["small task"], undefined],
-    [[50_000, 40_000, 50_000, 5_000].map(n => "word ".repeat(n)), 3],
-    [Array.from({ length: 4 }, () => "word ".repeat(50_000)), 4],
+    [[50_000, 40_000, 50_000, 5_000].map(n => "word ".repeat(n)), 6],
     [Array.from({ length: 3 }, () => " ".repeat(450_000)), 2],
   ] as const) {
     const parsed = request("");
@@ -42,20 +41,37 @@ test("multipart selection accounts for whole-record and composer fit before subm
         .toEqual([...contents]);
     }
   }
-}, 60_000);
+  // Low-token text can still exceed the reasoning model's server character ceiling.
+  // Stage the complete record instead of sending it inline or dropping its contents.
+  const sparsePro = request("x".repeat(600_000));
+  expect(resolveBiggerContextMultipartParts(sparsePro, capabilities)).toBe(2);
+  const stagedPro = compileChatGptWebPrompt(sparsePro, capabilities, undefined, { experimentalMultipartParts: 2 });
+  const sparseRecords = stagedPro.multipart!.parts.flatMap(part => JSON.parse(part).records);
+  const sparseFragments = sparseRecords.filter(record => record.kind === "record_fragment");
+  expect(sparseFragments.length).toBeGreaterThan(1);
+  const rebuiltSparse = JSON.parse(sparseFragments.map(fragment => fragment.json_fragment).join(""));
+  expect(rebuiltSparse.kind).toBe("message");
+  expect(rebuiltSparse.message_index).toBe(0);
+  expect(rebuiltSparse.message.content).toBe(sparsePro.context.messages[0]!.content);
+  const proMessages = compiledChatGptWebMessages(stagedPro);
+  expect(proMessages[1]!.length).toBeLessThanOrEqual(500_000);
+  expect(resolveChatGptWebMultipartStagingMode(
+    "gpt-5.6-sol", capabilities, estimateTokens(proMessages[0]!), proMessages[0]!.length,
+  ).effort).toBe("low");
+}, 90_000);
 
-test("Bigger Context compaction selects three parts before the legacy inline byte budget", () => {
+test("Bigger Context compaction selects six parts before the legacy inline byte budget", () => {
   const parsed = request("x".repeat(160_000));
   parsed._compactionRequest = true;
   const parts = resolveBiggerContextMultipartParts(parsed, capabilities);
-  expect(parts).toBe(3);
+  expect(parts).toBe(6);
   const compiled = compileChatGptWebPrompt(parsed, capabilities, undefined, { experimentalMultipartParts: parts });
   expect(compiled.trimmedCompactionMessages).toBeUndefined();
   expect(compiled.multipart!.parts.flatMap(part => JSON.parse(part).records).map(record => record.message.content))
     .toEqual([parsed.context.messages[0]!.content]);
 });
 
-test("Bigger Context compaction uses a fourth transport part before trimming history", () => {
+test("Bigger Context compaction uses six transport parts before trimming history", () => {
   const plus = { ...capabilities, extraHighAvailable: false, proAvailable: false };
   const parsed = request("");
   parsed._compactionRequest = true;
@@ -66,9 +82,9 @@ test("Bigger Context compaction uses a fourth transport part before trimming his
   }));
 
   const parts = resolveBiggerContextMultipartParts(parsed, plus);
-  expect(parts).toBe(4);
+  expect(parts).toBe(6);
   const compiled = compileChatGptWebPrompt(parsed, plus, undefined, { experimentalMultipartParts: parts });
-  expect(compiled.multipart?.parts).toHaveLength(4);
+  expect(compiled.multipart?.parts).toHaveLength(6);
   expect(compiled.trimmedCompactionMessages).toBeUndefined();
   expect(compiled.multipart!.parts.flatMap(part => JSON.parse(part).records).map(record => record.message.content))
     .toEqual(parsed.context.messages.map(message => message.content));
@@ -87,8 +103,8 @@ test("Bigger Context compaction falls back inline only after all multipart trans
   const parts = resolveBiggerContextMultipartParts(parsed, plus);
   expect(parts).toBeUndefined();
 
-  const forced = compileChatGptWebPrompt(parsed, plus, undefined, { experimentalMultipartParts: 4 });
-  expect(forced.multipart?.parts).toHaveLength(4);
+  const forced = compileChatGptWebPrompt(parsed, plus, undefined, { experimentalMultipartParts: 6 });
+  expect(forced.multipart?.parts).toHaveLength(6);
   expect(forced.trimmedCompactionMessages).toBeUndefined();
 
   const compiled = compileChatGptWebPrompt(parsed, plus, undefined, { experimentalMultipartParts: parts });
@@ -114,7 +130,7 @@ test("multipart planning leaves room for final attachments and execution instruc
     if (scenario.schema) parsed.options.outputFormat = {
       type: "json_schema", name: "result", strict: true, schema: { type: "string", description: "schema ".repeat(24_000) },
     };
-    const compiled = compileChatGptWebPrompt(parsed, caps, undefined, { experimentalMultipartParts: 3 });
+    const compiled = compileChatGptWebPrompt(parsed, caps, undefined, { experimentalMultipartParts: 6 });
     const records = compiled.multipart!.parts.flatMap(part => JSON.parse(part).records);
     expect(records.map(record => record.message_index)).toEqual(parsed.context.messages.map((_, index) => index));
     expect(records.slice(0, texts.length).map(record => record.message.content)).toEqual(texts);
@@ -129,8 +145,8 @@ test("multipart planning leaves room for final attachments and execution instruc
     const stage = resolveChatGptWebMultipartStagingMode(parsed.modelId, caps, maxStageMessageTokens, maxStageChars);
     expect(() => assertChatGptWebMultipartInputWithinLimits(
       estimateCompiledChatGptWebInputTokens(compiled, parsed.modelId), Math.max(...tokens),
-      parsed.modelId, "high", caps, Math.max(...chars), 3,
-      { stagingEffort: stage.effort, maxStageMessageTokens, maxStageChars, finalMessageTokens: tokens[2]!, finalMessageChars: chars[2]!, finalImageTokens: estimateChatGptWebImageTokens(compiled) },
+      parsed.modelId, "high", caps, Math.max(...chars), 6,
+      { stagingEffort: stage.effort, maxStageMessageTokens, maxStageChars, finalMessageTokens: tokens.at(-1)!, finalMessageChars: chars.at(-1)!, finalImageTokens: estimateChatGptWebImageTokens(compiled) },
     )).not.toThrow();
   }
 }, 30_000);
