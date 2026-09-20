@@ -1,0 +1,48 @@
+name: One-shot compaction auth reconnect fix
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: fix/compaction-auth-reconnect
+          fetch-depth: 0
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.0
+
+      - name: Apply auth reconnect patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > /tmp/authfix.patch.gz.b64 <<'B64'
+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
+          B64
+          base64 -d /tmp/authfix.patch.gz.b64 | gzip -dc > /tmp/authfix.patch
+          git apply --check /tmp/authfix.patch
+          git apply /tmp/authfix.patch
+          git diff --check
+
+      - name: Verify
+        shell: bash
+        run: |
+          bun install --frozen-lockfile
+          bun install --frozen-lockfile --cwd launcher
+          bun run verify
+
+      - name: Commit and push
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add launcher src tests
+          git commit -m "fix: stop retrying turns after ChatGPT auth expiry"
+          git push origin HEAD:fix/compaction-auth-reconnect
