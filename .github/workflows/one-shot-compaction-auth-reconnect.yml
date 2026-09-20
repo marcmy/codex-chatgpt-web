@@ -29,6 +29,16 @@ jobs:
           base64 -d /tmp/authfix.patch.gz.b64 | gzip -dc > /tmp/authfix.patch
           git apply --check /tmp/authfix.patch
           git apply /tmp/authfix.patch
+          python <<'PY'
+          from pathlib import Path
+          path = Path("launcher/electron/browser-host.cjs")
+          text = path.read_text()
+          old = "if (this.state.authenticated === false) {"
+          new = "if (this.state?.authenticated === false) {"
+          if old not in text:
+              raise SystemExit("auth guard target changed")
+          path.write_text(text.replace(old, new, 1))
+          PY
           git diff --check
 
       - name: Verify
