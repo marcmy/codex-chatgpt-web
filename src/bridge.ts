@@ -1080,7 +1080,7 @@ export function formatErrorResponse(status: number, type: string, message: strin
   const classified = classifyError(status, type, message);
   const publicError: CodexErrorPayload = {
     ...classified,
-    message: "Request failed (" + (classified.code ?? classified.type ?? "unknown_error") + ")",
+    message: message.split(/\r?\n/, 1)[0] ?? "",
   };
   return new Response(JSON.stringify({ error: publicError }), {
     status, headers: { "Content-Type": "application/json" },
