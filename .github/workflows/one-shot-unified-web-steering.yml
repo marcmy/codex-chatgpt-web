@@ -30,12 +30,62 @@ jobs:
           git apply /tmp/feature.patch
           python <<'PY'
           from pathlib import Path
+
           path = Path("src/adapters/chatgpt-web/index.ts")
           text = path.read_text()
           old = 'import { CHATGPT_WEB_LUNA_MODEL_ID, resolveChatGptWebModelMode, type ChatGptWebCapabilities } from "./model";'
           new = 'import { CHATGPT_WEB_LUNA_MODEL_ID, CHATGPT_WEB_MODEL_ID, resolveChatGptWebModelMode, type ChatGptWebCapabilities } from "./model";'
           if old not in text:
               raise SystemExit("index.ts model import changed")
+          path.write_text(text.replace(old, new, 1))
+
+          path = Path("src/model-catalog.ts")
+          text = path.read_text()
+          text = text.replace("  CHATGPT_WEB_LEGACY_MODEL_ROUTES,\n", "")
+          old = '''  const visibleRoutes = config.subagentProtocol === "compatibility-v1" && config.solAvailable
+              ? CHATGPT_WEB_LEGACY_MODEL_ROUTES.filter(route =>
+                (!route.requiresPro || config.proAvailable)
+                && (!route.requiresExtraHigh || config.extraHighAvailable))
+              : availableChatGptWebModelRoutes(config);
+          '''
+          new = '''  const visibleRoutes = availableChatGptWebModelRoutes(config);
+          '''
+          if old not in text:
+              raise SystemExit("model-catalog visible route block changed")
+          path.write_text(text.replace(old, new, 1))
+
+          path = Path("tests/model-catalog.test.ts")
+          text = path.read_text()
+          text = text.replace("  CHATGPT_WEB_LEGACY_MODEL_ROUTES,\n", "")
+          old = '''    expect(spawnOverrides).toEqual([
+                "gpt-5.6-sol",
+                ...CHATGPT_WEB_LEGACY_MODEL_ROUTES.slice(1).map(route => route.slug),
+              ]);
+              expect(models.find(model => model.slug === "chatgpt-web/light")?.priority).toBe(3);
+          '''
+          new = '''    expect(spawnOverrides).toEqual([
+                "gpt-5.6-sol",
+                CHATGPT_WEB_MODEL_ROUTE.slug,
+              ]);
+              expect(models.find(model => model.slug === CHATGPT_WEB_MODEL_ROUTE.slug)?.priority).toBe(2);
+          '''
+          if old not in text:
+              raise SystemExit("Compatibility V1 catalog assertion changed")
+          text = text.replace(old, new, 1)
+          text = text.replace("    expect(web.length).toBe(3);", "    expect(web.length).toBe(1);", 1)
+          text = text.replace("    expect(web).toHaveLength(3);", "    expect(web).toHaveLength(1);", 1)
+          path.write_text(text)
+
+          path = Path("tests/server-models.test.ts")
+          text = path.read_text()
+          old = '''  expect(body.models.filter(model => model.slug.startsWith("chatgpt-web/")))
+              .toHaveLength(3);
+          '''
+          new = '''  expect(body.models.filter(model => model.slug.startsWith("chatgpt-web/")))
+              .toHaveLength(1);
+          '''
+          if old not in text:
+              raise SystemExit("server-models web-row count changed")
           path.write_text(text.replace(old, new, 1))
           PY
           git diff --check
