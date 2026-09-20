@@ -4,11 +4,12 @@ import { join } from "node:path";
 
 const root = join(import.meta.dir, "..");
 const source = (path: string) => readFileSync(join(root, path), "utf8");
+const lf = (text: string) => text.replace(/\r\n/g, "\n");
 
 test("accepted rate limits retain the current surface and resume assistant binding in-place", () => {
   const entry = source("src/adapters/chatgpt-web/browser-helper-entry.ts");
   const recovery = source("src/adapters/chatgpt-web/rate-limit-post-submit-recovery.ts");
-  const worker = source("src/adapters/chatgpt-web/browser-worker.ts");
+  const worker = lf(source("src/adapters/chatgpt-web/browser-worker.ts"));
 
   expect(entry).toContain('import "./rate-limit-post-submit-recovery"');
   expect(worker).toContain(`private async waitForNewAssistantTurn(
