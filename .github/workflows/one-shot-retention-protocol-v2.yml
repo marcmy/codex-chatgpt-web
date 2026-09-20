@@ -21,19 +21,13 @@ jobs:
         shell: python
         run: |
           from pathlib import Path
-          path = Path("src/adapters/chatgpt-web/browser-worker.ts")
-          text = path.read_text()
-          old = '''              const details = retentionResult.passed
-                ? `${retentionProbe.canaries.length}/${retentionProbe.canaries.length} staged canaries retained`
-                : `reason=${retentionResult.reason ?? "unknown"} missingParts=${retentionResult.missingParts.join(",") || "none"} unexpected=${retentionResult.unexpected.length}`;
-          '''
-          new = '''              const details = retentionResult.passed
-                ? `${retentionProbe.canaries.length}/${retentionProbe.canaries.length} staged canaries retained`
-                : `reason=${retentionResult.reason ?? "unknown"} missingParts=${retentionResult.missingParts.join(",") || "none"} unexpected=${retentionResult.unexpected.length}${retentionResult.observedFirstLine !== undefined ? ` observedFirstLine=${JSON.stringify(retentionResult.observedFirstLine)}` : ""}`;
-          '''
-          if text.count(old) != 1:
-              raise SystemExit(f"expected one retention diagnostics block, found {text.count(old)}")
-          path.write_text(text.replace(old, new, 1))
+          p = Path("src/adapters/chatgpt-web/browser-worker.ts")
+          s = p.read_text()
+          old = 'unexpected=${retentionResult.unexpected.length}`;'
+          new = 'unexpected=${retentionResult.unexpected.length}${retentionResult.observedFirstLine !== undefined ? ` observedFirstLine=${JSON.stringify(retentionResult.observedFirstLine)}` : ""}`;'
+          if s.count(old) != 1:
+              raise SystemExit(f"expected one diagnostics suffix, found {s.count(old)}")
+          p.write_text(s.replace(old, new, 1))
       - name: Verify
         shell: bash
         run: |
