@@ -17,6 +17,9 @@ test("accepted rate limits retain the current surface and resume assistant bindi
   expect(recovery).toContain("runChatGptWebsiteAction");
   expect(recovery).toContain('page.reload({ waitUntil: "domcontentloaded", timeout: 60_000 })');
   expect(recovery).toContain("refundThrottleWait(args, throttledBefore)");
-  expect(recovery).toContain("resetSubmissionDomCache(args[1])");
+  expect(recovery).toContain("resetSubmissionDomCache(observationBaseline)");
+  expect(recovery).toContain("const originalRecovery = typeof args[7]");
+  expect(recovery).toContain("observationPage = requirePage(recovered.page)");
+  expect(recovery).toContain("observationBaseline = recovered.baseline");
   expect(recovery).toContain("retaining current launcher surface");
 });

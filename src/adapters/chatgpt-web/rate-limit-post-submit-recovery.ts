@@ -19,13 +19,20 @@ interface PatchableWorkerPrototype {
   [POST_SUBMIT_RATE_LIMIT_PATCH_MARK]?: boolean;
 }
 
+interface ObservationRecoveryResult {
+  page: Page;
+  baseline: unknown;
+}
+
+type ObservationRecovery = (...args: unknown[]) => Promise<ObservationRecoveryResult>;
+
 function resetSubmissionDomCache(value: unknown): void {
   if (!value || typeof value !== "object" || !("domCache" in value)) return;
   (value as { domCache: unknown }).domCache = {};
 }
 
-function pageArgument(args: readonly unknown[]): Page {
-  const page = args[0] as Partial<Page> | undefined;
+function requirePage(value: unknown): Page {
+  const page = value as Partial<Page> | undefined;
   if (!page || typeof page.reload !== "function") {
     throw new Error("ChatGPT post-submit rate-limit recovery did not receive a browser page");
   }
@@ -81,11 +88,29 @@ export function installChatGptPostSubmitRateLimitRecovery(): void {
     this: ChatGptBrowserWorker,
     ...args: unknown[]
   ): Promise<unknown> {
-    const page = pageArgument(args);
+    let observationPage = requirePage(args[0]);
+    let observationBaseline = args[1];
     const signal = abortSignalArgument(args);
+    const originalRecovery = typeof args[7] === "function"
+      ? args[7] as ObservationRecovery
+      : undefined;
+
+    // The worker can rebind observation to a fresh Page object after a DOM timeout. Preserve that
+    // rebind across a later rate-limit recovery so we refresh/resume the page the worker actually
+    // owned when the 429 was observed, not the stale page passed to the first invocation.
+    if (originalRecovery) {
+      args[7] = async (...recoveryArgs: unknown[]) => {
+        const recovered = await originalRecovery(...recoveryArgs);
+        observationPage = requirePage(recovered.page);
+        observationBaseline = recovered.baseline;
+        return recovered;
+      };
+    }
 
     for (;;) {
       try {
+        args[0] = observationPage;
+        args[1] = observationBaseline;
         return await originalWaitForNewAssistantTurn.apply(this, args);
       } catch (error) {
         if (!isChatGptRateLimitError(error)) throw error;
@@ -102,9 +127,9 @@ export function installChatGptPostSubmitRateLimitRecovery(): void {
         );
 
         const throttledBefore = chatGptWebsiteActionGate.throttledMs();
-        const refreshMode = await reloadAcceptedTurnAfterRecovery(page, signal);
+        const refreshMode = await reloadAcceptedTurnAfterRecovery(observationPage, signal);
         refundThrottleWait(args, throttledBefore);
-        resetSubmissionDomCache(args[1]);
+        resetSubmissionDomCache(observationBaseline);
         console.info(
           `[chatgpt-web] resumed accepted ChatGPT turn in-place after rate-limit ${refreshMode}`,
         );
