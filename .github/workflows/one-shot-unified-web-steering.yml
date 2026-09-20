@@ -28,6 +28,16 @@ jobs:
           base64 -d /tmp/feature.patch.gz.b64 | gzip -dc > /tmp/feature.patch
           git apply --check /tmp/feature.patch
           git apply /tmp/feature.patch
+          python <<'PY'
+          from pathlib import Path
+          path = Path("src/adapters/chatgpt-web/index.ts")
+          text = path.read_text()
+          old = 'import { CHATGPT_WEB_LUNA_MODEL_ID, resolveChatGptWebModelMode, type ChatGptWebCapabilities } from "./model";'
+          new = 'import { CHATGPT_WEB_LUNA_MODEL_ID, CHATGPT_WEB_MODEL_ID, resolveChatGptWebModelMode, type ChatGptWebCapabilities } from "./model";'
+          if old not in text:
+              raise SystemExit("index.ts model import changed")
+          path.write_text(text.replace(old, new, 1))
+          PY
           git diff --check
 
       - name: Verify
