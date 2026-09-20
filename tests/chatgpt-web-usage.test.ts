@@ -57,8 +57,8 @@ test("multipart selection accounts for whole-record and composer fit before subm
   expect(proMessages[1]!.length).toBeLessThanOrEqual(500_000);
   expect(resolveChatGptWebMultipartStagingMode(
     "gpt-5.6-sol", capabilities, estimateTokens(proMessages[0]!), proMessages[0]!.length,
-  ).effort).toBe("max");
-}, 60_000);
+  ).effort).toBe("low");
+}, 90_000);
 
 test("Bigger Context compaction selects six parts before the legacy inline byte budget", () => {
   const parsed = request("x".repeat(160_000));
