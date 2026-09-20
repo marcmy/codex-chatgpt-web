@@ -22,6 +22,13 @@ export class LauncherRetainedConversationUnavailableError extends Error {
   }
 }
 
+export class LauncherAuthenticationRequiredError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "LauncherAuthenticationRequiredError";
+  }
+}
+
 export class LauncherManualTurnTimedOutError extends Error {
   constructor(message: string) {
     super(message);
@@ -622,6 +629,7 @@ export async function notifyLauncherTurn(
   reused?: boolean;
   connectorBound?: boolean;
   cancelledByUser?: boolean;
+  authenticationRequired?: boolean;
 }> {
   const descriptor = readLauncherBrowserHostDescriptor(descriptorPath);
   const controller = new AbortController();
@@ -648,6 +656,11 @@ export async function notifyLauncherTurn(
           typeof body.error === "string" ? body.error : "The retained ChatGPT conversation is no longer available",
         );
       }
+      if (response.status === 401 && body.code === "authentication_required") {
+        throw new LauncherAuthenticationRequiredError(
+          typeof body.error === "string" ? body.error : "The ChatGPT session requires a fresh sign-in",
+        );
+      }
       const detail = typeof body.error === "string" ? body.error : "";
       throw new Error(`HTTP ${response.status}${detail ? `: ${detail}` : ""}`);
     }
@@ -668,6 +681,12 @@ export async function notifyLauncherTurn(
         connectorBound: body.connectorBound,
       };
     }
+    if (activity.phase === "heartbeat") {
+      if (body.authenticationRequired !== undefined && typeof body.authenticationRequired !== "boolean") {
+        throw new Error("Launcher browser control channel returned an invalid authentication state");
+      }
+      return body.authenticationRequired === true ? { authenticationRequired: true } : {};
+    }
     if (activity.phase === "end") {
       if (typeof body.cancelledByUser !== "boolean") {
         throw new Error("Launcher browser control channel returned an invalid turn release result");
@@ -677,7 +696,8 @@ export async function notifyLauncherTurn(
     return {};
   } catch (error) {
     if (error instanceof LauncherBrowserTurnCancelledError
-      || error instanceof LauncherRetainedConversationUnavailableError) throw error;
+      || error instanceof LauncherRetainedConversationUnavailableError
+      || error instanceof LauncherAuthenticationRequiredError) throw error;
     throw new Error(`Launcher browser control channel failed: ${error instanceof Error ? error.message : String(error)}`);
   } finally {
     clearTimeout(timer);

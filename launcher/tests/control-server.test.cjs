@@ -154,6 +154,47 @@ test("browser control server authenticates and owns turn visibility", async () =
   }
 });
 
+test("browser control server reports authentication-required turns without retry ambiguity", async () => {
+  const host = {
+    browserInteractionMode: () => "automatic",
+    beginTurn() {
+      const error = new Error("sign in again from Setup");
+      error.code = "authentication_required";
+      throw error;
+    },
+    heartbeatTurn() { return { authenticationRequired: true }; },
+  };
+  const server = await new BrowserControlServer({
+    logger: { info() {}, warn() {}, error() {} },
+    getBrowserHost: () => host,
+    getPreferences: () => ({ showBrowserDuringTurns: false }),
+  }).start();
+  const descriptor = server.descriptor();
+  const send = (path, body) => fetch(`${descriptor.endpoint}${path}`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${descriptor.token}`, "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  try {
+    const start = await send("/v1/turn/start", {
+      phase: "start", traceId: "authrequired12", helperPid: process.pid,
+    });
+    assert.equal(start.status, 401);
+    assert.deepEqual(await start.json(), {
+      error: "sign in again from Setup",
+      code: "authentication_required",
+    });
+
+    const heartbeat = await send("/v1/turn/heartbeat", {
+      phase: "heartbeat", traceId: "authrequired12", helperPid: process.pid,
+    });
+    assert.equal(heartbeat.status, 200);
+    assert.deepEqual(await heartbeat.json(), { ok: true, authenticationRequired: true });
+  } finally {
+    await server.close();
+  }
+});
+
 test("browser control server withholds a new turn lease until its browser surface is ready", async () => {
   let releaseSurface;
   let reportBegin;
