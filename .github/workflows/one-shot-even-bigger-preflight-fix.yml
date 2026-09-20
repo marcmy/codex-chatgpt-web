@@ -1,0 +1,86 @@
+name: One-shot Even Bigger Browser Preflight Fix
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: feature/unified-web-model-steering
+          fetch-depth: 0
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.0
+      - name: Fix live browser preflight invariant
+        shell: python
+        run: |
+          from pathlib import Path
+
+          worker = Path("src/adapters/chatgpt-web/browser-worker.ts")
+          text = worker.read_text()
+          old = "{ ...capabilities, experimentalBiggerContext: false },"
+          new = "{ ...capabilities, experimentalBiggerContext: false, experimentalEvenBiggerContext: false },"
+          if text.count(old) != 1:
+              raise SystemExit(f"expected exactly one live preflight override, found {text.count(old)}")
+          worker.write_text(text.replace(old, new, 1))
+
+          test_file = Path("tests/browser-worker-contract.test.ts")
+          text = test_file.read_text()
+          marker = 'test("browser prompt keeps only the unconsumed checkpoint image and newer images", () => {'
+          regression = '''test("Even Bigger Context browser preflight derives its base window without violating the parent invariant", () => {
+            const capabilities = {
+              localToolsEnabled: false,
+              solAvailable: true,
+              extraHighAvailable: false,
+              proAvailable: false,
+              experimentalBiggerContext: true,
+              experimentalEvenBiggerContext: true,
+            };
+
+            expect(() => assertChatGptWebMultipartInputWithinLimits(
+              100_000,
+              20_000,
+              CHATGPT_WEB_MODEL_ID,
+              "high",
+              capabilities,
+              100_000,
+              8,
+              {
+                stagingEffort: "medium",
+                maxStageMessageTokens: 20_000,
+                maxStageChars: 100_000,
+                finalMessageTokens: 20_000,
+                finalMessageChars: 100_000,
+              },
+            )).not.toThrow();
+          });
+
+          '''
+          if regression.strip() in text:
+              raise SystemExit("regression test already present")
+          if marker not in text:
+              raise SystemExit("test insertion marker changed")
+          test_file.write_text(text.replace(marker, regression + marker, 1))
+      - name: Verify
+        shell: bash
+        run: |
+          set -euo pipefail
+          bun install --frozen-lockfile
+          bun install --frozen-lockfile --cwd launcher
+          bun test tests/browser-worker-contract.test.ts
+          bun run verify
+          git diff --check
+      - name: Commit and push
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/adapters/chatgpt-web/browser-worker.ts tests/browser-worker-contract.test.ts
+          git commit -m "fix: preserve Even Bigger Context in browser preflight"
+          git push origin HEAD:feature/unified-web-model-steering
