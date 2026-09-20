@@ -1,0 +1,119 @@
+name: One-shot Retention Probe Protocol V2
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: feature/unified-web-model-steering
+          fetch-depth: 0
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.0
+      - name: Apply retention protocol v2 patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > /tmp/patch.py.gz.b64 <<'B64'
+H4sICCoKsGoAA3BhdGNoX3JldGVudGlvbl92Mi5weQDtG21T28j5O79io2Ea6WLkhOvdTA2E4Xxc
+jjaBDDDTdoAaYa2xDllytTKG+jzTX9Mf1l/S52W1Wr3YJun1W/MhsaTd5/19N6MsnYhpkI/j6E5E
+k2ma5eIzPG5tZTKXSR6liTgQr+UTfRmmicpF/+ejyw+fLwfnx5fHp5cnZ6fw6/PZ+eXg8/nxTyd/
+gfVO/+zH47+Y7/zZ2btOGMDH4w9H/b8OXgqnsaCE1ATRPzo9Ov8r7O3+zT3sDfMn4MO9vg7feE9X
+wc7o7c4fbhbf7i5/5S8D/jSwP3nb3TXwL8+PTi+O+vibkACcgbtq+6ejJvGaO+T+/AJA/H7w9g/f
+r9jx48nRh9Ozi8uT/uCnk/OLy8HHk9Njs/O7d7uw7zrRyomSXGajYChFfxzkH6b5eaHBz1l6J4+f
+pnKYB6TRxXUiRJ4FiQqG+OIk7AmVZ1Fyv4dfhkESZJFUPZHJIEyT+Fl/vbqB78uX4zyXahbnjG4a
+KCUBz12axjJICNFjpKK7WH4KsocwnScVIgC1SpPDnnAmkVLwdpBJxOmIX4Uzz1J4YXFAb4nu5wGs
+nwT5cOwQHL37c5DlwFAym9zJjPgQYoZsgFCkYV9/SO+UzB5l+FOUqfxjlMhDizTifzRLCK9ArrL8
+0pal2ypZryce0yhkYUQj4b5aa1x+LlVeheR5vBlUN87SuUjkXBxnWZq5Dkn/86UonXaK8rd1LKIQ
+P+XPIlKgt8cgjkLHI3aXdaZY0i9jin8wZWzDJHywz/X8ySc5rPG3Z0RDILzfmk/YNcsScQs+u70g
+FFfvbpa3DZ0maTaBbf8whkmSIJGkDzJxAeZMrhCBxkFLfJBjDM7hdq/hz6B73xHOgGip4ouUcZtz
+kjyanBvDXxYS7Te2oA2dIUh7E9EIriKGcrevcvSOP0f52L3dXmyIy0tx67EZ/vrraiAvi/EIqyGO
+MAruk1Tl0dD4X10YLRLHFX4sk/t8LPYPXh5ImZVD2s+/ewLoJ3AqjkB7bzsvh+Yt//3PfzUtythr
+n0IUBqOTJJRPLocsizMOUBDNZvB9BESEL3MtznvsVQy06U5aUgbyXgk4C+YAtvAJcXiof+/e2CaD
+qw7FKZHowoMHsrKh2anB8D6sZQYWgTstZFDw3AHwSZhOfsZXrZomXhi7H6kTyD33QIcB5KFBmiex
+L959ecDE7RA1cH9bmGz1PEO2n6cf07nM+oGSriX+7t/sAmG7y7G9hPEVgR0esnT6LCYzoAaev90V
+Y/kUhHIYAVCUeQbhUGbKpr3bFX+ScgpYJOd4iJG5kvFIFDFjBxQJAlCp+PHsk9h5bz4IyHIRUssF
+BOxO0lxINQymEoD4tfAKP7cXRhVLCLclt2XArVtKEIb1MoKN5TL9BHVEhAA/B89xGoSgdfq3MJCO
+aHhSw3JWOg2pQzvNl6uikOQacwHCFZnKHy8g89FTwYAHFYQ4l8M0C/cLVmbJQwIyf19akAYA9p0/
+T2U6KiC+OoAiOb37BYoYB78eZVnwDL5B/7q86AUsTQrpCk0VcoMKhnyjoVs8IUVn9NYfB+psnmhE
+kN2MbAYsFeerkAcx1p3PKLw8iBIlAkvoBeC6jBewBqWoOsL3/YnMgzDIA7EEqTN5diAjPbC4o9Gz
+u7C3dESdi55G2ilQiKX30mhHdXA/nUyivA/soFe6K6vvDn6BPHovQ0wR/XSW5CY8XideWaayVDcW
+n1YQasTNGh6KnrV3XxdDM/n3WZRJUFsuoGQB3aSJ1KApwLY4CJZJ4zQOIWKBwtiMR9Cbuox7ITiz
+9xoULju8wh3MkhkZYcS54OC9uN1HbDvbCw7ob8S75Q5r8v0tbfP8X9IocR1RLRCvGKSzP0xh36A0
+B+LvvaNR3l5CHN1e1ChaghTkY5TOFLRNwRA9OZYhsq4lgFYtnygo5ErIABK6NnT4iJKqm58YRTIO
+/VuN1vkxJd+M0/RBjNKsCEBUcmIQAk2B+w7J5sREKgVoexj0gZ5MUs9G4IMYKERIUKbKALogSCGZ
+9Av2nB8kQJeULcDoI00KbIOwoCDNCWSjA9nnnnDK4iP0W8BqYnCLOdSEArLTMAeEyOE0ix4BoVXp
+UfllaB9hssh7RtAvqEm3FxubFg9X2Za2NCLtYy4lVTSET2IVjzK7g9Q3EWiUxOwGLVNAI8ZxsQom
+dm2BRgpyGsokxBRFH0DE4J5G+CcjiHqFxZgMk6Sg9gS8VwSPQRQH0DwjKG1SHTHPIhDrp5OLi5PT
+DyxOcMJpqiJuNMDXILIKSCD3YCvYFwNeimrwJZuBoOANWA1xCcF9DAYFC1LgIRNFgCyJPEYLI43V
+NUlDgxVmwaQmEmSKS7jR5xwONgvSp1CbQ78D9no/wzcQ1IEMejUEs1W+QN+7yyIQOQCYpI9o+VgJ
+kcn20W9pB6yCqJBB+QIL8IlNt2ThEqkv7DEvWiZtjsD8LFfQUMK2Z4prUCmAQhDkzigYorQwlXSE
+Go7lJCAqGcMO2zDHtwycO98TwXQKUsnHqZLWe8XCytOqpxU+hgocpXGczpHDkvCjUV58RpeqKaBT
+7ge2AvWgS1a01iTUwp/osE0arEfxWRKDhZQShEQH3VCELgzgILjfgWwqFO1318XLm0ZTNDLd3aQ2
+AIJEtxB2y7cH5Knc1HTLShcs56QtbF8YjE9OdjZynevrxClzYLFyX7w1zVCBx+y1evZsuws1jeN1
+NHbHEUs7T+jEWANgmkaNzmsFyVsZbm1rQSbkK163XFVsgD/j/KpeNPMQgVJnXbIEr5x6bZoUctGx
+cbbXVocUSPyWggSzlsvau9IBkWPcDYYms7OYQ/rY7cC/bllNojo3NNUeVccm9ZutX9JlWTPTshhN
+ikK/CMwKA0MylNrUdGVTqU3ZJ1HdVJE2Td+zmvGyV/rIhv3y2Q6VeqvnSaUAqyZcjmdHQaxkp3jb
+GNAW5JoVHL2bU1qzoDp/bep2Ekxdd1AU2GXxVirOgLLntVc35nVjWttbOUIqYC2LArQUOhVZyhY2
+Sd9XEPZydF31pmsrqWLWpFLcf/XuxlpTUGY+aw/f9YjtDWq1sRWMnzeLHJxAtJQ+6/wPraRKP7rK
+Ohy/+51YvaGG4r80MXSSpnk1J/7/awsrlOePohhSLU99cR//oNZbV1qO9xsbY/uhBWj6yjavtvOL
+cg0F2VgW46wD8XZP/9xvERL3V8WKNwdWwGRkmn3DIAfum70yHpdyaYDXi60YbHPoT2dq7Jbq2CsW
+lVDB/trEbomAgdCiZhi2Eg4Un1mAacbol31ylUiqOYd3byCCFrUMgRQPgSqs64n1AUB8y2iAVQtg
+63dDuvV1pUqbBQtToq1vnf/5vu9qsg/FYil6NGXRHlk/bcNBFnO6LCzb5lS/KlmzcLwqkXyRAwki
+aVmrkrrffAPP34ifUwzoXFxjt4B9akItD/dWwMkEkOpCGVr3KMYeAvgSOEeFqn8+ltT5cL/HPYKp
+EQgHR16RDoezaaRbDErufB4hzqAs0NBCqMnjuFng8ywA+FdUmMzux0DLcBxAmxfiXPWbrin8hjGs
+a5RjHK8viB991qppvZuNRtDSo9E5fBpqOm8mCRMTRuM9Dj5kvaGM82DFHFUXGLTElNAatE4r0Ev4
+GrpZQev3ijESLDCEQaCxP9Yr+sritrK+pbBf2NGjCmDV8VDLyXyTOxMI2WGAuvY6q4LSA5uGtqFX
+5cRArArjwEZmCxIlkc2k+VYcMjIldrQriGyV34s6k4omqGBtB2N3Ka2qtbhZzYvmZE3FCgIkKsyp
+3BK0j9MeldNJgsmcoyiJwHxbLbbVKg15zKtFeJuyfmvmGhZSwcdH8q+38C6O66hs2A3CYIoHOl2c
+MN9P8525vOuaYLRDDYufK8fzaQg0wLhStkje1hbe8gH6GCIeeagubJoApKEeTNNBCMHYoqh0QDeD
+fBzGMzhviw55B9gFQOg6EK/p6MQ5fpSJ+CG6x8FUX483a72UEmOMqEVyKudoPB3S00qcTaD2prWQ
+yy2FcKluW7zekkloEYH6Z0JAFXkKsRWiZwguOsQT89lUzNPsATMBhr0U1UQUIrIp2BGmGyUSaPMe
+JY2XiisEQKeNlHhHDcNmjkWuLQ4Pqap+LsnsCFrqbWmPw9HLF8pvpmT9nI5mqqA+HISzkJQlwjJt
+WmysbmDw3G6wvXACx+eBsPvtrqddjHcY5UGN+a4jdjvi2474fUd8d0M1tq4z36868TWjz5COSi/I
+S91333sWPs9uerJgTqVD9USgPAv4Xiw7rYP/+vGOrnTAeyIsXYB2HLkOIj5+NoUnDh3zIB5Muez+
+3pz3QLu5EA+wDvtcHmo7Gp9YciO6rFA+1WQXHHAPos+3mj3IvqgVbUzw4deciHZEreh+pW9r9Irz
+NWsGs6I9eElXwGWcWznRBE4NUr8+SfdA5z9It94S7FXA1b/6SQoRKe3z8MXV12dq3ZIOHgf63EBL
+7M/yzsiID+DAdIjGjt4B2sT7ErNc7uCI1EFzqnhFh6I5YywIpJ2eTVPrZccNm/gOUt3XNmHacHTj
+NKZrekAFBW8hWK8Ovirg8uqINcVI5AUeRPRfKubizE770RUbxtubV+x36uq7m1c3a5Sg82pFE8W7
+GU8OKpKqEliRGJ8AviuO/Zy1+2q2xnt3K3ubExmQx6JuNSZQLu1o1jq6aTcEa5tuE2Blm521n3vh
+QZfxYXPECT5zNMxn5vzu1pbF+lEyb+gYpj0U8vHfAVYRXIvhjtFQS2fpVNA7LU2iNddrGfYtvZdT
+zEC+UmZgq0tzimaJ0kzvVsu0Y4cz3eSStD5hk8zXJigO2bOw1U11py6eXXCcTYJlQSHmblecxWHR
+pXIporo5ThcVPD7j1SG+xBOKu+f1l358vjxEtcUU62so0SYaiUqBY6i98DWYLWZa2qOKm0JQiD1U
+ajp93punxWHdLJ/O+B6R7mDkfTB87pclR3We1xzncT3hQ8rVN5Curwf20T898jatSP1g2sonx6N2
+pgjENiFAgIWAzAoAGsui32RcgJsw1VwazKjKUcWGPjKOL/ZLBtkxVzRaQmZ5mXuTALXYKkL7ApEV
+ZdBKW6fQ0GK8FeYt42Xx85wG5/Jyvnb04VaiA2/jedzXRk7TL1c8Xtx6upRxnNUoXxg1Slj6xWqQ
+jhaQ2VE8t2woeuEKoXWTvvg6ydqbmbL/zjF0nDVOUIpEv3A2oF8nmMZIHcc2a13KOaVTGW2O9P8y
+IKzNqBU06c8mSANu2H01L9qHHhvOzFomoFWinJUJdjXtJn/CX69pFmDPCfCvqx61qDfgz3aT+oYa
+2itoZXs39SnCyrnEXZbO8Y4ENt4yWz9SSGOsg16Lyh/WWSihEoupkSq1hMfOPou1mIeVfw5xSpRV
+DqrrA/Fld+OKysUbzD6Z5PtZt02MPXHL+jywwGoq+QPepnb0nU5nWUnoLXsqpwMcMToOXc5zEihY
+AUBZGbVsbxwdUDH5egt9/P9S/t9Jubmm4cZ0bFRe6wchNl0dcNWGFxvBQu4VeDdFKzoaCfQoLLrw
+/hX4WG+Lgk4QKSkunlUuJ8dP0KU52kmtSZN1ieguTocPQh9DgPe2RQwzPgaENFTuQCXgbf0HxQDD
+x1Q4AAA=
+          B64
+          base64 -d /tmp/patch.py.gz.b64 | gzip -dc > /tmp/patch.py
+          python /tmp/patch.py
+          git diff --check
+      - name: Verify
+        shell: bash
+        run: |
+          set -euo pipefail
+          bun install --frozen-lockfile
+          bun install --frozen-lockfile --cwd launcher
+          bun test tests/prompt-contract.test.ts tests/browser-worker-contract.test.ts
+          bun run verify
+      - name: Commit and push
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src tests
+          git commit -m "fix: harden Even Bigger retention report protocol"
+          git push origin HEAD:feature/unified-web-model-steering
