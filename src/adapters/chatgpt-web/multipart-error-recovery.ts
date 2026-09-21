@@ -18,6 +18,11 @@ interface PatchableWorkerPrototype {
   [MULTIPART_ERROR_RECOVERY_PATCH_MARK]?: boolean;
 }
 
+type MultipartAcknowledgementWaiter = (
+  this: ChatGptBrowserWorker,
+  ...args: unknown[]
+) => Promise<void>;
+
 function isRetryableUpstreamResponseError(error: unknown): error is ChatGptWebAdapterError {
   return error instanceof ChatGptWebAdapterError
     && error.status === 502
@@ -75,6 +80,42 @@ function exhaustedMultipartResponseError(error: ChatGptWebAdapterError): ChatGpt
 }
 
 /**
+ * Execute one accepted Bigger Context acknowledgement without ever escalating a transient
+ * current-response error into a fresh browser transaction. This is exported so the recovery
+ * boundary can be exercised directly without a live ChatGPT renderer.
+ */
+export async function runChatGptMultipartAcknowledgementWithRecovery(
+  originalWaitForMultipartAcknowledgement: MultipartAcknowledgementWaiter,
+  worker: ChatGptBrowserWorker,
+  args: unknown[],
+): Promise<void> {
+  const responseTurn = responseTurnArgument(args);
+  const signal = abortSignalArgument(args);
+  let retries = 0;
+
+  for (;;) {
+    try {
+      return await originalWaitForMultipartAcknowledgement.apply(worker, args);
+    } catch (error) {
+      if (!isRetryableUpstreamResponseError(error) || !responseTurn) throw error;
+
+      if (retries < MAX_MULTIPART_RESPONSE_RETRIES
+        && await retryAcceptedMultipartResponseInPlace(responseTurn, signal)) {
+        retries += 1;
+        // The original method's default completion tracker must start clean after regeneration.
+        args[7] = undefined;
+        console.warn(
+          `[chatgpt-web] accepted Bigger Context stage hit ChatGPT response error; retrying assistant acknowledgement in-place attempt=${retries}/${MAX_MULTIPART_RESPONSE_RETRIES}`,
+        );
+        continue;
+      }
+
+      throw exhaustedMultipartResponseError(error);
+    }
+  }
+}
+
+/**
  * Bigger Context stage prompts are already accepted before acknowledgement observation begins.
  * Replaying the whole browser turn after ChatGPT's current assistant response hits its transient
  * error UI duplicates every preceding multipart stage and destroys the surface that owns the
@@ -94,30 +135,11 @@ export function installChatGptMultipartErrorRecovery(): void {
     this: ChatGptBrowserWorker,
     ...args: unknown[]
   ): Promise<void> {
-    const responseTurn = responseTurnArgument(args);
-    const signal = abortSignalArgument(args);
-    let retries = 0;
-
-    for (;;) {
-      try {
-        return await originalWaitForMultipartAcknowledgement.apply(this, args);
-      } catch (error) {
-        if (!isRetryableUpstreamResponseError(error) || !responseTurn) throw error;
-
-        if (retries < MAX_MULTIPART_RESPONSE_RETRIES
-          && await retryAcceptedMultipartResponseInPlace(responseTurn, signal)) {
-          retries += 1;
-          // The original method's default completion tracker must start clean after regeneration.
-          args[7] = undefined;
-          console.warn(
-            `[chatgpt-web] accepted Bigger Context stage hit ChatGPT response error; retrying assistant acknowledgement in-place attempt=${retries}/${MAX_MULTIPART_RESPONSE_RETRIES}`,
-          );
-          continue;
-        }
-
-        throw exhaustedMultipartResponseError(error);
-      }
-    }
+    return runChatGptMultipartAcknowledgementWithRecovery(
+      originalWaitForMultipartAcknowledgement,
+      this,
+      args,
+    );
   };
 }
 
