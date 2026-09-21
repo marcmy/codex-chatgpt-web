@@ -165,27 +165,29 @@ export class ChatGptThreadEnvironmentStore {
       const steeringClaim = hasCurrentContext && !currentCompaction
         ? extractChatGptSteeringEnvironmentClaim(parsed) : undefined;
       const sameThread = this.get(identity.threadId);
+      if (hasCurrentContext && !currentCompaction && sameThread
+        && hasReplayedCurrentChatGptEnvironmentContext(parsed)) {
+        // Steering and post-tool continuations can replay the already-authenticated environment
+        // with the same turn_id still attached. Prefer exact cached continuity before consulting
+        // rollout state: the rollout may normalize workspace metadata differently, but it cannot
+        // broaden authority because the replay must match the trusted cache byte-for-semantics.
+        const currentClaim = extractChatGptCurrentEnvironmentClaim(parsed);
+        if (sameAuthority(currentClaim, {
+          cwd: sameThread.cwd,
+          roots: sameThread.roots,
+          writableRoots: sameThread.writableRoots,
+          sandboxPolicy: sameThread.sandboxPolicy,
+          tools: [],
+        })) return {
+          cwd: sameThread.cwd,
+          roots: sameThread.roots,
+          writableRoots: sameThread.writableRoots,
+          sandboxPolicy: sameThread.sandboxPolicy,
+          tools: parsed.context.tools ?? [],
+        };
+      }
       if (hasCurrentContext && !currentCompaction && !historicalMessages && !steeringClaim) {
-        // Native tool continuations can replay the original environment message with the same
-        // turn_id still attached. Treat that as continuity only when the replayed claim is exactly
-        // the authority we already authenticated for this thread. A changed or malformed claim
-        // remains a current update and fails closed.
-        if (sameThread && hasReplayedCurrentChatGptEnvironmentContext(parsed)) {
-          const currentClaim = extractChatGptCurrentEnvironmentClaim(parsed);
-          if (sameAuthority(currentClaim, {
-            cwd: sameThread.cwd,
-            roots: sameThread.roots,
-            writableRoots: sameThread.writableRoots,
-            sandboxPolicy: sameThread.sandboxPolicy,
-            tools: [],
-          })) return {
-            cwd: sameThread.cwd,
-            roots: sameThread.roots,
-            writableRoots: sameThread.writableRoots,
-            sandboxPolicy: sameThread.sandboxPolicy,
-            tools: parsed.context.tools ?? [],
-          };
-        }
+        // A changed, malformed, or otherwise unauthenticated current claim must still fail closed.
         throw error;
       }
       const currentClaim = currentCompaction ? extractChatGptContinuationEnvironmentClaim(parsed) : steeringClaim;

@@ -106,6 +106,43 @@ describe("trusted steering environment continuity", () => {
     expect(() => store.resolve(invalidCurrentClaim)).toThrow();
   });
 
+  test("same-turn steering prefers an identical cached environment before rollout normalization", () => {
+    const store = new ChatGptThreadEnvironmentStore();
+    expect(store.resolve(currentWire()).cwd).toBe(root);
+
+    const steering = currentWire();
+    const input = (steering._rawBody as { input: Array<Record<string, unknown>> }).input;
+    input[0]!.internal_chat_message_metadata_passthrough = { turn_id: "turn_current" };
+    input.splice(1, 0, {
+      type: "message",
+      id: "msg_assistant_progress",
+      role: "assistant",
+      content: [{ type: "output_text", text: "Working on the requested change." }],
+    });
+    input.push({
+      type: "message",
+      id: "msg_steering",
+      role: "user",
+      content: [{ type: "input_text", text: "Change direction before applying that patch." }],
+      internal_chat_message_metadata_passthrough: { turn_id: "turn_current" },
+    });
+
+    expect(store.resolve(steering)).toMatchObject({
+      cwd: root,
+      roots: [root],
+      writableRoots: [root],
+      sandboxPolicy: { type: "dangerFullAccess" },
+    });
+
+    const changed = structuredClone(steering);
+    const changedInput = (changed._rawBody as { input: Array<Record<string, unknown>> }).input;
+    changedInput[0]!.content = [{
+      type: "input_text",
+      text: environmentXml.replace(`<cwd>${root}</cwd>`, `<cwd>${resolve(root, "other")}</cwd>`),
+    }];
+    expect(() => store.resolve(changed)).toThrow();
+  });
+
   test("same-turn post-tool continuation accepts only an identical current-tagged environment replay", () => {
     const store = new ChatGptThreadEnvironmentStore();
     expect(store.resolve(currentWire()).cwd).toBe(root);
