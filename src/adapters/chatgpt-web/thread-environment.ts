@@ -120,6 +120,29 @@ function authority(environment: ChatGptTurnEnvironment, updatedAt: number): Stor
   };
 }
 
+function replayedCurrentEnvironmentClaim(
+  parsed: CodexParsedRequest,
+  turnId: string,
+): ChatGptTurnEnvironment {
+  const body = record(parsed._rawBody);
+  const input = Array.isArray(body?.input) ? body.input : [];
+  let syntheticId = 0;
+  const replayInput = input.map(value => {
+    const item = record(value);
+    const metadata = record(item?.internal_chat_message_metadata_passthrough);
+    if (item?.type !== "message" || item.role !== "user" || metadata?.turn_id !== turnId
+      || (typeof item.id === "string" && item.id)) return value;
+    // A post-tool native replay can omit the server item id while retaining the exact turn_id.
+    // Supply an ephemeral id only for claim parsing; the authority still has to match the
+    // already-authenticated cache byte-for-meaning through sameAuthority below.
+    return { ...item, id: `replayed_environment_${syntheticId++}` };
+  });
+  return extractChatGptCurrentEnvironmentClaim({
+    ...parsed,
+    _rawBody: { ...body, input: replayInput },
+  });
+}
+
 function sameAuthority(left: ChatGptTurnEnvironment, right: ChatGptTurnEnvironment): boolean {
   const samePaths = (a: string[], b: string[]): boolean => {
     const expected = new Set(b.map(pathIdentity));
@@ -170,8 +193,8 @@ export class ChatGptThreadEnvironmentStore {
         // turn_id still attached. Treat that as continuity only when the replayed claim is exactly
         // the authority we already authenticated for this thread. A changed or malformed claim
         // remains a current update and fails closed.
-        if (sameThread && hasReplayedCurrentChatGptEnvironmentContext(parsed)) {
-          const currentClaim = extractChatGptCurrentEnvironmentClaim(parsed);
+        if (sameThread && identity.turnId && hasReplayedCurrentChatGptEnvironmentContext(parsed)) {
+          const currentClaim = replayedCurrentEnvironmentClaim(parsed, identity.turnId);
           if (sameAuthority(currentClaim, {
             cwd: sameThread.cwd,
             roots: sameThread.roots,
