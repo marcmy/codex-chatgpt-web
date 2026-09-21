@@ -199,95 +199,6 @@ export class ChatGptThreadEnvironmentStore {
           codexHome: this.codexHome,
           ...(this.sqliteHome ? { sqliteHome: this.sqliteHome } : {}),
           lineage: rolloutIdentity,
-        toredThreadEnvironment {
-  return {
-    cwd: environment.cwd,
-    roots: environment.roots,
-    writableRoots: environment.writableRoots,
-    sandboxPolicy: environment.sandboxPolicy,
-    updatedAt,
-  };
-}
-
-function sameAuthority(left: ChatGptTurnEnvironment, right: ChatGptTurnEnvironment): boolean {
-  const samePaths = (a: string[], b: string[]): boolean => {
-    const expected = new Set(b.map(pathIdentity));
-    return a.length === expected.size && a.every(path => expected.has(pathIdentity(path)));
-  };
-  return pathIdentity(left.cwd) === pathIdentity(right.cwd)
-    && samePaths(left.roots, right.roots)
-    && samePaths(left.writableRoots, right.writableRoots)
-    && left.sandboxPolicy.type === right.sandboxPolicy.type
-    && (left.sandboxPolicy.type === "dangerFullAccess" || (right.sandboxPolicy.type !== "dangerFullAccess"
-      && left.sandboxPolicy.networkAccess === right.sandboxPolicy.networkAccess));
-}
-
-/**
- * Codex emits its trusted environment envelope when a task starts or its environment changes,
- * not on every follow-up. This store carries only that trusted authority across turns. Tool
- * declarations are always taken from the current request and are never persisted.
- */
-export class ChatGptThreadEnvironmentStore {
-  private loaded = false;
-  private readonly threads = new Map<string, StoredThreadEnvironment>();
-
-  constructor(
-    private readonly path?: string,
-    private readonly now: () => number = Date.now,
-    private readonly codexHome: string = getCodexHome(),
-    private readonly sqliteHome?: string,
-  ) {}
-
-  resolve(parsed: CodexParsedRequest): ChatGptTurnEnvironment {
-    const identity = extractChatGptTurnIdentity(parsed);
-    try {
-      const environment = extractChatGptTurnEnvironment(parsed);
-      if (identity.threadId) this.set(identity.threadId, environment);
-      return environment;
-    } catch (error) {
-      if (!(error instanceof MissingTrustedCodexEnvironmentError) || !identity.threadId) throw error;
-      const hasCurrentContext = hasCurrentChatGptEnvironmentContext(parsed);
-      const lineage = extractChatGptThreadSpawnLineage(parsed);
-      const currentCompaction = hasCurrentContext && isChatGptCompactionContinuation(parsed);
-      const historicalMessages = hasCurrentContext && !currentCompaction && lineage
-        ? unattributedChatGptEnvironmentMessages(parsed) : undefined;
-      const steeringClaim = hasCurrentContext && !currentCompaction
-        ? extractChatGptSteeringEnvironmentClaim(parsed) : undefined;
-      const sameThread = this.get(identity.threadId);
-      if (hasCurrentContext && !currentCompaction && !historicalMessages && !steeringClaim) {
-        // Native tool continuations can replay the original environment message with the same
-        // turn_id still attached. Treat that as continuity only when the replayed claim is exactly
-        // the authority we already authenticated for this thread. A changed or malformed claim
-        // remains a current update and fails closed.
-        if (sameThread && hasReplayedCurrentChatGptEnvironmentContext(parsed)) {
-          const currentClaim = extractChatGptCurrentEnvironmentClaim(parsed);
-          if (sameAuthority(currentClaim, {
-            cwd: sameThread.cwd,
-            roots: sameThread.roots,
-            writableRoots: sameThread.writableRoots,
-            sandboxPolicy: sameThread.sandboxPolicy,
-            tools: [],
-          })) return {
-            cwd: sameThread.cwd,
-            roots: sameThread.roots,
-            writableRoots: sameThread.writableRoots,
-            sandboxPolicy: sameThread.sandboxPolicy,
-            tools: parsed.context.tools ?? [],
-          };
-        }
-        throw error;
-      }
-      const currentClaim = currentCompaction ? extractChatGptContinuationEnvironmentClaim(parsed) : steeringClaim;
-      const rolloutIdentity = lineage ?? extractChatGptRootThreadMetadata(parsed);
-      // Automatic compaction has a current turn_context; standalone compaction has only its
-      // source turn_context. Either must be the latest native record, never an arbitrary ancestor.
-      const compactionSourceTurnId = parsed._compactionRequest
-        ? extractChatGptCompactionSourceRevision(parsed).turnId : undefined;
-      if (rolloutIdentity && identity.turnId) {
-        const rolloutEnvironment = resolveCurrentCodexRolloutEnvironment({
-          codexHome: this.codexHome,
-          ...(this.sqliteHome ? { sqliteHome: this.sqliteHome } : {}),
-          lineage: rolloutIdentity,
           turnId: identity.turnId,
           ...(compactionSourceTurnId ? { compactionSourceTurnId } : {}),
           ...(historicalMessages ? { historicalEnvironmentMessages: historicalMessages } : {}),
@@ -297,8 +208,7 @@ export class ChatGptThreadEnvironmentStore {
           if (currentClaim && !sameAuthority(currentClaim, rolloutEnvironment)) {
             // A current steering replay may carry the exact authority already authenticated for
             // this thread while the native rollout exposes a differently normalized workspace
-            // view. Require the current rollout proof first, then accept only an exact cached
-            // authority replay; missing/stale rollout proof and changed claims still fail closed.
+            // view. Require current rollout proof first, then accept only that exact cached replay.
             if (!currentCompaction && sameThread
               && hasReplayedCurrentChatGptEnvironmentContext(parsed)
               && sameAuthority(currentClaim, {
