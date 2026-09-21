@@ -76,7 +76,7 @@ test("same-turn post-tool continuation accepts an exact native environment repla
     roots: [root],
     writableRoots: [root],
     sandboxPolicy: { type: "dangerFullAccess" },
-    tools: replay.context.tools,
+    tools: replay.context.tools ?? [],
   });
 });
 
