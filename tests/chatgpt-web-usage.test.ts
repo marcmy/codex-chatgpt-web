@@ -33,23 +33,24 @@ test("Even Bigger Context can derive ordinary per-message budgets without violat
   expect(resolveBiggerContextMultipartParts(request("small task"), evenBigger)).toBeUndefined();
 });
 
-test("multipart selection accounts for whole-record and composer fit before submission", () => {
+test.each([
+  ["small inline task", ["small task"], undefined],
+  ["whole-record pressure", [50_000, 40_000, 50_000, 5_000].map(n => "word ".repeat(n)), 6],
+  ["composer character pressure", Array.from({ length: 3 }, () => " ".repeat(450_000)), 2],
+] as const)("multipart selection handles %s before submission", (_label, contents, expected) => {
   const plus = { ...capabilities, extraHighAvailable: false, proAvailable: false };
-  for (const [contents, expected] of [
-    [["small task"], undefined],
-    [[50_000, 40_000, 50_000, 5_000].map(n => "word ".repeat(n)), 6],
-    [Array.from({ length: 3 }, () => " ".repeat(450_000)), 2],
-  ] as const) {
-    const parsed = request("");
-    parsed.context.messages = contents.map((content, index) => ({ role: "user", content, timestamp: index + 1 }));
-    const parts = resolveBiggerContextMultipartParts(parsed, plus);
-    expect(parts).toBe(expected);
-    const compiled = compileChatGptWebPrompt(parsed, plus, undefined, { experimentalMultipartParts: parts });
-    if (parts) {
-      expect(compiled.multipart!.parts.flatMap(part => JSON.parse(part).records).map(record => record.message.content))
-        .toEqual([...contents]);
-    }
+  const parsed = request("");
+  parsed.context.messages = contents.map((content, index) => ({ role: "user", content, timestamp: index + 1 }));
+  const parts = resolveBiggerContextMultipartParts(parsed, plus);
+  expect(parts).toBe(expected);
+  const compiled = compileChatGptWebPrompt(parsed, plus, undefined, { experimentalMultipartParts: parts });
+  if (parts) {
+    expect(compiled.multipart!.parts.flatMap(part => JSON.parse(part).records).map(record => record.message.content))
+      .toEqual([...contents]);
   }
+}, 90_000);
+
+test("multipart selection fragments one sparse record without dropping its contents", () => {
   // Low-token text can still exceed the reasoning model's server character ceiling.
   // Stage the complete record instead of sending it inline or dropping its contents.
   const sparsePro = request("x".repeat(600_000));
@@ -67,7 +68,7 @@ test("multipart selection accounts for whole-record and composer fit before subm
   expect(resolveChatGptWebMultipartStagingMode(
     "gpt-5.6-sol", capabilities, estimateTokens(proMessages[0]!), proMessages[0]!.length,
   ).effort).toBe("low");
-}, 180_000);
+}, 90_000);
 
 test("Bigger Context compaction selects six parts before the legacy inline byte budget", () => {
   const parsed = request("x".repeat(160_000));
