@@ -887,7 +887,27 @@ export function createChatGptWebAdapter(
             console.warn(
               `[chatgpt-web] trusted environment unavailable (thread_id=${identity.threadId ? "present" : "missing"}, turn_id=${identity.turnId ? "present" : "missing"}, previous_response_id=${parsed.previousResponseId ?? "none"}, replay_prefix_items=${parsed._replayPrefixLen ?? 0}, context_messages=${parsed.context.messages.length})`,
             );
-            throw error;
+            const handledError = error instanceof ChatGptWebAdapterError
+              ? error
+              : new ChatGptWebAdapterError(
+                error instanceof Error ? error.message : String(error),
+                {
+                  status: 400,
+                  errorType: "invalid_request_error",
+                  code: "codex_rollout_environment_invalid",
+                  retryable: false,
+                  cause: error,
+                },
+              );
+            emit({
+              type: "error",
+              message: handledError.message,
+              status: handledError.status,
+              errorType: handledError.errorType,
+              code: handledError.code,
+              retryable: false,
+            });
+            return;
           }
         }
         if (parsed._compactionRequest) {
@@ -928,8 +948,7 @@ export function createChatGptWebAdapter(
                   traceIds: [
                     compactionTraceId,
                     handoffTraceId,
-                    `${handoffTraceId}_fallback`,
-                  ],
+                    `${handoffTraceId}_fallback`,                  ],
                   ...(compactionNativeIdentity.threadId
                     ? { nativeThreadId: compactionNativeIdentity.threadId }
                     : {}),
