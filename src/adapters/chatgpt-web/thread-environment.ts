@@ -206,6 +206,24 @@ export class ChatGptThreadEnvironmentStore {
         });
         if (rolloutEnvironment) {
           if (currentClaim && !sameAuthority(currentClaim, rolloutEnvironment)) {
+            // A current steering replay may carry the exact authority already authenticated for
+            // this thread while the native rollout exposes a differently normalized workspace
+            // view. Require current rollout proof first, then accept only that exact cached replay.
+            if (!currentCompaction && sameThread
+              && hasReplayedCurrentChatGptEnvironmentContext(parsed)
+              && sameAuthority(currentClaim, {
+                cwd: sameThread.cwd,
+                roots: sameThread.roots,
+                writableRoots: sameThread.writableRoots,
+                sandboxPolicy: sameThread.sandboxPolicy,
+                tools: [],
+              })) return {
+                cwd: sameThread.cwd,
+                roots: sameThread.roots,
+                writableRoots: sameThread.writableRoots,
+                sandboxPolicy: sameThread.sandboxPolicy,
+                tools: parsed.context.tools ?? [],
+              };
             throw new Error(`${currentCompaction ? "Compaction continuation" : "Steering"} environment conflicts with its current Codex rollout`);
           }
           this.set(rolloutIdentity.threadId, rolloutEnvironment);
