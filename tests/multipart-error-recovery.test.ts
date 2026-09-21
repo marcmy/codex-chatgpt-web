@@ -3,8 +3,8 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Locator } from "playwright-core";
 import { ChatGptWebAdapterError } from "../src/adapters/chatgpt-web/adapter-error";
-import { ChatGptBrowserWorker } from "../src/adapters/chatgpt-web/browser-worker";
-import { runChatGptMultipartAcknowledgementWithRecovery } from "../src/adapters/chatgpt-web/multipart-error-recovery";
+import type { ChatGptBrowserWorker } from "../src/adapters/chatgpt-web/browser-worker";
+import { runChatGptMultipartAcknowledgementWithRecovery } from "../src/adapters/chatgpt-web/multipart-error-recovery-core";
 
 const root = join(import.meta.dir, "..");
 const source = (path: string) => readFileSync(join(root, path), "utf8");
@@ -82,17 +82,18 @@ test("persistent multipart response errors stop locally instead of replaying a n
   expect(presses.count).toBe(3);
 });
 
-test("accepted multipart response errors are wired into the helper while ordinary errors stay passive", () => {
+test("accepted multipart response recovery is wired into the helper while ordinary errors stay passive", () => {
   const entry = source("src/adapters/chatgpt-web/browser-helper-entry.ts");
-  const recovery = source("src/adapters/chatgpt-web/multipart-error-recovery.ts");
+  const installer = source("src/adapters/chatgpt-web/multipart-error-recovery.ts");
+  const core = source("src/adapters/chatgpt-web/multipart-error-recovery-core.ts");
   const worker = source("src/adapters/chatgpt-web/browser-worker.ts");
 
   expect(entry).toContain('import "./multipart-error-recovery"');
   expect(worker).toContain("private async waitForMultipartAcknowledgement(");
-  expect(recovery).toContain('getByTestId("regenerate-thread-error-button")');
-  expect(recovery).toContain("runChatGptMultipartAcknowledgementWithRecovery");
-  expect(recovery).toContain('code: "multipart_acknowledgement_upstream_error"');
-  expect(recovery).toContain("retryable: false");
+  expect(installer).toContain("runChatGptMultipartAcknowledgementWithRecovery");
+  expect(core).toContain('getByTestId("regenerate-thread-error-button")');
+  expect(core).toContain('code: "multipart_acknowledgement_upstream_error"');
+  expect(core).toContain("retryable: false");
 
   const terminalHelperStart = worker.indexOf("export async function throwIfChatGptTerminalErrorAlert");
   const terminalHelperEnd = worker.indexOf("\nexport async function resolveChatGptToolConfirmation", terminalHelperStart);
