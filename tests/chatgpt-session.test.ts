@@ -211,7 +211,7 @@ test("a transient effort control does not turn a Luna-only account into Sol", as
   expect(visibilityReads).toBe(2);
 });
 
-function reasoningPicker(options: { max?: string; delay?: number; missing?: boolean; loseSelectionOnClose?: boolean } = {}) {
+function reasoningPicker(options: { max?: string; delay?: number; missing?: boolean; loseSelectionOnClose?: boolean; planType?: string } = {}) {
   let value = 0;
   let opened = true;
   const keys: string[] = [];
