@@ -7,7 +7,10 @@ import { get_encoding, type Tiktoken } from "tiktoken";
  * of the same length. Count with the tokenizer used by the GPT-5 generation instead.
  */
 
-const TOKENIZER_CHUNK_CHARS = 4_096;
+// Keep individual BPE inputs small enough that pathological homogeneous runs stay bounded on the
+// slowest supported CI/runtime (notably Windows). Multipart planning can tokenize the same sparse
+// record repeatedly while searching transport boundaries, so 4K chunks made that path take minutes.
+const TOKENIZER_CHUNK_CHARS = 1_024;
 let tokenizer: Tiktoken | undefined;
 
 function chatGptTokenizer(): Tiktoken {
