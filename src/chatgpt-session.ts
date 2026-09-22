@@ -249,7 +249,7 @@ export async function detectChatGptAccountCapabilities(
     }
     const optionCount = state.max - state.min + 1;
     let planType: string | undefined;
-    if (optionCount === 4) {
+    if (optionCount === 4 && typeof page.evaluate === "function") {
       const planProbeTimeoutMs = Math.max(1, Math.min(options.selectorTimeoutMs ?? 5_000, 5_000));
       planType = await page.evaluate(async timeoutMs => {
         const controller = new AbortController();
