@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import {
   CHATGPT_COMPACTION_PROMPT_JSON_BYTE_BUDGET,
   CHATGPT_BIGGER_CONTEXT_PARTS,
+  CHATGPT_EVEN_BIGGER_CONTEXT_PARTS,
   chatGptPromptJsonBytes,
   chatGptReadOnlyContextWarning,
   compileChatGptWebPrompt,
@@ -12,6 +13,12 @@ import {
 import { CHATGPT_WEB_LUNA_MODEL_ID, CHATGPT_WEB_MODEL_ID } from "../src/adapters/chatgpt-web/model";
 import { resolveChatGptWebMessageTokenBudget, resolveChatGptWebTransportLimits } from "../src/chatgpt-web-models";
 import { estimateTokens } from "../src/lib/token-estimate";
+import {
+  addChatGptRetentionCanaryToMultipartPayload,
+  chatGptRetentionCanary,
+  ChatGptRetentionReportStream,
+  inspectChatGptRetentionReport,
+} from "../src/adapters/chatgpt-web/retention-probe";
 import { SUMMARY_PREFIX } from "../src/responses/compaction";
 import { biggerContextPartCount } from "../src/adapters/chatgpt-web/usage";
 import type { CodexParsedRequest } from "../src/types";
@@ -30,6 +37,48 @@ function request(reasoning: "low" | "medium" | "high" | "xhigh" | "max"): CodexP
     options: { reasoning },
   };
 }
+
+test("Even Bigger Context retention probes hide canaries from the final commit and strip the private report", () => {
+  const transactionId = `ctx_${"a".repeat(32)}`;
+  const canaries = [1, 2, 3, 4, 5].map(index => chatGptRetentionCanary(index, index.toString(16).repeat(32)));
+  const rawParts = Array.from({ length: 6 }, (_unused, index) => JSON.stringify({
+    version: 1, part_index: index + 1, total_parts: 6, records: [{ kind: "message", index }],
+  }));
+  const parts = rawParts.map((payload, index) => index < canaries.length
+    ? addChatGptRetentionCanaryToMultipartPayload(payload, canaries[index]!)
+    : payload);
+  for (let index = 0; index < canaries.length; index += 1) {
+    expect(JSON.parse(parts[index]!).retention_canary).toBe(canaries[index]);
+  }
+
+  const commit = formatChatGptWebMultipartCommit({ parts, commit: "execute-task" }, transactionId, true);
+  expect(commit).toContain("CODEX_RETENTION_REPORT");
+  expect(commit).toContain("intentionally not repeated here");
+  for (const canary of canaries) expect(commit).not.toContain(canary);
+
+  const expected = { transactionId, canaries };
+  const answer = `CODEX_RETENTION_REPORT ${transactionId} ${canaries.join(" ")}\nActual answer`;
+  expect(inspectChatGptRetentionReport(answer, expected)).toEqual({
+    passed: true,
+    visibleMarkdown: "Actual answer",
+    missingParts: [],
+    unexpected: [],
+  });
+  expect(inspectChatGptRetentionReport(
+    `CODEX_RETENTION_REPORT ${transactionId} ${canaries[0]} MISSING ${canaries.slice(2).join(" ")}\nActual answer`,
+    expected,
+  )).toMatchObject({ passed: false, reason: "canary_mismatch", missingParts: [2], visibleMarkdown: "Actual answer" });
+
+  const stream = new ChatGptRetentionReportStream();
+  expect(stream.push(`CODEX_RETENTION_REPORT ${transactionId} ${canaries.slice(0, 2).join(" ")} `)).toBe("");
+  expect(stream.push(`${canaries.slice(2).join(" ")}\nActual `)).toBe("Actual ");
+  expect(stream.push("answer")).toBe("answer");
+  expect(stream.finish()).toBe("");
+
+  const missing = new ChatGptRetentionReportStream();
+  expect(missing.push("Normal answer\ncontinues")).toBe("Normal answer\ncontinues");
+  expect(missing.finish()).toBe("");
+});
 
 test("history handle cleanup works on decoded text and preserves native call identities", () => {
   const call = `call_${"A".repeat(32)}`;
@@ -173,6 +222,26 @@ test("Bigger Context sends six semantic record envelopes and starts work from th
   expect(commit).toContain(compiled.multipart!.parts.at(-1)!);
   expect(commit).toContain("latest-request");
   expect(commit.match(new RegExp(token, "g"))).toHaveLength(1);
+});
+
+test("Even Bigger Context supports eight physical transport parts", () => {
+  const compiled = compileChatGptWebPrompt(
+    request("high"),
+    { localToolsEnabled: false, solAvailable: true, extraHighAvailable: true, proAvailable: false },
+    undefined,
+    { experimentalMultipartParts: CHATGPT_EVEN_BIGGER_CONTEXT_PARTS },
+  );
+
+  expect(compiled.multipart?.parts).toHaveLength(8);
+  const transactionId = `ctx_${"e".repeat(32)}`;
+  const stages = compiled.multipart!.parts.slice(0, -1).map((part, index) => (
+    formatChatGptWebMultipartStage(part, transactionId, index + 1, CHATGPT_EVEN_BIGGER_CONTEXT_PARTS)
+  ));
+  expect(stages).toHaveLength(7);
+  expect(stages.at(-1)?.text).toContain("part: 7/8");
+  const commit = formatChatGptWebMultipartCommit(compiled.multipart!, transactionId);
+  expect(commit).toContain("parts: 8");
+  expect(commit).toContain("acknowledged_parts: 7/8");
 });
 
 test("Bigger Context fragments one oversized semantic record without losing its exact JSON", () => {

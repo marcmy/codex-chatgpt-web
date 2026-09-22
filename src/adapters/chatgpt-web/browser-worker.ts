@@ -37,7 +37,6 @@ import {
   estimateCompiledChatGptWebMessageTokens,
 } from "./input-tokens";
 import {
-  CHATGPT_BIGGER_CONTEXT_PARTS,
   CHATGPT_MAX_INPUT_IMAGES,
   formatChatGptWebMultipartCommit,
   formatChatGptWebMultipartStage,
@@ -76,6 +75,7 @@ import {
 } from "../../launcher-browser-host";
 import {
   CHATGPT_WEB_BIGGER_CONTEXT_MULTIPLIER,
+  CHATGPT_WEB_EVEN_BIGGER_CONTEXT_MULTIPLIER,
   resolveChatGptWebContextLimits,
   resolveChatGptWebMessageTokenBudget,
   resolveChatGptWebTransportLimits,
@@ -102,6 +102,17 @@ import type {
   ChatGptExternalTurnProgressSnapshot,
   ChatGptTurnProgressReader,
 } from "./turn-progress";
+import {
+  chatGptBrowserSteeringText,
+  type ChatGptBrowserSteeringController,
+} from "./steering";
+import {
+  addChatGptRetentionCanaryToMultipartPayload,
+  chatGptRetentionCanary,
+  ChatGptRetentionReportStream,
+  inspectChatGptRetentionReport,
+  type ChatGptRetentionProbeExpectation,
+} from "./retention-probe";
 
 export { MAX_CHATGPT_BROWSER_TABS } from "./concurrency";
 
@@ -974,7 +985,7 @@ export function assertChatGptWebMultipartInputWithinLimits(
   },
 ): void {
   if (!isChatGptWebMultipartPartCount(partCount)) {
-    throw new Error("Bigger Context requires two or six context parts");
+    throw new Error("Bigger Context requires two, six, or eight context parts");
   }
   if (modelId === CHATGPT_WEB_LUNA_MODEL_ID) {
     throw new ChatGptWebAdapterError(
@@ -988,7 +999,7 @@ export function assertChatGptWebMultipartInputWithinLimits(
   const { contextWindow: baseContextWindow } = resolveChatGptWebContextLimits(
     modelId,
     effort,
-    { ...capabilities, experimentalBiggerContext: false },
+    { ...capabilities, experimentalBiggerContext: false, experimentalEvenBiggerContext: false },
   );
   const assertMessageBoundary = (
     label: "stage" | "final part",
@@ -1039,12 +1050,14 @@ export function assertChatGptWebMultipartInputWithinLimits(
   } else {
     assertMessageBoundary("stage", estimatedMessageTokens, maxMessageChars, effort);
   }
-  // Six physical messages are transport capacity only. Bigger Context still owns at most three
-  // ordinary model windows, matching the advertised model catalog and compaction thresholds.
-  const logicalParts = Math.min(partCount, CHATGPT_WEB_BIGGER_CONTEXT_MULTIPLIER);
+  const logicalMultiplier = capabilities.experimentalEvenBiggerContext
+    ? CHATGPT_WEB_EVEN_BIGGER_CONTEXT_MULTIPLIER
+    : CHATGPT_WEB_BIGGER_CONTEXT_MULTIPLIER;
+  // Physical messages are transport capacity; the advertised logical context multiplier remains authoritative.
+  const logicalParts = Math.min(partCount, logicalMultiplier);
   const experimentalContextWindow = baseContextWindow * logicalParts;
   if (estimatedInputTokens < experimentalContextWindow) return;
-  const partLabel = partCount === 2 ? "two-part" : "six-part";
+  const partLabel = partCount === 2 ? "two-part" : partCount === 6 ? "six-part" : "eight-part";
   throw new ChatGptWebAdapterError(
     `This Bigger Context transaction is estimated at ${estimatedInputTokens.toLocaleString("en-US")} input tokens, which exceeds its experimental ${experimentalContextWindow.toLocaleString("en-US")}-token ${partLabel} ceiling. Run /compact, then retry.`,
     { status: 400, errorType: "invalid_request_error", code: "context_length_exceeded", retryable: false },
@@ -1256,6 +1269,10 @@ export interface BrowserTurn {
   onTextDelta: (delta: string) => void;
   /** Proven current-turn MCP activity; never response content or completion. */
   externalProgress?: ChatGptTurnProgressReader;
+  /** Same-turn steering requests delivered to this already-running ChatGPT browser surface. */
+  steering?: ChatGptBrowserSteeringController;
+  /** Discard superseded streamed output immediately before a steering follow-up is submitted. */
+  onSteeringRestarted?: () => void;
   /** Atomically fences browser completion against concurrent MCP claims in the turn broker. */
   completionFence?: {
     begin(): Promise<number | undefined>;
@@ -4514,16 +4531,34 @@ export class ChatGptBrowserWorker {
       const multipartTransactionId = prepared.multipart
         ? `ctx_${randomUUID().replaceAll("-", "")}`
         : undefined;
-      const multipartStages = prepared.multipart && multipartTransactionId
-        ? prepared.multipart.parts.slice(0, -1).map((payload, index) => formatChatGptWebMultipartStage(
+      const retentionProbe: ChatGptRetentionProbeExpectation | undefined = prepared.multipart
+        && multipartTransactionId
+        && turn.capabilities.experimentalEvenBiggerContext
+        ? {
+          transactionId: multipartTransactionId,
+          canaries: prepared.multipart.parts.slice(0, -1).map((_payload, index) => (
+            chatGptRetentionCanary(index + 1, randomUUID().replaceAll("-", ""))
+          )),
+        }
+        : undefined;
+      const browserMultipart = prepared.multipart && retentionProbe
+        ? {
+          ...prepared.multipart,
+          parts: prepared.multipart.parts.map((payload, index) => index < retentionProbe.canaries.length
+            ? addChatGptRetentionCanaryToMultipartPayload(payload, retentionProbe.canaries[index]!)
+            : payload),
+        }
+        : prepared.multipart;
+      const multipartStages = browserMultipart && multipartTransactionId
+        ? browserMultipart.parts.slice(0, -1).map((payload, index) => formatChatGptWebMultipartStage(
           payload,
           multipartTransactionId,
           index + 1,
-          prepared.multipart!.parts.length,
+          browserMultipart.parts.length,
         ))
         : undefined;
-      const multipartFinalPrompt = prepared.multipart && multipartTransactionId
-        ? formatChatGptWebMultipartCommit(prepared.multipart, multipartTransactionId)
+      const multipartFinalPrompt = browserMultipart && multipartTransactionId
+        ? formatChatGptWebMultipartCommit(browserMultipart, multipartTransactionId, retentionProbe !== undefined)
         : undefined;
       const estimatedInputTokens = estimateCompiledChatGptWebInputTokens(prepared, turn.modelId);
       const estimatedMessageTokens = estimateCompiledChatGptWebMessageTokens(prepared, turn.modelId);
@@ -4965,7 +5000,7 @@ export class ChatGptBrowserWorker {
         this.attachFiles(page, prepared)
       ));
       await diagnostics.capture(page, "file-attachment-complete");
-      const completionTracker = new ChatGptCompletionTracker();
+      let completionTracker = new ChatGptCompletionTracker();
       const finalSubmissionEvidence = await this.runStage(
         turn.traceId,
         "send",
@@ -5017,14 +5052,16 @@ export class ChatGptBrowserWorker {
       let sawRunning = false;
       let loggedCompletionWait = false;
       let capturedResponse = false;
-      const sentAt = Date.now();
-      const visibleTrace = new ChatGptVisibleTraceTracker();
-      const markdownBuffer = new ChatGptMarkdownBuffer();
+      let sentAt = Date.now();
+      let visibleTrace = new ChatGptVisibleTraceTracker();
+      let markdownBuffer = new ChatGptMarkdownBuffer();
+      let retentionReportStream = retentionProbe ? new ChatGptRetentionReportStream() : undefined;
       const checkpointStream = turn.captureLunaCheckpoint
         ? new ChatGptLunaCheckpointStream()
         : undefined;
       const emitMarkdownDelta = (delta: string): void => {
-        const visible = checkpointStream ? checkpointStream.push(delta) : delta;
+        const retentionVisible = retentionReportStream ? retentionReportStream.push(delta) : delta;
+        const visible = checkpointStream ? checkpointStream.push(retentionVisible) : retentionVisible;
         if (visible) turn.onTextDelta(visible);
       };
       const throwMarkdownConsistencyError = (error: unknown): never => {
@@ -5041,8 +5078,8 @@ export class ChatGptBrowserWorker {
           retryable: false,
         });
       };
-      const domHealthTracker = new ChatGptTurnDomHealthTracker();
-      const responseDomCache: ChatGptResponseDomCache = {};
+      let domHealthTracker = new ChatGptTurnDomHealthTracker();
+      let responseDomCache: ChatGptResponseDomCache = {};
       let consecutiveObservationRebinds = 0;
       let internalObservationFaults = 0;
       let observedThisIteration = false;
@@ -5149,6 +5186,123 @@ export class ChatGptBrowserWorker {
           Date.now(),
         );
         const externalToolCallsInFlight = chatGptExternalToolCallsAreInFlight(externalProgressSnapshot);
+        const pendingSteering = turn.steering?.pending() ?? [];
+        if (pendingSteering.length > 0 && !externalToolCallsInFlight) {
+          const steeringText = chatGptBrowserSteeringText(pendingSteering);
+          try {
+            if (!steeringText) {
+              turn.steering?.delivered(pendingSteering);
+            } else {
+              let steeringBaseline = await this.captureSubmissionBaseline(page);
+              await this.attachPrompt(
+                page,
+                steeringText,
+                mode.localTools,
+                checkpoint => diagnostics.capture(page, `steering-${checkpoint}`),
+                turn.abortSignal,
+                false,
+                undefined,
+                mode.localTools,
+              );
+              await diagnostics.capture(page, "steering-prompt-attached");
+              const composer = await this.activeComposer(page);
+              const send = composer.locator("xpath=ancestor::form[1]").getByTestId("send-button");
+              let stoppedForSteering = false;
+              const steeringReadyDeadline = Date.now() + CHATGPT_SEND_ENABLE_GRACE_MS;
+              for (;;) {
+                if (turn.abortSignal?.aborted) throw new DOMException("ChatGPT web turn aborted", "AbortError");
+                const latestProgress = turn.externalProgress?.snapshot();
+                if (chatGptExternalToolCallsAreInFlight(latestProgress)) break;
+                const sendReady = await send.isVisible().catch(() => false)
+                  && await send.isEnabled().catch(() => false);
+                if (sendReady) {
+                  completionTracker = new ChatGptCompletionTracker();
+                  turn.onSteeringRestarted?.();
+                  const steeringEvidence = await this.sendAttachedPrompt(
+                    page,
+                    steeringBaseline,
+                    checkpoint => diagnostics.capture(page, `steering-${checkpoint}`),
+                    turn.abortSignal,
+                    turn.externalProgress,
+                    { onSendActivated: async () => {
+                      await this.assertSelectedEffort(page, mode);
+                      submissionRejection.begin(page);
+                    } },
+                    completionTracker,
+                    launcherObservationRecovery
+                      ? async (...args) => {
+                        const recovered = await recoverSubmissionObservation(...args);
+                        steeringBaseline = recovered.baseline;
+                        return recovered;
+                      }
+                      : undefined,
+                  );
+                  console.info(
+                    `[chatgpt-web] browser turn ${turn.traceId} steering submission accepted evidence=${steeringEvidence}`
+                    + ` path=${stoppedForSteering ? "stop_then_send" : "live_send"}`,
+                  );
+                  responseTurn = await this.waitForNewAssistantTurn(
+                    page,
+                    steeringBaseline,
+                    deadline,
+                    turn.abortSignal,
+                    turn.externalProgress,
+                    CHATGPT_RESPONSE_DOM_GRACE_MS,
+                    completionTracker,
+                    launcherObservationRecovery
+                      ? async (...args) => {
+                        const recovered = await recoverAssistantObservation(...args);
+                        steeringBaseline = recovered.baseline;
+                        return recovered;
+                      }
+                      : undefined,
+                  );
+                  submissionBaseline = steeringBaseline;
+                  visibleTrace = new ChatGptVisibleTraceTracker();
+                  markdownBuffer = new ChatGptMarkdownBuffer();
+                  retentionReportStream = retentionProbe ? new ChatGptRetentionReportStream() : undefined;
+                  domHealthTracker = new ChatGptTurnDomHealthTracker();
+                  responseDomCache = {};
+                  finalText = "";
+                  sentAt = Date.now();
+                  sawRunning = false;
+                  loggedCompletionWait = false;
+                  capturedResponse = false;
+                  completionFenceRevision = undefined;
+                  turn.steering?.delivered(pendingSteering);
+                  await diagnostics.capture(page, "steering-send-accepted");
+                  break;
+                }
+                const currentStop = page.locator(CHATGPT_STOP_BUTTON_SELECTOR).last();
+                if (!stoppedForSteering && await currentStop.isVisible().catch(() => false)) {
+                  // Recheck immediately before mutation: steering never intentionally interrupts an
+                  // MCP/tool invocation that started while the message draft was being attached.
+                  if (chatGptExternalToolCallsAreInFlight(turn.externalProgress?.snapshot())) break;
+                  await diagnostics.capture(page, "steering-stop-before-send");
+                  await currentStop.press("Enter", { noWaitAfter: true, signal: turn.abortSignal, timeout: 0 });
+                  stoppedForSteering = true;
+                }
+                if (Date.now() >= steeringReadyDeadline) {
+                  throw new Error("ChatGPT composer did not become sendable after steering stopped the active response");
+                }
+                await settleChatGptUi();
+              }
+              if (turn.steering?.pending().some(candidate =>
+                pendingSteering.some(original => original.instruction === candidate.instruction))) {
+                // A tool call began during the narrow attach/stop window. Leave the steer queued and
+                // wait for that activity to finish before making any further browser mutation.
+                await new Promise(resolveSleep => setTimeout(resolveSleep, 250));
+                continue;
+              }
+              // A successful steering send rebound responseTurn and reset all response trackers.
+              continue;
+            }
+          } catch (error) {
+            const failure = error instanceof Error ? error : new Error(String(error));
+            turn.steering?.failed(pendingSteering, failure);
+            throw failure;
+          }
+        }
         if (!snapshot.responsePresent && externalProgressLive) {
           // Current-turn MCP activity proves that ChatGPT is still executing even if its renderer
           // temporarily cannot expose the response subtree. DOM remains authoritative for text and
@@ -5233,6 +5387,26 @@ export class ChatGptBrowserWorker {
               throw new Error("ChatGPT completed with visible text that could not be serialized as Markdown");
             }
             if (final.delta) emitMarkdownDelta(final.delta);
+            const retentionResult = retentionProbe
+              ? inspectChatGptRetentionReport(final.markdown, retentionProbe)
+              : undefined;
+            if (retentionProbe && retentionResult) {
+              const details = retentionResult.passed
+                ? `${retentionProbe.canaries.length}/${retentionProbe.canaries.length} staged canaries retained`
+                : `reason=${retentionResult.reason ?? "unknown"} missingParts=${retentionResult.missingParts.join(",") || "none"} unexpected=${retentionResult.unexpected.length}${retentionResult.observedFirstLine !== undefined ? ` observedFirstLine=${JSON.stringify(retentionResult.observedFirstLine)}` : ""}`;
+              if (retentionResult.passed) {
+                console.info(`[chatgpt-web] browser turn ${turn.traceId} Even Bigger Context retention probe PASSED (${details})`);
+                await diagnostics.capture(page, "retention-probe-passed");
+              } else {
+                console.warn(`[chatgpt-web] browser turn ${turn.traceId} Even Bigger Context retention probe FAILED (${details})`);
+                await diagnostics.capture(page, "retention-probe-failed");
+              }
+            }
+            const retentionRemainder = retentionReportStream?.finish() ?? "";
+            if (retentionRemainder) {
+              const visible = checkpointStream ? checkpointStream.push(retentionRemainder) : retentionRemainder;
+              if (visible) turn.onTextDelta(visible);
+            }
             if (checkpointStream) {
               const completed = checkpointStream.finishOptional(snapshot.visibleText);
               if (completed.visibleRemainder) turn.onTextDelta(completed.visibleRemainder);
@@ -5240,7 +5414,7 @@ export class ChatGptBrowserWorker {
               else console.warn(`[chatgpt-web] browser turn ${turn.traceId} completed without a Luna rolling checkpoint; preserving full native history`);
               finalText = completed.answer;
             } else {
-              finalText = final.markdown;
+              finalText = retentionResult?.visibleMarkdown ?? final.markdown;
             }
             break;
           }

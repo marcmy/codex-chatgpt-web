@@ -16,6 +16,7 @@ const DEFAULT_STATE = Object.freeze({
   showBrowserDuringTurns: true,
   browserInteractionMode: "automatic",
   experimentalBiggerContext: false,
+  experimentalEvenBiggerContext: false,
   experimentalSkillAttachments: false,
   zeroRiskProEnabled: false,
   browserSmokePassed: false,
@@ -48,6 +49,7 @@ function readState(filePath) {
       "keepRunningOnClose",
       "showBrowserDuringTurns",
       "experimentalBiggerContext",
+      "experimentalEvenBiggerContext",
       "experimentalSkillAttachments",
       "zeroRiskProEnabled",
       "browserSmokePassed",
@@ -58,6 +60,7 @@ function readState(filePath) {
     if (state.browserInteractionMode !== "automatic" && state.browserInteractionMode !== "manual") {
       state.browserInteractionMode = DEFAULT_STATE.browserInteractionMode;
     }
+    if (!state.experimentalBiggerContext) state.experimentalEvenBiggerContext = false;
     if (state.coreSetupComplete !== true) {
       if (state.onboardingComplete !== true) state.browserInteractionMode = "automatic";
       state.zeroRiskProEnabled = false;

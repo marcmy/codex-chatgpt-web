@@ -85,6 +85,7 @@ export interface AppConfig {
   extraHighAvailable?: boolean;
   proAvailable: boolean;
   experimentalBiggerContext: boolean;
+  experimentalEvenBiggerContext?: boolean;
   experimentalSkillAttachments: boolean;
   /** Explicitly install the additional Pro-sized model row while Zero Risk is active. */
   zeroRiskProEnabled: boolean;
@@ -215,6 +216,7 @@ export function defaultConfig(mode: RuntimeMode = "browser-only"): AppConfig {
     extraHighAvailable: false,
     proAvailable: false,
     experimentalBiggerContext: false,
+    experimentalEvenBiggerContext: false,
     experimentalSkillAttachments: false,
     zeroRiskProEnabled: false,
     autoApproveToolCalls: false,
@@ -497,6 +499,10 @@ function parseConfig(value: unknown, path: string): AppConfig {
     && typeof parsed.experimentalBiggerContext !== "boolean") {
     throw new Error(`Invalid experimentalBiggerContext in ${path}`);
   }
+  if (parsed.experimentalEvenBiggerContext !== undefined
+    && typeof parsed.experimentalEvenBiggerContext !== "boolean") {
+    throw new Error(`Invalid experimentalEvenBiggerContext in ${path}`);
+  }
   if (parsed.zeroRiskProEnabled !== undefined && typeof parsed.zeroRiskProEnabled !== "boolean") {
     throw new Error(`Invalid zeroRiskProEnabled in ${path}`);
   }
@@ -514,7 +520,11 @@ function parseConfig(value: unknown, path: string): AppConfig {
     throw new Error(`Zero Risk does not support Skills as files in ${path}`);
   }
   const experimentalBiggerContext = parsed.experimentalBiggerContext === true;
+  const experimentalEvenBiggerContext = parsed.experimentalEvenBiggerContext === true;
   const zeroRiskProEnabled = parsed.zeroRiskProEnabled === true;
+  if (experimentalEvenBiggerContext && !experimentalBiggerContext) {
+    throw new Error(`Even Bigger Context requires Bigger Context in ${path}`);
+  }
   if (browserInteractionMode === "manual" && experimentalBiggerContext) {
     throw new Error(`Zero Risk does not support Bigger Context in ${path}`);
   }
@@ -534,6 +544,7 @@ function parseConfig(value: unknown, path: string): AppConfig {
     solAvailable,
     proAvailable,
     experimentalBiggerContext,
+    experimentalEvenBiggerContext,
     experimentalSkillAttachments,
     zeroRiskProEnabled,
   } as AppConfig;
@@ -590,6 +601,7 @@ export function providerConfig(config: AppConfig): CodexProviderConfig {
       extraHighAvailable: !manual && config.extraHighAvailable === true,
       proAvailable: manual ? false : config.proAvailable,
       experimentalBiggerContext: manual ? false : config.experimentalBiggerContext,
+      experimentalEvenBiggerContext: manual ? false : config.experimentalEvenBiggerContext,
       experimentalSkillAttachments: manual ? false : config.experimentalSkillAttachments,
       ...(config.stallTimeoutSec !== undefined ? { stallTimeoutSec: config.stallTimeoutSec } : {}),
       autoApproveToolCalls: manual ? false : config.autoApproveToolCalls,

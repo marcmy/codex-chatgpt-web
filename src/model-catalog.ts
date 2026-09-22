@@ -30,6 +30,25 @@ function reasoningLevel(template: JsonObject, effort: string, description: strin
   return { ...(source ? structuredClone(source) : {}), effort, description };
 }
 
+
+function routedReasoningLevels(
+  template: JsonObject,
+  route: ChatGptWebModelRoute,
+  config: AppConfig,
+): JsonObject[] {
+  if (route.dynamicEffort !== true) {
+    return [reasoningLevel(template, route.codexEffort, route.displayName)];
+  }
+  const levels: Array<[string, string]> = [
+    ["low", "Instant"],
+    ["medium", "Medium"],
+    ["high", "High"],
+  ];
+  if (config.extraHighAvailable) levels.push(["xhigh", "Extra High"]);
+  if (config.proAvailable) levels.push(["ultra", "Pro"]);
+  return levels.map(([effort, description]) => reasoningLevel(template, effort, description));
+}
+
 function modelPriority(template: JsonObject): number | undefined {
   const value = template.priority;
   if (value === undefined) return undefined;
@@ -132,7 +151,7 @@ export function buildChatGptWebModel(
     tool_mode: null,
     upgrade: null,
     default_reasoning_level: route.codexEffort,
-    supported_reasoning_levels: [reasoningLevel(template, route.codexEffort, route.displayName)],
+    supported_reasoning_levels: routedReasoningLevels(template, route, config),
     context_window: limits.contextWindow,
     max_context_window: limits.contextWindow,
     effective_context_window_percent: limits.effectiveContextWindowPercent,
@@ -188,8 +207,8 @@ export function augmentNativeModelCatalog(
       }
     }
   }
-  const webModels = availableChatGptWebModelRoutes(config)
-    .map(route => buildChatGptWebModel(template, route, config));
+  const visibleRoutes = availableChatGptWebModelRoutes(config);
+  const webModels = visibleRoutes.map(route => buildChatGptWebModel(template, route, config));
   return {
     ...structuredClone(catalog),
     models: [...nativeModels, ...webModels],
