@@ -250,27 +250,29 @@ export async function detectChatGptAccountCapabilities(
     const optionCount = state.max - state.min + 1;
     let planType: string | undefined;
     if (optionCount === 4) {
-      try {
-        planType = await page.evaluate(async () => {
-          try {
-            const response = await fetch("/api/auth/session", {
-              credentials: "same-origin",
-              cache: "no-store",
-            });
-            if (!response.ok) return undefined;
-            const session: unknown = await response.json();
-            if (!session || typeof session !== "object" || Array.isArray(session)) return undefined;
-            const account = (session as { account?: unknown }).account;
-            if (!account || typeof account !== "object" || Array.isArray(account)) return undefined;
-            const value = (account as { planType?: unknown }).planType;
-            return typeof value === "string" ? value.toLowerCase() : undefined;
-          } catch {
-            return undefined;
-          }
-        });
-      } catch {
-        planType = undefined;
-      }
+      const planProbeTimeoutMs = Math.max(1, Math.min(options.selectorTimeoutMs ?? 5_000, 5_000));
+      planType = await page.evaluate(async timeoutMs => {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), timeoutMs);
+        try {
+          const response = await fetch("/api/auth/session", {
+            credentials: "same-origin",
+            cache: "no-store",
+            signal: controller.signal,
+          });
+          if (!response.ok) return undefined;
+          const session: unknown = await response.json();
+          if (!session || typeof session !== "object" || Array.isArray(session)) return undefined;
+          const account = (session as { account?: unknown }).account;
+          if (!account || typeof account !== "object" || Array.isArray(account)) return undefined;
+          const value = (account as { planType?: unknown }).planType;
+          return typeof value === "string" ? value.toLowerCase() : undefined;
+        } catch {
+          return undefined;
+        } finally {
+          clearTimeout(timer);
+        }
+      }, planProbeTimeoutMs).catch(() => undefined);
     }
     // Legacy Plus can expose a fourth, selectable Pro upsell position. A Pro account can also
     // legitimately expose only four positions while the Pro model itself is temporarily hidden.
