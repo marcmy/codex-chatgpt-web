@@ -151,6 +151,17 @@ export function parseChatGptEffortSliderState(
   return { min, max, value };
 }
 
+export function resolveChatGptEffortCapabilities(
+  optionCount: number,
+  planType?: string,
+): { extraHighAvailable: boolean; proAvailable: boolean } {
+  const proAvailable = optionCount >= 5;
+  return {
+    extraHighAvailable: proAvailable || (optionCount === 4 && planType?.toLowerCase() === "pro"),
+    proAvailable,
+  };
+}
+
 async function anyVisible(locator: Locator): Promise<boolean> {
   const count = await locator.count();
   for (let index = 0; index < count; index += 1) {
@@ -236,7 +247,32 @@ export async function detectChatGptAccountCapabilities(
         { cause: new Error("ChatGPT effort slider exposed an invalid ARIA range") },
       );
     }
-    return { solAvailable: true, extraHighAvailable: state.max - state.min + 1 >= 5, proAvailable: state.max - state.min + 1 >= 5 };
+    const optionCount = state.max - state.min + 1;
+    let planType: string | undefined;
+    if (optionCount === 4) {
+      planType = await page.evaluate(async () => {
+        try {
+          const response = await fetch("/api/auth/session", {
+            credentials: "same-origin",
+            cache: "no-store",
+          });
+          if (!response.ok) return undefined;
+          const session: unknown = await response.json();
+          if (!session || typeof session !== "object" || Array.isArray(session)) return undefined;
+          const account = (session as { account?: unknown }).account;
+          if (!account || typeof account !== "object" || Array.isArray(account)) return undefined;
+          const value = (account as { planType?: unknown }).planType;
+          return typeof value === "string" ? value.toLowerCase() : undefined;
+        } catch {
+          return undefined;
+        }
+      }).catch(() => undefined);
+    }
+    // Legacy Plus can expose a fourth, selectable Pro upsell position. A Pro account can also
+    // legitimately expose only four positions while the Pro model itself is temporarily hidden.
+    // The active ChatGPT web session disambiguates those otherwise identical slider ranges.
+    const capabilities = resolveChatGptEffortCapabilities(optionCount, planType);
+    return { solAvailable: true, ...capabilities };
   } finally {
     await page.keyboard.press("Escape").catch(() => {});
   }
