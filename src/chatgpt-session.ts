@@ -236,7 +236,7 @@ export async function detectChatGptAccountCapabilities(
         { cause: new Error("ChatGPT effort slider exposed an invalid ARIA range") },
       );
     }
-    return { solAvailable: true, extraHighAvailable: state.max - state.min + 1 >= 4, proAvailable: state.max - state.min + 1 >= 5 };
+    return { solAvailable: true, extraHighAvailable: state.max - state.min + 1 >= 5, proAvailable: state.max - state.min + 1 >= 5 };
   } finally {
     await page.keyboard.press("Escape").catch(() => {});
   }

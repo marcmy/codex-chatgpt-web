@@ -281,9 +281,9 @@ test("the authoritative three-step range is non-Pro; a malformed range fails clo
   await expect(detectChatGptAccountCapabilities(reasoningPicker({ max: "bad" }).page as never)).rejects.toThrow("model controls are unavailable");
 });
 
-test("the four-step browser range keeps Extra High available when Pro is unavailable", async () => {
+test("the ambiguous four-step browser range does not advertise Extra High", async () => {
   await expect(detectChatGptAccountCapabilities(reasoningPicker({ max: "3" }).page as never))
-    .resolves.toEqual({ solAvailable: true, extraHighAvailable: true, proAvailable: false });
+    .resolves.toEqual({ solAvailable: true, extraHighAvailable: false, proAvailable: false });
 });
 
 test("Pro selection verifies the persisted hidden slider through its visible owner, never model rows", async () => {
