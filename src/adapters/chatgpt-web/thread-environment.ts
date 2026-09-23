@@ -15,6 +15,7 @@ import {
   hasCurrentChatGptEnvironmentContext,
   hasReplayedCurrentChatGptEnvironmentContext,
   hasChatGptCalendarEnvironmentDelta,
+  hasChatGptCalendarEnvironmentDeltaAttempt,
   hasRawChatGptEnvironmentContext,
   unattributedChatGptEnvironmentMessages,
   isChatGptCompactionContinuation,
@@ -189,7 +190,10 @@ export class ChatGptThreadEnvironmentStore {
       const steeringClaim = hasCurrentContext && !currentCompaction
         ? extractChatGptSteeringEnvironmentClaim(parsed) : undefined;
       const sameThread = this.get(identity.threadId);
-      const calendarDelta = hasCurrentContext && !currentCompaction && hasChatGptCalendarEnvironmentDelta(parsed);
+      const calendarDeltaAttempt = hasCurrentContext && !currentCompaction
+        && hasChatGptCalendarEnvironmentDeltaAttempt(parsed);
+      const calendarDelta = calendarDeltaAttempt && hasChatGptCalendarEnvironmentDelta(parsed);
+      if (calendarDeltaAttempt && !calendarDelta) throw error;
       if (hasCurrentContext && !currentCompaction && !historicalMessages && !steeringClaim && !calendarDelta) {
         // Native tool continuations can replay the original environment message with the same
         // turn_id still attached. Treat that as continuity only when the replayed claim is exactly
