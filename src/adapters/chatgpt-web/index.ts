@@ -23,7 +23,7 @@ import { parseDataUrl } from "../image";
 import { ChatGptWebAdapterError } from "./adapter-error";
 import { ChatGptBrowserWorker } from "./browser-worker";
 import { extractChatGptTurnEnvironment, extractChatGptTurnIdentity, priorChatGptAbortedTurnIds } from "./environment";
-import { CHATGPT_WEB_LUNA_MODEL_ID, resolveChatGptWebModelMode, type ChatGptWebCapabilities } from "./model";
+import { CHATGPT_WEB_LUNA_MODEL_ID, CHATGPT_WEB_MODEL_ID, resolveChatGptWebModelMode, type ChatGptWebCapabilities } from "./model";
 import { chatGptReadOnlyContextWarning, compileChatGptWebPrompt } from "./prompt";
 import { createChatGptStructuredOutputValidator } from "./output-validation";
 import { chatGptWebTurnRetryPolicy } from "./retry-policy";
@@ -36,6 +36,11 @@ import {
   type CapturedChatGptLunaCheckpoint,
 } from "./rolling-checkpoint";
 import { ChatGptExternalTurnProgress } from "./turn-progress";
+import {
+  attachChatGptSteering,
+  ChatGptBrowserSteeringController,
+  chatGptSteeringInstructionText,
+} from "./steering";
 import {
   canonicalizeCompactionHandoff,
   existingStructuredCompactionRun,
@@ -359,11 +364,20 @@ export function createChatGptWebAdapter(
   if (experimentalBiggerContext !== undefined && typeof experimentalBiggerContext !== "boolean") {
     throw new Error("ChatGPT Bigger Context preference must be a boolean");
   }
+  const experimentalEvenBiggerContext = provider.chatgptWeb?.experimentalEvenBiggerContext;
+  if (experimentalEvenBiggerContext !== undefined && typeof experimentalEvenBiggerContext !== "boolean") {
+    throw new Error("ChatGPT Even Bigger Context preference must be a boolean");
+  }
+  if (experimentalEvenBiggerContext && !experimentalBiggerContext) {
+    throw new Error("Even Bigger Context requires Bigger Context");
+  }
   const configuredCapabilities: ChatGptWebCapabilities = {
     localToolsEnabled: provider.chatgptWeb?.localToolsEnabled === true,
     solAvailable: provider.chatgptWeb?.solAvailable !== false,
     extraHighAvailable: provider.chatgptWeb?.extraHighAvailable === true,
     proAvailable: provider.chatgptWeb?.proAvailable === true,
+    experimentalBiggerContext: experimentalBiggerContext === true,
+    experimentalEvenBiggerContext: experimentalEvenBiggerContext === true,
   };
   const manualInteraction = provider.chatgptWeb?.browserInteractionMode === "manual";
   const freshConversationPerTurn = provider.chatgptWeb?.experimentalFreshConversationPerTurn === true;
@@ -446,7 +460,9 @@ export function createChatGptWebAdapter(
       : undefined;
     const compileOptionsFor = (input: CodexParsedRequest) => {
       if (manualRequest) return {};
-      const experimentalMultipartParts = experimentalBiggerContext
+      const automaticInstantMultipart = input.modelId === CHATGPT_WEB_MODEL_ID
+        && input.options.reasoning === "low";
+      const experimentalMultipartParts = experimentalBiggerContext || automaticInstantMultipart
         ? resolveBiggerContextMultipartParts(input, turnCapabilities, experimentalSkillAttachments)
         : undefined;
       return {
@@ -484,6 +500,16 @@ export function createChatGptWebAdapter(
     });
     const trace = new ChatGptTraceFeed();
     const text = new ChatGptTextFeed();
+    const steering = parsed.modelId === CHATGPT_WEB_MODEL_ID && !parsed._compactionRequest
+      ? new ChatGptBrowserSteeringController()
+      : undefined;
+    const steeringHooks = steering ? {
+      steering,
+      onSteeringRestarted: () => {
+        trace.reset();
+        text.reset();
+      },
+    } : {};
     const observedCapabilityTokens = new Set<string>();
     const observeCapabilityRetirement = (
       turnToken: string,
@@ -709,11 +735,13 @@ export function createChatGptWebAdapter(
         onReasoningSummary: (text, continuation) => trace.push({ kind: "reasoning", text, ...(continuation ? { continuation: true } : {}) }),
         onCommentary: (text, continuation) => trace.push({ kind: "commentary", text, ...(continuation ? { continuation: true } : {}) }),
         onTextDelta: delta => text.push(delta),
+        ...steeringHooks,
         ...(captureLunaCheckpoint ? {
           captureLunaCheckpoint: true,
           onLunaCheckpoint: captureCheckpoint,
         } : {}),
       })), browserAbort);
+      void browserTurn.physicalSettlement.finally(() => steering?.close()).catch(() => {});
       return {
         mode: "read-only",
         browser: browserTurn.browser,
@@ -722,6 +750,7 @@ export function createChatGptWebAdapter(
         text,
         usageInput: checkpointInput.parsed,
         submission,
+        ...(steering ? { steer: (instruction: Parameters<ChatGptBrowserSteeringController["request"]>[0]) => steering.request(instruction) } : {}),
         cancel: browserTurn.cancel,
       };
     }
@@ -774,6 +803,7 @@ export function createChatGptWebAdapter(
       onReasoningSummary: (text, continuation) => trace.push({ kind: "reasoning", text, ...(continuation ? { continuation: true } : {}) }),
       onCommentary: (text, continuation) => trace.push({ kind: "commentary", text, ...(continuation ? { continuation: true } : {}) }),
       onTextDelta: delta => text.push(delta),
+      ...steeringHooks,
       externalProgress,
       completionFence: {
         begin: async () => broker.beginCompletionFence(await token.promise),
@@ -790,6 +820,7 @@ export function createChatGptWebAdapter(
         token.reject(error instanceof Error ? error : new Error(String(error)));
       }
     });
+    void browserTurn.physicalSettlement.finally(() => steering?.close()).catch(() => {});
     return {
       mode: "tools",
       token: token.promise,
@@ -801,6 +832,7 @@ export function createChatGptWebAdapter(
       usageInput: checkpointInput.parsed,
       ...(conversationKey ? { conversationKey } : {}),
       ...(releaseRetainedConversation ? { releaseRetainedConversation } : {}),
+      ...(steering ? { steer: (instruction: Parameters<ChatGptBrowserSteeringController["request"]>[0]) => steering.request(instruction) } : {}),
       retireCapability: async () => {
         if (activeToken) await broker.revoke(activeToken);
       },
@@ -866,7 +898,27 @@ export function createChatGptWebAdapter(
             console.warn(
               `[chatgpt-web] trusted environment unavailable (thread_id=${identity.threadId ? "present" : "missing"}, turn_id=${identity.turnId ? "present" : "missing"}, previous_response_id=${parsed.previousResponseId ?? "none"}, replay_prefix_items=${parsed._replayPrefixLen ?? 0}, context_messages=${parsed.context.messages.length})`,
             );
-            throw error;
+            const handledError = error instanceof ChatGptWebAdapterError
+              ? error
+              : new ChatGptWebAdapterError(
+                error instanceof Error ? error.message : String(error),
+                {
+                  status: 400,
+                  errorType: "invalid_request_error",
+                  code: "codex_rollout_environment_invalid",
+                  retryable: false,
+                  cause: error,
+                },
+              );
+            emit({
+              type: "error",
+              message: handledError.message,
+              status: handledError.status,
+              errorType: handledError.errorType,
+              code: handledError.code,
+              retryable: false,
+            });
+            return;
           }
         }
         if (parsed._compactionRequest) {
@@ -1163,6 +1215,7 @@ export function createChatGptWebAdapter(
           nativeTurnId,
           nativeIdentity.threadId,
           chatGptInstructionLineage(parsed),
+          chatGptSteeringInstructionText(parsed),
         );
         const roundKey = chatGptTurnRoundKey(parsed);
         const emitRoundEvents = (events: readonly AdapterEvent[]): void => {
@@ -1259,11 +1312,17 @@ export function createChatGptWebAdapter(
                 if (results.length !== outstanding.length) {
                   throw new Error(`Codex returned ${results.length} of ${outstanding.length} results for a parallel ChatGPT tool batch`);
                 }
-                for (const message of results) {
-                  await broker.completeTool(turnToken, message.toolCallId, brokerResult(message));
+                const pendingSteering = session.pendingSteering();
+                for (let index = 0; index < results.length; index += 1) {
+                  const message = results[index]!;
+                  const result = index === results.length - 1 && pendingSteering.length > 0
+                    ? attachChatGptSteering(brokerResult(message), turnToken, pendingSteering)
+                    : brokerResult(message);
+                  await broker.completeTool(turnToken, message.toolCallId, result);
                   session.runtime.externalProgress.recordToolResult();
                   session.markResultDelivered(message.toolCallId);
                 }
+                session.markSteeringDelivered(pendingSteering);
               }
             } else if (session.outstanding().length > 0) {
               throw new Error("Read-only ChatGPT Web runtime cannot own local tool calls");

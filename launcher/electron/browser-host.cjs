@@ -168,6 +168,14 @@ function isAbortedNavigationError(error) {
   return error instanceof Error && /\bERR_ABORTED\b/.test(error.message);
 }
 
+function isChatGptOriginUrl(value) {
+  try {
+    return new URL(value).origin === CHATGPT_ORIGIN;
+  } catch {
+    return false;
+  }
+}
+
 function isTemporaryChatUrl(value) {
   let parsed;
   try {
@@ -559,6 +567,7 @@ class BrowserHost {
       conversationKey,
       connectorIdentity,
       connectorBound: false,
+      authenticationRequired: false,
       helperPid,
       view,
       status: "running",
@@ -778,9 +787,18 @@ class BrowserHost {
 
   bindTurnContents(tab) {
     const contents = tab.view.webContents;
+    const markAuthenticationRequired = () => {
+      tab.authenticationRequired = true;
+      tab.message = "ChatGPT requires a fresh sign-in; sign in again from Setup before starting another turn";
+      this.setState({
+        authenticated: false,
+        message: "ChatGPT session expired; sign in again from Setup",
+      });
+      this.logger.warn("browser.turn_authentication_blocked", { tabId: tab.id, traceId: tab.traceId });
+    };
     contents.setWindowOpenHandler(({ url }) => {
       if (allowedAuthUrl(url)) {
-        this.logger.warn("browser.turn_authentication_blocked", { tabId: tab.id, traceId: tab.traceId });
+        markAuthenticationRequired();
         return { action: "deny" };
       }
       let parsed;
@@ -791,9 +809,7 @@ class BrowserHost {
     const blockAuthenticationNavigation = (event, url) => {
       if (!allowedAuthUrl(url)) return;
       event.preventDefault();
-      tab.message = "ChatGPT requires a fresh sign-in; finish this turn, then sign in from Setup";
-      this.logger.warn("browser.turn_authentication_blocked", { tabId: tab.id, traceId: tab.traceId });
-      this.publishState?.(this.snapshot());
+      markAuthenticationRequired();
     };
     contents.on("will-navigate", blockAuthenticationNavigation);
     contents.on("will-redirect", blockAuthenticationNavigation);
@@ -820,7 +836,7 @@ class BrowserHost {
       tab.url = contents.getURL();
       tab.loading = false;
       tab.rendererReady = true;
-      if (tab.url.startsWith(CHATGPT_ORIGIN)) tab.bootstrapReady = true;
+      if (isChatGptOriginUrl(tab.url)) tab.bootstrapReady = true;
       this.syncViewVisibility();
       if (browserInteractionModeFor(this) !== "automatic") {
         this.publishState?.(this.snapshot());
@@ -949,7 +965,7 @@ class BrowserHost {
       tab.url = contents.getURL();
       tab.loading = false;
       tab.rendererReady = true;
-      tab.bootstrapReady = tab.url.startsWith(CHATGPT_ORIGIN);
+      tab.bootstrapReady = isChatGptOriginUrl(tab.url);
       this.syncViewVisibility();
       this.publishState?.(this.snapshot());
     });
@@ -1247,7 +1263,7 @@ class BrowserHost {
     await sleep(this.cloudflareChallengeRecoveryDelayMs);
     if (contents.isDestroyed()) throw new Error("ChatGPT browser closed during security-check recovery");
     const url = contents.getURL();
-    if (!url.startsWith(CHATGPT_ORIGIN)) {
+    if (!isChatGptOriginUrl(url)) {
       throw new Error("ChatGPT security-check recovery lost its owned browser page");
     }
 
@@ -1336,7 +1352,10 @@ class BrowserHost {
       tab.deviceEmulationDirty = true;
       this.syncViewVisibility();
     }
-    return this.snapshot();
+    const snapshot = this.snapshot();
+    return tab.authenticationRequired === true
+      ? { ...snapshot, authenticationRequired: true }
+      : snapshot;
   }
 
   refreshTurnLeases(reason, now = Date.now()) {
@@ -1525,7 +1544,11 @@ class BrowserHost {
       }
       tab.view.setBounds(bounds);
     }
-    tab.view.setVisible(visible || tab.status === "running");
+    // Retained automatic tabs must stay drawable while idle. Electron collapses a hidden
+    // WebContentsView renderer to 0x0, and re-enabling device emulation after that collapse is not
+    // sufficient to make the next Playwright lease operational reliably. Keep the retained view
+    // attached offscreen; endTurn() still enables background throttling while it is idle.
+    tab.view.setVisible(true);
   }
 
   presentPrimaryView(visible) {
@@ -2323,6 +2346,12 @@ class BrowserHost {
       existing.status = "running";
       existing.loading = true;
       existing.message = "ChatGPT is working";
+      if (reused) {
+        // The previous helper disconnects its Playwright CDP session when the turn settles.
+        // Chromium may drop effective device emulation with that connection, so force the hidden
+        // viewport contract to be reapplied before the retained surface is leased again.
+        existing.deviceEmulationDirty = true;
+      }
       if (!reused) {
         existing.bootstrapReady = false;
         existing.bootstrapDeadlineAt = Date.now() + TURN_TAB_BOOTSTRAP_TIMEOUT_MS;
@@ -2347,6 +2376,11 @@ class BrowserHost {
     if (requireRetainedConversation) {
       const error = new Error("The retained ChatGPT conversation is no longer available");
       error.code = "retained_conversation_unavailable";
+      throw error;
+    }
+    if (this.state?.authenticated === false) {
+      const error = new Error("The saved ChatGPT session is no longer authenticated; sign in again from Setup");
+      error.code = "authentication_required";
       throw error;
     }
     const tab = await this.createTurnTab(traceId, helperPid, conversationKey, connectorIdentity, signal);
@@ -2450,7 +2484,7 @@ class BrowserHost {
         this.show();
         this.logger.info("browser.login_opened");
         const current = this.view.webContents.getURL();
-        if (!current.startsWith(CHATGPT_ORIGIN)) {
+        if (!isChatGptOriginUrl(current)) {
           await this.view.webContents.loadURL(TEMPORARY_CHAT_URL);
         }
         await this.probeAuthentication();

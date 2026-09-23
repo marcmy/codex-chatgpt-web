@@ -1656,6 +1656,17 @@ function SettingsSurface({
       setBusy(false);
     }
   };
+  const setEvenBiggerContext = async (enabled: boolean) => {
+    setBusy(true);
+    setError(null);
+    try {
+      updateState(await api!.setEvenBiggerContext(enabled));
+    } catch (cause) {
+      setError(messageOf(cause));
+    } finally {
+      setBusy(false);
+    }
+  };
   const setSkillAttachments = async (enabled: boolean) => {
     setBusy(true);
     setError(null);
@@ -1767,6 +1778,17 @@ function SettingsSurface({
             onChange={(checked) => void setBiggerContext(checked)}
           />
         </SettingRow>
+        {snapshot.state.experimentalBiggerContext ? (
+          <SettingRow body={copy.evenBiggerContextBody} indented label={copy.evenBiggerContext}>
+            <Switch
+              checked={snapshot.state.experimentalEvenBiggerContext}
+              disabled={busy
+                || snapshot.state.browserInteractionMode === "manual"
+                || snapshot.state.coreSetupComplete !== true}
+              onChange={(checked) => void setEvenBiggerContext(checked)}
+            />
+          </SettingRow>
+        ) : null}
         <SettingRow body={snapshot.state.browserInteractionMode === "manual"
           ? copy.manualSkillAttachmentsUnavailable : copy.skillAttachmentsBody} label={copy.skillAttachments}>
           <Switch
@@ -2179,15 +2201,17 @@ function SettingRow({
   body,
   children,
   flushAfter = false,
+  indented = false,
   label,
 }: {
   body: string;
   children: ReactNode;
   flushAfter?: boolean;
+  indented?: boolean;
   label: string;
 }) {
   return (
-    <div className={`setting-row${flushAfter ? " is-flush-after" : ""}`}>
+    <div className={`setting-row${flushAfter ? " is-flush-after" : ""}${indented ? " is-indented" : ""}`}>
       <div>
         <strong>{label}</strong>
         <p>{body}</p>

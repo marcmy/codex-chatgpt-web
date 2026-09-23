@@ -24,36 +24,51 @@ test.each([
   expect(estimateChatGptWebInputTokens(request(text), capabilities)).toBeLessThan(100_000);
 }, 15_000);
 
-test("multipart selection accounts for whole-record and composer fit before submission", () => {
+test("Even Bigger Context can derive ordinary per-message budgets without violating its parent invariant", () => {
+  const evenBigger = {
+    ...capabilities,
+    experimentalBiggerContext: true,
+    experimentalEvenBiggerContext: true,
+  };
+  expect(resolveBiggerContextMultipartParts(request("small task"), evenBigger)).toBeUndefined();
+});
+
+test.each([
+  ["small inline task", ["small task"], undefined],
+  ["whole-record pressure", [50_000, 40_000, 50_000, 5_000].map(n => "word ".repeat(n)), 6],
+  ["composer character pressure", Array.from({ length: 3 }, () => " ".repeat(450_000)), 2],
+] as const)("multipart selection handles %s before submission", (_label, contents, expected) => {
   const plus = { ...capabilities, extraHighAvailable: false, proAvailable: false };
-  for (const [contents, expected] of [
-    [["small task"], undefined],
-    [[50_000, 40_000, 50_000, 5_000].map(n => "word ".repeat(n)), 6],
-    [Array.from({ length: 3 }, () => " ".repeat(450_000)), 2],
-  ] as const) {
-    const parsed = request("");
-    parsed.context.messages = contents.map((content, index) => ({ role: "user", content, timestamp: index + 1 }));
-    const parts = resolveBiggerContextMultipartParts(parsed, plus);
-    expect(parts).toBe(expected);
-    const compiled = compileChatGptWebPrompt(parsed, plus, undefined, { experimentalMultipartParts: parts });
-    if (parts) {
-      expect(compiled.multipart!.parts.flatMap(part => JSON.parse(part).records).map(record => record.message.content))
-        .toEqual([...contents]);
-    }
+  const parsed = request("");
+  parsed.context.messages = contents.map((content, index) => ({ role: "user", content, timestamp: index + 1 }));
+  const parts = resolveBiggerContextMultipartParts(parsed, plus);
+  expect(parts).toBe(expected);
+  const compiled = compileChatGptWebPrompt(parsed, plus, undefined, { experimentalMultipartParts: parts });
+  if (parts) {
+    expect(compiled.multipart!.parts.flatMap(part => JSON.parse(part).records).map(record => record.message.content))
+      .toEqual([...contents]);
   }
+}, 90_000);
+
+test("multipart selection fragments one sparse record without dropping its contents", () => {
   // Low-token text can still exceed the reasoning model's server character ceiling.
   // Stage the complete record instead of sending it inline or dropping its contents.
   const sparsePro = request("x".repeat(600_000));
   expect(resolveBiggerContextMultipartParts(sparsePro, capabilities)).toBe(2);
   const stagedPro = compileChatGptWebPrompt(sparsePro, capabilities, undefined, { experimentalMultipartParts: 2 });
-  expect(stagedPro.multipart!.parts.flatMap(part => JSON.parse(part).records).map(record => record.message.content))
-    .toEqual([sparsePro.context.messages[0]!.content]);
+  const sparseRecords = stagedPro.multipart!.parts.flatMap(part => JSON.parse(part).records);
+  const sparseFragments = sparseRecords.filter(record => record.kind === "record_fragment");
+  expect(sparseFragments.length).toBeGreaterThan(1);
+  const rebuiltSparse = JSON.parse(sparseFragments.map(fragment => fragment.json_fragment).join(""));
+  expect(rebuiltSparse.kind).toBe("message");
+  expect(rebuiltSparse.message_index).toBe(0);
+  expect(rebuiltSparse.message.content).toBe(sparsePro.context.messages[0]!.content);
   const proMessages = compiledChatGptWebMessages(stagedPro);
   expect(proMessages[1]!.length).toBeLessThanOrEqual(500_000);
   expect(resolveChatGptWebMultipartStagingMode(
     "gpt-5.6-sol", capabilities, estimateTokens(proMessages[0]!), proMessages[0]!.length,
-  ).effort).toBe("max");
-}, 60_000);
+  ).effort).toBe("low");
+}, 90_000);
 
 test("Bigger Context compaction selects six parts before the legacy inline byte budget", () => {
   const parsed = request("x".repeat(160_000));
@@ -65,6 +80,48 @@ test("Bigger Context compaction selects six parts before the legacy inline byte 
   expect(compiled.multipart!.parts.flatMap(part => JSON.parse(part).records).map(record => record.message.content))
     .toEqual([parsed.context.messages[0]!.content]);
 });
+
+test("Bigger Context compaction uses six transport parts before trimming history", () => {
+  const plus = { ...capabilities, extraHighAvailable: false, proAvailable: false };
+  const parsed = request("");
+  parsed._compactionRequest = true;
+  parsed.context.messages = Array.from({ length: 4 }, (_unused, index) => ({
+    role: "user" as const,
+    content: `spill-${index}-${"word ".repeat(45_000)}`,
+    timestamp: index + 1,
+  }));
+
+  const parts = resolveBiggerContextMultipartParts(parsed, plus);
+  expect(parts).toBe(6);
+  const compiled = compileChatGptWebPrompt(parsed, plus, undefined, { experimentalMultipartParts: parts });
+  expect(compiled.multipart?.parts).toHaveLength(6);
+  expect(compiled.trimmedCompactionMessages).toBeUndefined();
+  expect(compiled.multipart!.parts.flatMap(part => JSON.parse(part).records).map(record => record.message.content))
+    .toEqual(parsed.context.messages.map(message => message.content));
+}, 60_000);
+
+test("Bigger Context compaction falls back inline only after all multipart transport shapes are exhausted", () => {
+  const plus = { ...capabilities, extraHighAvailable: false, proAvailable: false };
+  const parsed = request("");
+  parsed._compactionRequest = true;
+  parsed.context.messages = Array.from({ length: 5 }, (_unused, index) => ({
+    role: "user" as const,
+    content: `oversized-total-${index}-${"a!b@c#d$e%f^g&h*".repeat(4_000)}`,
+    timestamp: index + 1,
+  }));
+
+  const parts = resolveBiggerContextMultipartParts(parsed, plus);
+  expect(parts).toBeUndefined();
+
+  const forced = compileChatGptWebPrompt(parsed, plus, undefined, { experimentalMultipartParts: 6 });
+  expect(forced.multipart?.parts).toHaveLength(6);
+  expect(forced.trimmedCompactionMessages).toBeUndefined();
+
+  const compiled = compileChatGptWebPrompt(parsed, plus, undefined, { experimentalMultipartParts: parts });
+  expect(compiled.multipart).toBeUndefined();
+  expect(compiled.trimmedCompactionMessages).toBeGreaterThan(0);
+  expect(compiled.text).toContain("oversized-total-4-");
+}, 60_000);
 
 test("multipart planning leaves room for final attachments and execution instructions without losing history", () => {
   for (const scenario of [

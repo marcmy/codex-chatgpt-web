@@ -7,11 +7,13 @@ import {
   extractChatGptTurnEnvironment,
   extractChatGptCompactionSourceRevision,
   extractChatGptContinuationEnvironmentClaim,
+  extractChatGptCurrentEnvironmentClaim,
   extractChatGptSteeringEnvironmentClaim,
   extractChatGptTurnIdentity,
   extractChatGptThreadSpawnLineage,
   extractChatGptRootThreadMetadata,
   hasCurrentChatGptEnvironmentContext,
+  hasReplayedCurrentChatGptEnvironmentContext,
   hasChatGptCalendarEnvironmentDelta,
   hasRawChatGptEnvironmentContext,
   unattributedChatGptEnvironmentMessages,
@@ -119,6 +121,29 @@ function authority(environment: ChatGptTurnEnvironment, updatedAt: number): Stor
   };
 }
 
+function replayedCurrentEnvironmentClaim(
+  parsed: CodexParsedRequest,
+  turnId: string,
+): ChatGptTurnEnvironment {
+  const body = record(parsed._rawBody);
+  const input = Array.isArray(body?.input) ? body.input : [];
+  let syntheticId = 0;
+  const replayInput = input.map(value => {
+    const item = record(value);
+    const metadata = record(item?.internal_chat_message_metadata_passthrough);
+    if (item?.type !== "message" || item.role !== "user" || metadata?.turn_id !== turnId
+      || (typeof item.id === "string" && item.id)) return value;
+    // A post-tool native replay can omit the server item id while retaining the exact turn_id.
+    // Supply an ephemeral id only for claim parsing; the authority still has to match the
+    // already-authenticated cache byte-for-meaning through sameAuthority below.
+    return { ...item, id: `replayed_environment_${syntheticId++}` };
+  });
+  return extractChatGptCurrentEnvironmentClaim({
+    ...parsed,
+    _rawBody: { ...body, input: replayInput },
+  });
+}
+
 function sameAuthority(left: ChatGptTurnEnvironment, right: ChatGptTurnEnvironment): boolean {
   const samePaths = (a: string[], b: string[]): boolean => {
     const expected = new Set(b.map(pathIdentity));
@@ -163,8 +188,31 @@ export class ChatGptThreadEnvironmentStore {
         ? unattributedChatGptEnvironmentMessages(parsed) : undefined;
       const steeringClaim = hasCurrentContext && !currentCompaction
         ? extractChatGptSteeringEnvironmentClaim(parsed) : undefined;
+      const sameThread = this.get(identity.threadId);
       const calendarDelta = hasCurrentContext && !currentCompaction && hasChatGptCalendarEnvironmentDelta(parsed);
-      if (hasCurrentContext && !currentCompaction && !historicalMessages && !steeringClaim && !calendarDelta) throw error;
+      if (hasCurrentContext && !currentCompaction && !historicalMessages && !steeringClaim && !calendarDelta) {
+        // Native tool continuations can replay the original environment message with the same
+        // turn_id still attached. Treat that as continuity only when the replayed claim is exactly
+        // the authority we already authenticated for this thread. A changed or malformed claim
+        // remains a current update and fails closed.
+        if (sameThread && identity.turnId && hasReplayedCurrentChatGptEnvironmentContext(parsed)) {
+          const currentClaim = replayedCurrentEnvironmentClaim(parsed, identity.turnId);
+          if (sameAuthority(currentClaim, {
+            cwd: sameThread.cwd,
+            roots: sameThread.roots,
+            writableRoots: sameThread.writableRoots,
+            sandboxPolicy: sameThread.sandboxPolicy,
+            tools: [],
+          })) return {
+            cwd: sameThread.cwd,
+            roots: sameThread.roots,
+            writableRoots: sameThread.writableRoots,
+            sandboxPolicy: sameThread.sandboxPolicy,
+            tools: parsed.context.tools ?? [],
+          };
+        }
+        throw error;
+      }
       const currentClaim = currentCompaction ? extractChatGptContinuationEnvironmentClaim(parsed) : steeringClaim;
       const rolloutIdentity = lineage ?? extractChatGptRootThreadMetadata(parsed);
       // Automatic compaction has a current turn_context; standalone compaction has only its
@@ -186,16 +234,43 @@ export class ChatGptThreadEnvironmentStore {
             throw new Error("Calendar environment delta conflicts with its current Codex rollout");
           }
           if (currentClaim && !sameAuthority(currentClaim, rolloutEnvironment)) {
+            // A current steering replay may carry the exact authority already authenticated for
+            // this thread while the native rollout exposes a differently normalized workspace
+            // view. Require current rollout proof first, then accept only that exact cached replay.
+            if (!currentCompaction && sameThread
+              && hasReplayedCurrentChatGptEnvironmentContext(parsed)
+              && sameAuthority(currentClaim, {
+                cwd: sameThread.cwd,
+                roots: sameThread.roots,
+                writableRoots: sameThread.writableRoots,
+                sandboxPolicy: sameThread.sandboxPolicy,
+                tools: [],
+              })) return {
+                cwd: sameThread.cwd,
+                roots: sameThread.roots,
+                writableRoots: sameThread.writableRoots,
+                sandboxPolicy: sameThread.sandboxPolicy,
+                tools: parsed.context.tools ?? [],
+              };
             throw new Error(`${currentCompaction ? "Compaction continuation" : "Steering"} environment conflicts with its current Codex rollout`);
           }
           this.set(rolloutIdentity.threadId, rolloutEnvironment);
           return rolloutEnvironment;
         }
       }
+      // A same-thread follow-up may replay the original environment envelope as ordinary history.
+      // It is not a new authority claim. Reuse only the already trusted cache for that thread; a
+      // current environment claim still has to authenticate through the normal path above.
+      if (!hasCurrentContext && sameThread) return {
+        cwd: sameThread.cwd,
+        roots: sameThread.roots,
+        writableRoots: sameThread.writableRoots,
+        sandboxPolicy: sameThread.sandboxPolicy,
+        tools: parsed.context.tools ?? [],
+      };
       // Only a current native rollout can supersede an unrecognized historical envelope. Without
       // that proof, do not turn arbitrary history or an invalid update into cached authority.
       if (hasRawChatGptEnvironmentContext(parsed)) throw error;
-      const sameThread = this.get(identity.threadId);
       if (sameThread) return {
         cwd: sameThread.cwd,
         roots: sameThread.roots,

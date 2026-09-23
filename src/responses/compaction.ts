@@ -119,14 +119,40 @@ export function isOnePixelPngDataUrl(value: unknown): value is string {
  * Extract original user message items from a Responses `input` array.
  *
  * Keeping the original item metadata matters: Codex uses it after `/responses/compact` to
- * distinguish real user turns from contextual user-role wrappers. Images remain structured
- * `input_image` blocks so the browser adapter can upload them as attachments; their data URL is
- * never copied into the textual ChatGPT transport envelope.
+ * distinguish real user turns from contextual user-role wrappers. Raw images are retained only
+ * for the newest visual user turn that has not yet produced model output. That protects an image
+ * which immediately triggers pre-turn compaction without replaying screenshots the model already
+ * consumed. Images before an earlier readable checkpoint are never retained again.
  */
 export function extractCompactUserMessages(input: unknown): CompactMessageItem[] {
   if (!Array.isArray(input)) return [];
+
+  const lastSummaryIndex = input.findLastIndex(value => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+    const rec = value as CompactMessageItem & { type?: string; role?: string };
+    if ((rec.type !== undefined && rec.type !== "message") || rec.role !== "user") return false;
+    return isReadableCompactionSummaryText(
+      compactContentBlocks(rec).filter(textBlock).map(block => block.text).join(""),
+    );
+  });
+
+  // Walk backward only through the current not-yet-consumed suffix. The first assistant/model
+  // output boundary proves that every earlier visual user turn was already available to a model.
+  // If several user messages somehow arrive without model output between them, keep only the newest
+  // image-bearing turn as the conservative recovery candidate.
+  let unconsumedImageMessageIndex = -1;
+  for (let index = input.length - 1; index > lastSummaryIndex; index -= 1) {
+    const value = input[index];
+    if (isCompactModelOutputBoundary(value)) break;
+    if (unconsumedImageMessageIndex >= 0) continue;
+    if (!value || typeof value !== "object" || Array.isArray(value)) continue;
+    const rec = value as CompactMessageItem & { type?: string; role?: string };
+    if ((rec.type !== undefined && rec.type !== "message") || rec.role !== "user") continue;
+    if (compactContentBlocks(rec).some(imageBlock)) unconsumedImageMessageIndex = index;
+  }
+
   const out: CompactMessageItem[] = [];
-  for (const item of input) {
+  for (const [index, item] of input.entries()) {
     if (!item || typeof item !== "object" || Array.isArray(item)) continue;
     const rec = item as CompactMessageItem & { type?: string; role?: string; content?: unknown };
     if (rec.type !== undefined && rec.type !== "message") continue;
@@ -142,9 +168,27 @@ export function extractCompactUserMessages(input: unknown): CompactMessageItem[]
     if (isReadableCompactionSummaryText(
       compactContentBlocks(rec).filter(textBlock).map(block => block.text).join(""),
     )) continue;
-    out.push(structuredClone(rec));
+
+    const retained = structuredClone(rec);
+    if (index !== unconsumedImageMessageIndex && Array.isArray(retained.content)) {
+      retained.content = retained.content.filter(block => (
+        !block || typeof block !== "object" || Array.isArray(block)
+          || (block as CompactContentBlock).type !== "input_image"
+      ));
+    }
+    out.push(retained);
   }
   return out;
+}
+
+function isCompactModelOutputBoundary(value: unknown): boolean {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const rec = value as { type?: unknown; role?: unknown };
+  if ((rec.type === undefined || rec.type === "message") && rec.role === "assistant") return true;
+  if (rec.type === "reasoning") return true;
+  return typeof rec.type === "string"
+    && /(?:^|_)call$/.test(rec.type)
+    && !rec.type.endsWith("_call_output");
 }
 
 function compactUserMessageItem(text: string): CompactMessageItem {
@@ -174,10 +218,10 @@ function imageBlock(block: CompactContentBlock): boolean {
 /**
  * Build the v1 compact replacement history.
  *
- * Text follows Codex's 20k-token retained-user-message budget. Image history is independently
- * bounded to ChatGPT's ten-attachment limit, newest first. This prevents an old image corpus from
- * immediately refilling Codex's context window after a successful compact while still preserving
- * the visual context the browser model can actually receive.
+ * Text follows Codex's 20k-token retained-user-message budget. `extractCompactUserMessages`
+ * already removed images from consumed visual turns, so this stage only has to bound the newest
+ * unconsumed visual turn to ChatGPT's ten-attachment limit. That lets a screenshot survive one
+ * immediate pre-turn compaction without allowing old screenshots to accumulate across checkpoints.
  */
 export function buildCompactV1Output(
   userMessages: CompactMessageItem[],

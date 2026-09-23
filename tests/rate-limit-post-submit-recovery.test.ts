@@ -1,0 +1,36 @@
+import { expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+
+const root = join(import.meta.dir, "..");
+const source = (path: string) => readFileSync(join(root, path), "utf8");
+const lf = (text: string) => text.replace(/\r\n/g, "\n");
+
+test("accepted rate limits retain the current surface and resume assistant binding in-place", () => {
+  const entry = source("src/adapters/chatgpt-web/browser-helper-entry.ts");
+  const recovery = source("src/adapters/chatgpt-web/rate-limit-post-submit-recovery.ts");
+  const worker = lf(source("src/adapters/chatgpt-web/browser-worker.ts"));
+
+  expect(entry).toContain('import "./rate-limit-post-submit-recovery"');
+  expect(worker).toContain(`private async waitForNewAssistantTurn(
+    page: Page,
+    baseline: ChatGptSubmissionBaseline,
+    deadline: number | undefined,
+    signal?: AbortSignal,
+    externalProgress?: ChatGptTurnProgressReader,
+    graceMs: number = CHATGPT_RESPONSE_DOM_GRACE_MS,
+    completionTracker?: ChatGptCompletionTracker,
+    recoverObservation?: ChatGptObservationRecovery,`);
+  expect(recovery).toContain("waitForNewAssistantTurn");
+  expect(recovery).toContain("isChatGptRateLimitError");
+  expect(recovery).toContain("chatGptRateLimitBackoffPolicy.recordRateLimit");
+  expect(recovery).toContain("runChatGptRecoveryRefresh");
+  expect(recovery).toContain("runChatGptWebsiteAction");
+  expect(recovery).toContain('page.reload({ waitUntil: "domcontentloaded", timeout: 60_000 })');
+  expect(recovery).toContain("refundThrottleWait(args, throttledBefore)");
+  expect(recovery).toContain("resetSubmissionDomCache(observationBaseline)");
+  expect(recovery).toContain("const originalRecovery = typeof args[7]");
+  expect(recovery).toContain("observationPage = requirePage(recovered.page)");
+  expect(recovery).toContain("observationBaseline = recovered.baseline");
+  expect(recovery).toContain("retaining current launcher surface");
+});

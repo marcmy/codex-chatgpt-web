@@ -17,6 +17,7 @@ export interface LauncherState {
   showBrowserDuringTurns: boolean;
   browserInteractionMode: BrowserInteractionMode;
   experimentalBiggerContext: boolean;
+  experimentalEvenBiggerContext: boolean;
   experimentalSkillAttachments: boolean;
   experimentalFreshConversationPerTurn: boolean;
   useSavedChats: boolean;
@@ -163,6 +164,7 @@ export interface LauncherApi {
   setMcpStep(step: number): Promise<LauncherState>;
   setAutostart(enabled: boolean): Promise<{ state: LauncherState; supported: boolean; enabled: boolean }>;
   setBiggerContext(enabled: boolean): Promise<LauncherState>;
+  setEvenBiggerContext(enabled: boolean): Promise<LauncherState>;
   setSkillAttachments(enabled: boolean): Promise<LauncherState>;
   setFreshConversationPerTurn(enabled: boolean): Promise<LauncherState>;
   setUseSavedChats(enabled: boolean): Promise<LauncherState>;

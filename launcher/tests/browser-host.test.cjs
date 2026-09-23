@@ -634,6 +634,37 @@ test("turn tabs use the hidden viewport when the launcher window is hidden", () 
   assert.deepEqual(tab.deviceEmulationViewport, { width: 1120, height: 720 });
 });
 
+test("retained automatic tabs stay drawable offscreen between turns", () => {
+  const events = [];
+  const hiddenBounds = { x: 1121, y: 721, width: 1120, height: 720 };
+  const tab = {
+    id: "tab-retained-hidden",
+    interactionMode: "automatic",
+    status: "ready",
+    rendererReady: true,
+    deviceEmulationViewport: { width: 1120, height: 720 },
+    deviceEmulationDirty: false,
+    view: {
+      setBounds: bounds => events.push(["bounds", bounds]),
+      setVisible: visible => events.push(["visible", visible]),
+      webContents: {
+        enableDeviceEmulation: options => events.push(["emulate", options]),
+        disableDeviceEmulation: () => events.push(["disable-emulation"]),
+      },
+    },
+  };
+  const fixture = Object.assign(Object.create(BrowserHost.prototype), {
+    hiddenTurnBounds: () => hiddenBounds,
+  });
+
+  BrowserHost.prototype.presentTurnView.call(fixture, tab, false);
+
+  assert.deepEqual(events, [
+    ["bounds", hiddenBounds],
+    ["visible", true],
+  ]);
+});
+
 test("new turn tabs defer device emulation until their renderer finishes loading", () => {
   const events = [];
   const tab = {
@@ -1673,6 +1704,46 @@ test("a live turn heartbeat refreshes its lease and rejects another helper", () 
   );
 });
 
+test("turn heartbeat surfaces a blocked authentication redirect", () => {
+  const tab = {
+    traceId: "auth-heartbeat",
+    helperPid: 444,
+    status: "running",
+    authenticationRequired: true,
+    lastHeartbeatAt: 0,
+  };
+  const fixture = Object.assign(Object.create(BrowserHost.prototype), {
+    turnTabs: new Map([["tab-auth", tab]]),
+    snapshot: () => ({ activeTabId: "tab-auth" }),
+  });
+
+  assert.deepEqual(
+    BrowserHost.prototype.heartbeatTurn.call(fixture, tab.traceId, tab.helperPid),
+    { activeTabId: "tab-auth", authenticationRequired: true },
+  );
+});
+
+test("fresh automatic turns fail closed after the launcher marks the saved session signed out", async () => {
+  const fixture = Object.assign(Object.create(BrowserHost.prototype), {
+    manualOperation: null,
+    state: { authenticated: false },
+    userCancelledTurnOwners: new Map(),
+    turnTabs: new Map(),
+  });
+
+  const error = await BrowserHost.prototype.beginTurn.call(
+    fixture,
+    "auth-required",
+    false,
+    444,
+    undefined,
+    undefined,
+    false,
+  ).catch(caught => caught);
+  assert.equal(error?.code, "authentication_required");
+  assert.match(error?.message ?? "", /sign in again/i);
+});
+
 test("a viewport-refresh heartbeat reapplies hidden emulation before CDP reconnect", () => {
   const events = [];
   const tab = {
@@ -2244,6 +2315,7 @@ test("a later provider round reuses only its exact connector-bound conversation"
     loading: false,
     message: "Task completed",
     bootstrapReady: true,
+    deviceEmulationDirty: false,
     view: {
       webContents: {
         isDestroyed: () => false,
@@ -2285,6 +2357,7 @@ test("a later provider round reuses only its exact connector-bound conversation"
   assert.equal(tab.loading, true);
   assert.equal(tab.message, "ChatGPT is working");
   assert.equal(tab.bootstrapReady, true);
+  assert.equal(tab.deviceEmulationDirty, true);
   assert.equal(fixture.selectedTabId, tab.id);
   assert.deepEqual(throttling, [false]);
   assert.deepEqual(events, ["visible", "published", "descriptor", "browser.tab_reused"]);

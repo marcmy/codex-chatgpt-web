@@ -1077,7 +1077,12 @@ export function buildResponseJSON(
 }
 
 export function formatErrorResponse(status: number, type: string, message: string): Response {
-  return new Response(JSON.stringify({ error: classifyError(status, type, message) }), {
+  const classified = classifyError(status, type, message);
+  const publicError: CodexErrorPayload = {
+    ...classified,
+    message: message.split(/\r?\n/, 1)[0] ?? "",
+  };
+  return new Response(JSON.stringify({ error: publicError }), {
     status, headers: { "Content-Type": "application/json" },
   });
 }

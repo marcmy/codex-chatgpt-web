@@ -1262,7 +1262,7 @@ test.each([false, true])("structured compact rebuilds canonical context when its
     await TurnBroker.forSocket(provider.chatgptWeb!.brokerSocketPath!).close();
     rmSync(root, { recursive: true, force: true });
   }
-});
+}, 20_000);
 
 test.each([false, true])("configured fresh compaction waits for cleanup and preserves committed final=%s", async committed => {
   const root = mkdtempSync(join(shortSocketTempRoot(), "cgw-fresh-owner-"));

@@ -6,6 +6,7 @@ import { join } from "node:path";
 import {
   LAUNCHER_BROWSER_HOST_KIND,
   LAUNCHER_BROWSER_IDLE_URL,
+  LauncherAuthenticationRequiredError,
   LauncherManualTurnTimedOutError,
   LauncherRetainedConversationUnavailableError,
   LauncherBrowserTurnCancelledError,
@@ -231,6 +232,45 @@ test("launcher turn control preserves explicit user cancellation as a terminal s
     }).catch(cause => cause);
     expect(error).toBeInstanceOf(LauncherBrowserTurnCancelledError);
     expect((error as Error).message).toBe("turn closed by user");
+  } finally {
+    await new Promise<void>(resolve => server.close(() => resolve()));
+  }
+});
+
+test("launcher turn control preserves authentication-required state and heartbeat evidence", async () => {
+  let mode: "start" | "heartbeat" = "start";
+  const server = createServer(async (request, response) => {
+    for await (const _chunk of request) { /* drain request */ }
+    if (mode === "start") {
+      response.writeHead(401, { "content-type": "application/json" });
+      response.end('{"error":"sign in again","code":"authentication_required"}\n');
+      return;
+    }
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end('{"ok":true,"authenticationRequired":true}\n');
+  });
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  try {
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("test server has no port");
+    const path = descriptorFile(`http://127.0.0.1:${address.port}`);
+    const error = await notifyLauncherTurn(path, {
+      phase: "start",
+      traceId: "authrequired12",
+      helperPid: process.pid,
+    }).catch(caught => caught);
+    expect(error).toBeInstanceOf(LauncherAuthenticationRequiredError);
+    expect(error.message).toContain("sign in again");
+
+    mode = "heartbeat";
+    await expect(notifyLauncherTurn(path, {
+      phase: "heartbeat",
+      traceId: "authrequired12",
+      helperPid: process.pid,
+    })).resolves.toEqual({ authenticationRequired: true });
   } finally {
     await new Promise<void>(resolve => server.close(() => resolve()));
   }

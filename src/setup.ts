@@ -53,6 +53,7 @@ export interface SetupOptions {
   forceLogin?: boolean;
   autoApproveToolCalls?: boolean;
   experimentalBiggerContext?: boolean;
+  experimentalEvenBiggerContext?: boolean;
   experimentalSkillAttachments?: boolean;
   experimentalFreshConversationPerTurn?: boolean;
   useSavedChats?: boolean;
@@ -147,6 +148,7 @@ function meaningfulRuntimeChange(before: AppConfig, after: AppConfig): boolean {
     extraHighAvailable: before.extraHighAvailable,
     proAvailable: before.proAvailable,
     experimentalBiggerContext: before.experimentalBiggerContext,
+    experimentalEvenBiggerContext: before.experimentalEvenBiggerContext,
     experimentalSkillAttachments: before.experimentalSkillAttachments,
     experimentalFreshConversationPerTurn: before.experimentalFreshConversationPerTurn,
     useSavedChats: before.useSavedChats,
@@ -178,6 +180,7 @@ function meaningfulRuntimeChange(before: AppConfig, after: AppConfig): boolean {
     extraHighAvailable: after.extraHighAvailable,
     proAvailable: after.proAvailable,
     experimentalBiggerContext: after.experimentalBiggerContext,
+    experimentalEvenBiggerContext: after.experimentalEvenBiggerContext,
     experimentalSkillAttachments: after.experimentalSkillAttachments,
     experimentalFreshConversationPerTurn: after.experimentalFreshConversationPerTurn,
     useSavedChats: after.useSavedChats,
@@ -286,6 +289,13 @@ function baseConfig(
   if (options.experimentalBiggerContext !== undefined) {
     config.experimentalBiggerContext = options.experimentalBiggerContext;
   }
+  if (options.experimentalEvenBiggerContext !== undefined) {
+    config.experimentalEvenBiggerContext = options.experimentalEvenBiggerContext;
+  }
+  if (config.experimentalEvenBiggerContext && !config.experimentalBiggerContext) {
+    throw new Error("Even Bigger Context requires Bigger Context");
+  }
+  if (!config.experimentalBiggerContext) config.experimentalEvenBiggerContext = false;
   if (options.zeroRiskProEnabled !== undefined) {
     if (config.browserInteractionMode !== "manual") {
       throw new Error("Zero Risk Pro can be configured only with --zero-risk-browser-interaction");
@@ -305,7 +315,7 @@ function baseConfig(
     if (options.experimentalSkillAttachments === true) {
       throw new Error("Zero Risk does not support Skills as files");
     }
-    if (options.experimentalBiggerContext === true) {
+    if (options.experimentalBiggerContext === true || options.experimentalEvenBiggerContext === true) {
       throw new Error("Zero Risk does not support Bigger Context");
     }
     if (config.mode !== "full") {
@@ -315,6 +325,7 @@ function baseConfig(
       throw new Error("Zero Risk requires the Launcher; pass --browser-host-descriptor from the running Launcher");
     }
     config.experimentalBiggerContext = false;
+    config.experimentalEvenBiggerContext = false;
     config.experimentalSkillAttachments = false;
   }
   if (options.acknowledgedUnofficial) config.acknowledgedUnofficialAt = new Date().toISOString();

@@ -22,6 +22,13 @@ export class LauncherRetainedConversationUnavailableError extends Error {
   }
 }
 
+export class LauncherAuthenticationRequiredError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "LauncherAuthenticationRequiredError";
+  }
+}
+
 export class LauncherManualTurnTimedOutError extends Error {
   constructor(message: string) {
     super(message);
@@ -636,6 +643,7 @@ export async function notifyLauncherTurn(
   reused?: boolean;
   connectorBound?: boolean;
   cancelledByUser?: boolean;
+  authenticationRequired?: boolean;
   trackUsage?: boolean;
 }> {
   const descriptor = readLauncherBrowserHostDescriptor(descriptorPath);
@@ -663,6 +671,11 @@ export async function notifyLauncherTurn(
           typeof body.error === "string" ? body.error : "The retained ChatGPT conversation is no longer available",
         );
       }
+      if (response.status === 401 && body.code === "authentication_required") {
+        throw new LauncherAuthenticationRequiredError(
+          typeof body.error === "string" ? body.error : "The ChatGPT session requires a fresh sign-in",
+        );
+      }
       const detail = typeof body.error === "string" ? body.error : "";
       throw new Error(`HTTP ${response.status}${detail ? `: ${detail}` : ""}`);
     }
@@ -684,6 +697,12 @@ export async function notifyLauncherTurn(
         trackUsage: body.trackUsage === true,
       };
     }
+    if (activity.phase === "heartbeat") {
+      if (body.authenticationRequired !== undefined && typeof body.authenticationRequired !== "boolean") {
+        throw new Error("Launcher browser control channel returned an invalid authentication state");
+      }
+      return body.authenticationRequired === true ? { authenticationRequired: true } : {};
+    }
     if (activity.phase === "end") {
       if (typeof body.cancelledByUser !== "boolean") {
         throw new Error("Launcher browser control channel returned an invalid turn release result");
@@ -695,7 +714,8 @@ export async function notifyLauncherTurn(
     if (signal?.aborted) throw new DOMException("Launcher browser acquisition cancelled", "AbortError");
     if (controller.signal.aborted) throw new Error(`Launcher browser control ${activity.phase} timed out after ${timeoutMs}ms`);
     if (error instanceof LauncherBrowserTurnCancelledError
-      || error instanceof LauncherRetainedConversationUnavailableError) throw error;
+      || error instanceof LauncherRetainedConversationUnavailableError
+      || error instanceof LauncherAuthenticationRequiredError) throw error;
     throw new Error(`Launcher browser control channel failed: ${error instanceof Error ? error.message : String(error)}`);
   } finally {
     clearTimeout(timer);

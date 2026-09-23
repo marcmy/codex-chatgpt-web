@@ -754,6 +754,7 @@ function registerIpc({ logger, stateStore }) {
       codexRestartRequired: true,
       browserInteractionMode: "automatic",
       experimentalBiggerContext: false,
+      experimentalEvenBiggerContext: false,
       experimentalSkillAttachments: false,
       experimentalFreshConversationPerTurn: false,
       useSavedChats: false,
@@ -832,7 +833,7 @@ function registerIpc({ logger, stateStore }) {
       : await runSetup();
     const state = stateStore.update({
       browserInteractionMode: interactionMode,
-      ...(interactionMode === "manual" ? { experimentalBiggerContext: false, experimentalSkillAttachments: false } : {}),
+      ...(interactionMode === "manual" ? { experimentalBiggerContext: false, experimentalEvenBiggerContext: false, experimentalSkillAttachments: false } : {}),
       zeroRiskProEnabled: runtimeHost.runtimeConfigSnapshot().config?.zeroRiskProEnabled === true,
       experimentalFreshConversationPerTurn: runtimeHost.runtimeConfigSnapshot().config?.experimentalFreshConversationPerTurn === true,
       useSavedChats: runtimeHost.runtimeConfigSnapshot().config?.useSavedChats === true,
@@ -866,6 +867,18 @@ function registerIpc({ logger, stateStore }) {
     const result = await runtimeHost.setBiggerContext(enabled === true);
     const state = stateStore.update({
       experimentalBiggerContext: result.enabled,
+      experimentalEvenBiggerContext: false,
+      codexCatalogVerified: IS_DEV_PROFILE ? true : false,
+      codexRestartRequired: IS_DEV_PROFILE ? false : true,
+    });
+    send("launcher:state-changed", state);
+    if (!IS_DEV_PROFILE) startCatalogVerificationMonitor({ logger, stateStore });
+    return state;
+  });
+  handle("launcher:even-bigger-context", async (_event, enabled) => {
+    const result = await runtimeHost.setEvenBiggerContext(enabled === true);
+    const state = stateStore.update({
+      experimentalEvenBiggerContext: result.enabled,
       codexCatalogVerified: IS_DEV_PROFILE ? true : false,
       codexRestartRequired: IS_DEV_PROFILE ? false : true,
     });
@@ -940,7 +953,7 @@ function registerIpc({ logger, stateStore }) {
       browserInteractionMode: mode,
       experimentalFreshConversationPerTurn: runtimeHost.runtimeConfigSnapshot().config?.experimentalFreshConversationPerTurn === true,
       useSavedChats: runtimeHost.runtimeConfigSnapshot().config?.useSavedChats === true,
-      ...(mode === "manual" ? { experimentalBiggerContext: false, experimentalSkillAttachments: false } : {}),
+      ...(mode === "manual" ? { experimentalBiggerContext: false, experimentalEvenBiggerContext: false, experimentalSkillAttachments: false } : {}),
       ...(result.configured ? {
         codexCatalogVerified: IS_DEV_PROFILE,
         codexRestartRequired: !IS_DEV_PROFILE,
@@ -1036,7 +1049,7 @@ async function start() {
   app.on("second-instance", () => showMainWindow());
   app.on("activate", () => showMainWindow());
 
-  await waitForPackagedRuntimeSource({ app, resourcesPath: process.resourcesPath });
+  await waitForPackagedRuntimeSource({ app, resourcesPath: process.resourcesPath, coreHome: CORE_HOME });
   let installedRuntimeRoot = null;
   let runtimeRootResolved = false;
   const runtimeRootProvider = () => {
@@ -1247,6 +1260,7 @@ async function start() {
       codexRestartRequired: false,
       autoStart: false,
       experimentalBiggerContext: config?.experimentalBiggerContext === true,
+      experimentalEvenBiggerContext: config?.experimentalEvenBiggerContext === true,
       experimentalSkillAttachments: config?.experimentalSkillAttachments === true,
       experimentalFreshConversationPerTurn: config?.experimentalFreshConversationPerTurn === true,
       useSavedChats: config?.useSavedChats === true,
@@ -1276,6 +1290,7 @@ async function start() {
         codexCatalogVerified: false,
         codexRestartRequired: true,
         experimentalBiggerContext: runtimeHost.runtimeConfigSnapshot().config?.experimentalBiggerContext === true,
+        experimentalEvenBiggerContext: runtimeHost.runtimeConfigSnapshot().config?.experimentalEvenBiggerContext === true,
         experimentalSkillAttachments: runtimeHost.runtimeConfigSnapshot().config?.experimentalSkillAttachments === true,
         experimentalFreshConversationPerTurn: runtimeHost.runtimeConfigSnapshot().config?.experimentalFreshConversationPerTurn === true,
         useSavedChats: runtimeHost.runtimeConfigSnapshot().config?.useSavedChats === true,
@@ -1301,6 +1316,7 @@ async function start() {
     const configuredRuntime = runtimeHost.runtimeConfigSnapshot();
     if (configuredRuntime.configured) {
       const enabled = configuredRuntime.config?.experimentalBiggerContext === true;
+      const experimentalEvenBiggerContext = configuredRuntime.config?.experimentalEvenBiggerContext === true;
       const experimentalSkillAttachments = configuredRuntime.config?.experimentalSkillAttachments === true;
       const experimentalFreshConversationPerTurn = configuredRuntime.config?.experimentalFreshConversationPerTurn === true;
       const useSavedChats = configuredRuntime.config?.useSavedChats === true;
@@ -1310,8 +1326,9 @@ async function start() {
         || saved.experimentalFreshConversationPerTurn !== experimentalFreshConversationPerTurn
         || saved.useSavedChats !== useSavedChats
         || saved.experimentalBiggerContext !== enabled
+        || saved.experimentalEvenBiggerContext !== experimentalEvenBiggerContext
         || saved.zeroRiskProEnabled !== zeroRiskProEnabled) {
-        const state = stateStore.update({ experimentalBiggerContext: enabled, experimentalSkillAttachments, experimentalFreshConversationPerTurn, useSavedChats, zeroRiskProEnabled });
+        const state = stateStore.update({ experimentalBiggerContext: enabled, experimentalEvenBiggerContext, experimentalSkillAttachments, experimentalFreshConversationPerTurn, useSavedChats, zeroRiskProEnabled });
         send("launcher:state-changed", state);
       }
     }
@@ -1327,6 +1344,7 @@ async function start() {
         coreSetupComplete: true,
         mcpRuntimeInstalled: config.mode === "full",
         experimentalBiggerContext: config.experimentalBiggerContext === true,
+        experimentalEvenBiggerContext: config.experimentalEvenBiggerContext === true,
         experimentalSkillAttachments: config.experimentalSkillAttachments === true,
         experimentalFreshConversationPerTurn: config.experimentalFreshConversationPerTurn === true,
         useSavedChats: config.useSavedChats === true,

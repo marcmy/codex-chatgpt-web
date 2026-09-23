@@ -45,7 +45,14 @@ export function chatGptBrowserTabClosedError(): ChatGptWebAdapterError {
 export function chatGptTurnSupersededError(): ChatGptWebAdapterError {
   return new ChatGptWebAdapterError(
     "A newer Codex instruction superseded this ChatGPT response.",
-    { status: 499, errorType: "client_closed_request", code: "client_cancelled", retryable: false },
+    {
+      // This is a deterministic stale execution, not a transport disconnect. Codex treats
+      // client-cancelled streams as reconnect candidates and can otherwise replay obsolete work.
+      status: 400,
+      errorType: "invalid_request_error",
+      code: "invalid_request_error",
+      retryable: false,
+    },
   );
 }
 
@@ -69,6 +76,18 @@ export function chatGptRetainedConversationUnavailableError(): ChatGptWebAdapter
       status: 409,
       errorType: "invalid_request_error",
       code: "compaction_source_unavailable",
+      retryable: false,
+    },
+  );
+}
+
+export function chatGptAuthenticationRequiredError(): ChatGptWebAdapterError {
+  return new ChatGptWebAdapterError(
+    "The ChatGPT session has expired. Sign in again in Codex Web GPT before starting another turn.",
+    {
+      status: 401,
+      errorType: "authentication_error",
+      code: "chatgpt_session_expired",
       retryable: false,
     },
   );
