@@ -429,6 +429,18 @@ export function extractChatGptSteeringEnvironmentClaim(parsed: CodexParsedReques
  * still requires this exact turn's native rollout and corroborating current sandbox metadata.
  * Unknown profiles/fields are deliberately not classified as permission-neutral updates.
  */
+export function hasChatGptCalendarEnvironmentDeltaAttempt(parsed: CodexParsedRequest): boolean {
+  const metadata = clientTurnMetadata(parsed);
+  const turnId = extractChatGptTurnIdentity(parsed).turnId;
+  if (!metadata || !turnId) return false;
+  const body = record(parsed._rawBody);
+  const input = Array.isArray(body?.input) ? body.input : [];
+  const activeIndex = input.findLastIndex(value => isNativeInstruction(record(value), metadata));
+  const active = record(input[activeIndex]);
+  if (itemTurnId(active) !== turnId || typeof active?.id !== "string" || !active.id) return false;
+  return input.slice(activeIndex + 1).some(value => hasEnvironmentContextFragment(record(value)));
+}
+
 export function hasChatGptCalendarEnvironmentDelta(parsed: CodexParsedRequest): boolean {
   const metadata = clientTurnMetadata(parsed);
   const turnId = extractChatGptTurnIdentity(parsed).turnId;
