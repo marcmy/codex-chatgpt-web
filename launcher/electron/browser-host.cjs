@@ -3081,6 +3081,7 @@ module.exports = {
   BrowserTurnCancelledError,
   CHATGPT_VIEWPORT_CSS,
   IDLE_BROWSER_URL,
+  isChatGptOriginUrl,
   isChatGptCloudflareChallengeResponse,
   isTemporaryChatUrl,
   loadCommittedBrowserSurface,
