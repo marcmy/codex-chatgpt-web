@@ -2660,7 +2660,13 @@ class BrowserHost {
         });
         return this.snapshot();
       }
-      if (!url.startsWith(CHATGPT_ORIGIN)) {
+      let isChatGptOrigin = false;
+      try {
+        isChatGptOrigin = new URL(url).origin === new URL(CHATGPT_ORIGIN).origin;
+      } catch {
+        isChatGptOrigin = false;
+      }
+      if (!isChatGptOrigin) {
         this.setState({ status: "signed-out", message: "Sign in to ChatGPT", authenticated: false, url });
         return this.snapshot();
       }
