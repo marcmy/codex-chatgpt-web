@@ -468,6 +468,7 @@ export function createChatGptWebAdapter(
       return {
         captureLunaCheckpoint,
         experimentalSkillAttachments,
+        ...(freshConversationPerTurn ? { omitConsumedHistoricalImages: true } : {}),
         ...(experimentalMultipartParts !== undefined
           ? { experimentalMultipartParts }
           : {}),
