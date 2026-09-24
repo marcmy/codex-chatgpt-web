@@ -77,8 +77,12 @@ Setup options:
   --restart-service            Explicitly restart this project's daemon after an update
   --login                      Refresh the stored ChatGPT login even if one exists
   --auto-approve-tool-calls    Opt in to per-call browser clicks on "Allow once" prompts
-  --bigger-context             Enable experimental 3× logical context with multipart transport
+  --bigger-context             Enable experimental 3× logical context with adaptive 1/2/6-message transport
   --even-bigger-context        Enable super-experimental 6× logical context (up to 8 messages)
+  --fresh-conversation         Start each automatic turn in a fresh browser chat
+  --retained-conversation      Reuse the browser chat between turns (default)
+  --saved-chats                Keep task conversations in ChatGPT history
+  --temporary-chats            Use Temporary Chat for task conversations (default)
   --skill-attachments         Experimental selected skills as text attachments
   --inline-skills             Keep selected skills inline (default)
   --standard-context           Disable experimental multi-message context
@@ -303,6 +307,16 @@ async function setupCommand(args: string[]): Promise<void> {
   const skillAttachments = takeFlag(args, "--skill-attachments");
   const inlineSkills = takeFlag(args, "--inline-skills");
   if (skillAttachments && inlineSkills) throw new Error("Choose --skill-attachments or --inline-skills");
+  const savedChats = takeFlag(args, "--saved-chats");
+  const temporaryChats = takeFlag(args, "--temporary-chats");
+  if (savedChats && temporaryChats) throw new Error("Choose --saved-chats or --temporary-chats");
+  if (savedChats || temporaryChats) options.useSavedChats = savedChats;
+  const freshConversation = takeFlag(args, "--fresh-conversation");
+  const retainedConversation = takeFlag(args, "--retained-conversation");
+  if (freshConversation && retainedConversation) {
+    throw new Error("Choose --fresh-conversation or --retained-conversation");
+  }
+  if (freshConversation || retainedConversation) options.experimentalFreshConversationPerTurn = freshConversation;
   const biggerContext = takeFlag(args, "--bigger-context");
   const evenBiggerContext = takeFlag(args, "--even-bigger-context");
   const standardContext = takeFlag(args, "--standard-context");
@@ -396,6 +410,9 @@ async function routeCommand(args: string[]): Promise<void> {
         : undefined;
   if (!result) throw new Error(`Unknown route action: ${action}`);
   stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+  if ("changed" in result && result.changed) {
+    process.stderr.write("Fully restart Codex to apply the route change.\n");
+  }
 }
 
 async function subagentsCommand(args: string[]): Promise<void> {

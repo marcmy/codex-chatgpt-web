@@ -2,6 +2,11 @@ import type { Locator, Page } from "playwright-core";
 import type { ChatGptWebAccountCapabilities } from "./chatgpt-web-models";
 
 export const CHATGPT_TEMPORARY_CHAT_URL = "https://chatgpt.com/?temporary-chat=true";
+export const CHATGPT_SAVED_CHAT_URL = "https://chatgpt.com/";
+
+export function chatGptNewChatUrl(useSavedChats = false): string {
+  return useSavedChats ? CHATGPT_SAVED_CHAT_URL : CHATGPT_TEMPORARY_CHAT_URL;
+}
 export const CHATGPT_COMPOSER_SELECTOR = [
   '[data-testid="prompt-textarea"]',
   "#prompt-textarea",
@@ -151,15 +156,21 @@ export function parseChatGptEffortSliderState(
   return { min, max, value };
 }
 
-export function resolveChatGptEffortCapabilities(
-  optionCount: number,
-  planType?: string,
-): { extraHighAvailable: boolean; proAvailable: boolean } {
-  const proAvailable = optionCount >= 5;
-  return {
-    extraHighAvailable: proAvailable || (optionCount === 4 && planType?.toLowerCase() === "pro"),
-    proAvailable,
-  };
+export async function readChatGptEffortAvailability(
+  sliderContainer: Locator,
+  state: ChatGptEffortSliderState,
+): Promise<boolean[]> {
+  // Plus exposes a fourth ARIA position for a locked Pro upsell. Only the ticks
+  // carry both attributes; the slider root also has data-locked and is not a choice.
+  const locks = await sliderContainer.evaluate(container => Array.from(
+    container.querySelectorAll("[data-locked][data-selected]"),
+    tick => tick.getAttribute("data-locked"),
+  ));
+  if (locks.length !== state.max - state.min + 1
+    || locks.some(lock => lock !== "true" && lock !== "false")) {
+    throw new Error("ChatGPT effort availability could not be verified from its slider ticks");
+  }
+  return locks.map(lock => lock === "false");
 }
 
 async function anyVisible(locator: Locator): Promise<boolean> {
@@ -180,10 +191,15 @@ export async function assertAuthenticatedChatGptPage(page: Page): Promise<void> 
 }
 
 export async function assertTemporaryChatPage(page: Page): Promise<void> {
+  await assertNewChatPage(page);
+}
+
+export async function assertNewChatPage(page: Page, useSavedChats = false): Promise<void> {
   const url = new URL(page.url());
-  const expected = new URL(CHATGPT_TEMPORARY_CHAT_URL);
-  if (url.origin !== expected.origin || url.pathname !== expected.pathname || url.searchParams.get("temporary-chat") !== "true") {
-    throw new Error(`ChatGPT left the isolated Temporary Chat surface (${page.url()})`);
+  const expected = new URL(chatGptNewChatUrl(useSavedChats));
+  if (url.origin !== expected.origin || url.pathname !== expected.pathname
+    || (url.searchParams.get("temporary-chat") === "true") === useSavedChats) {
+    throw new Error(`ChatGPT left the requested new ${useSavedChats ? "saved" : "Temporary"} Chat surface (${page.url()})`);
   }
 }
 
@@ -247,38 +263,8 @@ export async function detectChatGptAccountCapabilities(
         { cause: new Error("ChatGPT effort slider exposed an invalid ARIA range") },
       );
     }
-    const optionCount = state.max - state.min + 1;
-    let planType: string | undefined;
-    if (optionCount === 4 && typeof page.evaluate === "function") {
-      const planProbeTimeoutMs = Math.max(1, Math.min(options.selectorTimeoutMs ?? 5_000, 5_000));
-      planType = await page.evaluate(async timeoutMs => {
-        const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), timeoutMs);
-        try {
-          const response = await fetch("/api/auth/session", {
-            credentials: "same-origin",
-            cache: "no-store",
-            signal: controller.signal,
-          });
-          if (!response.ok) return undefined;
-          const session: unknown = await response.json();
-          if (!session || typeof session !== "object" || Array.isArray(session)) return undefined;
-          const account = (session as { account?: unknown }).account;
-          if (!account || typeof account !== "object" || Array.isArray(account)) return undefined;
-          const value = (account as { planType?: unknown }).planType;
-          return typeof value === "string" ? value.toLowerCase() : undefined;
-        } catch {
-          return undefined;
-        } finally {
-          clearTimeout(timer);
-        }
-      }, planProbeTimeoutMs).catch(() => undefined);
-    }
-    // Legacy Plus can expose a fourth, selectable Pro upsell position. A Pro account can also
-    // legitimately expose only four positions while the Pro model itself is temporarily hidden.
-    // The active ChatGPT web session disambiguates those otherwise identical slider ranges.
-    const capabilities = resolveChatGptEffortCapabilities(optionCount, planType);
-    return { solAvailable: true, ...capabilities };
+    const available = await readChatGptEffortAvailability(sliderContainer, state);
+    return { solAvailable: true, extraHighAvailable: available[3] === true, proAvailable: available[4] === true };
   } finally {
     await page.keyboard.press("Escape").catch(() => {});
   }

@@ -14,6 +14,8 @@ import {
   extractChatGptRootThreadMetadata,
   hasCurrentChatGptEnvironmentContext,
   hasReplayedCurrentChatGptEnvironmentContext,
+  hasChatGptCalendarEnvironmentDelta,
+  hasChatGptCalendarEnvironmentDeltaAttempt,
   hasRawChatGptEnvironmentContext,
   unattributedChatGptEnvironmentMessages,
   isChatGptCompactionContinuation,
@@ -188,7 +190,11 @@ export class ChatGptThreadEnvironmentStore {
       const steeringClaim = hasCurrentContext && !currentCompaction
         ? extractChatGptSteeringEnvironmentClaim(parsed) : undefined;
       const sameThread = this.get(identity.threadId);
-      if (hasCurrentContext && !currentCompaction && !historicalMessages && !steeringClaim) {
+      const calendarDeltaAttempt = hasCurrentContext && !currentCompaction
+        && hasChatGptCalendarEnvironmentDeltaAttempt(parsed);
+      const calendarDelta = calendarDeltaAttempt && hasChatGptCalendarEnvironmentDelta(parsed);
+      if (calendarDeltaAttempt && !calendarDelta) throw error;
+      if (hasCurrentContext && !currentCompaction && !historicalMessages && !steeringClaim && !calendarDelta) {
         // Native tool continuations can replay the original environment message with the same
         // turn_id still attached. Treat that as continuity only when the replayed claim is exactly
         // the authority we already authenticated for this thread. A changed or malformed claim
@@ -228,6 +234,9 @@ export class ChatGptThreadEnvironmentStore {
           tools: parsed.context.tools,
         });
         if (rolloutEnvironment) {
+          if (calendarDelta && rolloutEnvironment.sandboxPolicy.type !== "dangerFullAccess") {
+            throw new Error("Calendar environment delta conflicts with its current Codex rollout");
+          }
           if (currentClaim && !sameAuthority(currentClaim, rolloutEnvironment)) {
             // A current steering replay may carry the exact authority already authenticated for
             // this thread while the native rollout exposes a differently normalized workspace

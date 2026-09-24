@@ -16,8 +16,9 @@ export type ChatGptWebZeroRiskBackendModel =
   | typeof CHATGPT_WEB_ZERO_RISK_BACKEND_MODEL
   | typeof CHATGPT_WEB_ZERO_RISK_PRO_BACKEND_MODEL;
 
-export type ChatGptWebCodexEffort = "low" | "medium" | "high" | "xhigh" | "ultra";
+export type ChatGptWebCodexEffort = "low" | "medium" | "high" | "xhigh" | "max" | "ultra";
 export type ChatGptWebAdapterEffort = "low" | "medium" | "high" | "xhigh" | "max";
+export type ChatGptWebModelFamily = "5.6" | "6";
 
 /**
  * Measured Plus browser transport windows, including the fixed hidden ChatGPT platform reserve.
@@ -234,14 +235,18 @@ interface ChatGptWebModelRouteBase {
   codexEffort: ChatGptWebCodexEffort;
   requiresPro: boolean;
   requiresExtraHigh?: boolean;
-  /** Unified catalog rows preserve the Codex reasoning slider instead of pinning one effort. */
-  dynamicEffort?: boolean;
+  /** Old task identities remain resolvable, but are omitted from the picker. */
+  legacy?: boolean;
+  /** Omission denotes an immutable route, including all pre-6.0 task identities. */
+  supportedCodexEfforts?: readonly ChatGptWebCodexEffort[];
 }
 
 export interface ChatGptWebAutomaticModelRoute extends ChatGptWebModelRouteBase {
   interactionMode: "automatic";
   backendModel: ChatGptWebAutomaticBackendModel;
   adapterEffort: ChatGptWebAdapterEffort;
+  /** Exact browser family, independent of the generic adapter's context/transport profile. */
+  modelFamily?: ChatGptWebModelFamily;
 }
 
 export interface ChatGptWebZeroRiskModelRoute extends ChatGptWebModelRouteBase {
@@ -286,7 +291,7 @@ export const CHATGPT_WEB_ZERO_RISK_PRO_MODEL_ROUTE: ChatGptWebZeroRiskModelRoute
   requiresPro: true,
 };
 
-export const CHATGPT_WEB_LUNA_MODEL_ROUTE: ChatGptWebAutomaticModelRoute = {
+export const CHATGPT_WEB_LEGACY_LUNA_MODEL_ROUTE: ChatGptWebAutomaticModelRoute = {
   slug: "chatgpt-web/luna",
   displayName: "ChatGPT Web — Luna",
   description: "ChatGPT Web Luna for accounts without the Sol model selector.",
@@ -295,6 +300,7 @@ export const CHATGPT_WEB_LUNA_MODEL_ROUTE: ChatGptWebAutomaticModelRoute = {
   codexEffort: "low",
   adapterEffort: "low",
   requiresPro: false,
+  legacy: true,
 };
 
 export const CHATGPT_WEB_LUNA_THINK_MODEL_ROUTE: ChatGptWebModelRoute = {
@@ -308,88 +314,138 @@ export const CHATGPT_WEB_LUNA_THINK_MODEL_ROUTE: ChatGptWebModelRoute = {
   // Think route after Codex has selected its separate catalog row.
   adapterEffort: "medium",
   requiresPro: false,
+  legacy: true,
+};
+
+export const CHATGPT_WEB_LUNA_MODEL_ROUTE: ChatGptWebAutomaticModelRoute = {
+  slug: "chatgpt-web/gpt-5.6-luna",
+  displayName: "GPT-5.6 Luna (Web)",
+  description: "ChatGPT Luna. Light selects the ordinary mode; Medium enables Think.",
+  interactionMode: "automatic",
+  backendModel: CHATGPT_WEB_LUNA_BACKEND_MODEL,
+  codexEffort: "low",
+  adapterEffort: "low",
+  supportedCodexEfforts: ["low", "medium"],
+  requiresPro: false,
 };
 
 export const CHATGPT_WEB_LUNA_MODEL_ROUTES: readonly ChatGptWebModelRoute[] = [
   CHATGPT_WEB_LUNA_MODEL_ROUTE,
-  CHATGPT_WEB_LUNA_THINK_MODEL_ROUTE,
 ];
 
 /**
- * Native Codex can expose reasoning effort as a slider on one catalog row. Keep one visible Sol
- * route and retain the historical fixed-effort slugs only as compatibility aliases for existing
- * tasks/configuration.
+ * Preserve the exact pre-6.0 bindings for saved tasks, including the old unpinned Pro route.
+ * Native Codex may normalize its technical effort; these identities have always owned the mode.
  */
-export const CHATGPT_WEB_MODEL_ROUTE: ChatGptWebAutomaticModelRoute = {
-  slug: "chatgpt-web/sol",
-  displayName: "ChatGPT Web",
-  description: "ChatGPT Web through the native Codex harness with selectable reasoning effort.",
-  interactionMode: "automatic",
-  backendModel: CHATGPT_WEB_BACKEND_MODEL,
-  codexEffort: "high",
-  adapterEffort: "high",
-  dynamicEffort: true,
-  requiresPro: false,
-};
-
 export const CHATGPT_WEB_LEGACY_MODEL_ROUTES: readonly ChatGptWebAutomaticModelRoute[] = [
   {
     slug: "chatgpt-web/light",
     displayName: "ChatGPT Web — Instant",
-    description: "Legacy fixed-effort ChatGPT Web Instant route.",
+    description: "ChatGPT Web Instant through the native Codex harness.",
     interactionMode: "automatic",
     backendModel: CHATGPT_WEB_BACKEND_MODEL,
     codexEffort: "low",
     adapterEffort: "low",
     requiresPro: false,
+    legacy: true,
   },
   {
     slug: "chatgpt-web/medium",
     displayName: "ChatGPT Web — Medium",
-    description: "Legacy fixed-effort ChatGPT Web Medium route.",
+    description: "ChatGPT Web Medium through the native Codex harness.",
     interactionMode: "automatic",
     backendModel: CHATGPT_WEB_BACKEND_MODEL,
     codexEffort: "medium",
     adapterEffort: "medium",
     requiresPro: false,
+    legacy: true,
   },
   {
     slug: "chatgpt-web/high",
     displayName: "ChatGPT Web — High",
-    description: "Legacy fixed-effort ChatGPT Web High route.",
+    description: "ChatGPT Web High through the native Codex harness.",
     interactionMode: "automatic",
     backendModel: CHATGPT_WEB_BACKEND_MODEL,
     codexEffort: "high",
     adapterEffort: "high",
     requiresPro: false,
+    legacy: true,
   },
   {
     slug: "chatgpt-web/extra-high",
     displayName: "ChatGPT Web — Extra High",
-    description: "Legacy fixed-effort ChatGPT Web Extra High route.",
+    description: "Account-gated ChatGPT Web Extra High through the native Codex harness.",
     interactionMode: "automatic",
     backendModel: CHATGPT_WEB_BACKEND_MODEL,
     codexEffort: "xhigh",
     adapterEffort: "xhigh",
     requiresPro: false,
     requiresExtraHigh: true,
+    legacy: true,
   },
   {
     slug: "chatgpt-web/pro",
     displayName: "ChatGPT Web — Pro",
-    description: "Legacy fixed-effort ChatGPT Pro route.",
+    description: "Account-gated ChatGPT Pro through the native Codex harness.",
     interactionMode: "automatic",
     backendModel: CHATGPT_WEB_BACKEND_MODEL,
     codexEffort: "ultra",
     adapterEffort: "max",
     requiresPro: true,
+    legacy: true,
   },
 ];
 
-/** Every automatic slug accepted by the bridge, including hidden compatibility aliases. */
+/** Group only efforts with identical context and compaction budgets. */
 export const CHATGPT_WEB_MODEL_ROUTES: readonly ChatGptWebAutomaticModelRoute[] = [
-  CHATGPT_WEB_MODEL_ROUTE,
-  ...CHATGPT_WEB_LEGACY_MODEL_ROUTES,
+  {
+    slug: "chatgpt-web/gpt-5.6-sol-instant",
+    displayName: "GPT-5.6 Sol Instant (Web)",
+    description: "GPT-5.6 Sol Instant through ChatGPT, with its own context and compaction budget.",
+    interactionMode: "automatic",
+    backendModel: CHATGPT_WEB_BACKEND_MODEL,
+    modelFamily: "5.6",
+    codexEffort: "low",
+    adapterEffort: "low",
+    supportedCodexEfforts: ["low"],
+    requiresPro: false,
+  },
+  {
+    slug: "chatgpt-web/gpt-5.6-sol",
+    displayName: "GPT-5.6 Sol (Web)",
+    description: "GPT-5.6 Sol through ChatGPT with Medium, High, or account-supported Extra High reasoning.",
+    interactionMode: "automatic",
+    backendModel: CHATGPT_WEB_BACKEND_MODEL,
+    modelFamily: "5.6",
+    codexEffort: "high",
+    adapterEffort: "high",
+    supportedCodexEfforts: ["medium", "high", "xhigh"],
+    requiresPro: false,
+  },
+  {
+    slug: "chatgpt-web/gpt-5.6-pro",
+    displayName: "GPT-5.6 Pro (Web)",
+    description: "GPT-5.6 Pro through ChatGPT. The fixed Max effort selects Pro.",
+    interactionMode: "automatic",
+    backendModel: CHATGPT_WEB_BACKEND_MODEL,
+    modelFamily: "5.6",
+    codexEffort: "max",
+    adapterEffort: "max",
+    supportedCodexEfforts: ["max"],
+    requiresPro: true,
+  },
+  {
+    slug: "chatgpt-web/gpt-6-pro",
+    displayName: "GPT-6 Pro (Web)",
+    description: "GPT-6 Pro through ChatGPT. The fixed Max effort selects Pro.",
+    interactionMode: "automatic",
+    backendModel: CHATGPT_WEB_BACKEND_MODEL,
+    modelFamily: "6",
+    codexEffort: "max",
+    adapterEffort: "max",
+    supportedCodexEfforts: ["max"],
+    requiresPro: true,
+  },
 ];
 
 const routesBySlug = new Map(
@@ -398,6 +454,9 @@ const routesBySlug = new Map(
     CHATGPT_WEB_ZERO_RISK_PRO_MODEL_ROUTE,
     ...CHATGPT_WEB_LUNA_MODEL_ROUTES,
     ...CHATGPT_WEB_MODEL_ROUTES,
+    CHATGPT_WEB_LEGACY_LUNA_MODEL_ROUTE,
+    CHATGPT_WEB_LUNA_THINK_MODEL_ROUTE,
+    ...CHATGPT_WEB_LEGACY_MODEL_ROUTES,
   ]
     .map(route => [route.slug, route]),
 );
@@ -408,6 +467,7 @@ export function isChatGptWebModelSlug(modelId: string): boolean {
 
 export function availableChatGptWebModelRoutes(
   capabilities: ChatGptWebAccountCapabilities,
+  includeLegacy = false,
 ): readonly ChatGptWebModelRoute[] {
   if (capabilities.browserInteractionMode === "manual") {
     if (capabilities.experimentalBiggerContext) {
@@ -417,35 +477,29 @@ export function availableChatGptWebModelRoutes(
       ? [CHATGPT_WEB_ZERO_RISK_MODEL_ROUTE, CHATGPT_WEB_ZERO_RISK_PRO_MODEL_ROUTE]
       : [CHATGPT_WEB_ZERO_RISK_MODEL_ROUTE];
   }
-  if (!capabilities.solAvailable) return CHATGPT_WEB_LUNA_MODEL_ROUTES;
-  return [CHATGPT_WEB_MODEL_ROUTE];
+  if (!capabilities.solAvailable) return includeLegacy
+    ? [...CHATGPT_WEB_LUNA_MODEL_ROUTES, CHATGPT_WEB_LEGACY_LUNA_MODEL_ROUTE, CHATGPT_WEB_LUNA_THINK_MODEL_ROUTE]
+    : CHATGPT_WEB_LUNA_MODEL_ROUTES;
+  const candidates = includeLegacy
+    ? [...CHATGPT_WEB_MODEL_ROUTES, ...CHATGPT_WEB_LEGACY_MODEL_ROUTES]
+    : CHATGPT_WEB_MODEL_ROUTES;
+  return candidates.filter(route =>
+    (!route.requiresPro || capabilities.proAvailable)
+    && (!route.requiresExtraHigh || capabilities.extraHighAvailable));
 }
 
-export function resolveChatGptWebRouteEffort(
+export function chatGptWebRouteEfforts(
   route: ChatGptWebModelRoute,
-  requestedEffort: string | undefined,
   capabilities: ChatGptWebAccountCapabilities,
-): ChatGptWebAdapterEffort {
-  if (route.interactionMode !== "automatic" || route.dynamicEffort !== true) return route.adapterEffort;
-  const effort = (requestedEffort ?? route.codexEffort) as ChatGptWebCodexEffort;
-  switch (effort) {
-    case "low": return "low";
-    case "medium": return "medium";
-    case "high": return "high";
-    case "xhigh":
-      if (!capabilities.extraHighAvailable) throw new Error("ChatGPT Web Extra High is not available for this account");
-      return "xhigh";
-    case "ultra":
-      if (!capabilities.proAvailable) throw new Error("ChatGPT Web Pro is not available for this account");
-      return "max";
-    default:
-      throw new Error(`ChatGPT Web does not support reasoning effort: ${String(requestedEffort)}`);
-  }
+): readonly ChatGptWebCodexEffort[] {
+  return (route.supportedCodexEfforts ?? [route.codexEffort])
+    .filter(effort => effort !== "xhigh" || capabilities.extraHighAvailable === true);
 }
 
 export function requireChatGptWebModelRoute(
   modelId: string,
   capabilities: ChatGptWebAccountCapabilities,
+  reasoning?: string,
 ): ChatGptWebModelRoute {
   if (capabilities.experimentalEvenBiggerContext && !capabilities.experimentalBiggerContext) {
     throw new Error("Even Bigger Context requires Bigger Context");
@@ -471,7 +525,7 @@ export function requireChatGptWebModelRoute(
     if (capabilities.solAvailable) {
       throw new Error(`${route.displayName} is only available for Luna-only accounts`);
     }
-    return route;
+    return resolveRouteEffort(route, capabilities, reasoning);
   }
   if (!capabilities.solAvailable) {
     throw new Error(`${route.displayName} is not available for this Luna-only account`);
@@ -480,5 +534,19 @@ export function requireChatGptWebModelRoute(
     || (route.requiresExtraHigh && !capabilities.extraHighAvailable)) {
     throw new Error(`${route.displayName} is not available for this account`);
   }
-  return route;
+  return resolveRouteEffort(route, capabilities, reasoning);
+}
+
+function resolveRouteEffort(
+  route: ChatGptWebAutomaticModelRoute,
+  capabilities: ChatGptWebAccountCapabilities,
+  reasoning?: string,
+): ChatGptWebAutomaticModelRoute {
+  if (!route.supportedCodexEfforts) return route;
+  const effort = reasoning ?? route.codexEffort;
+  if (!chatGptWebRouteEfforts(route, capabilities).includes(effort as ChatGptWebCodexEffort)) {
+    throw new Error(`${route.displayName} does not support effort ${JSON.stringify(effort)} for this account`);
+  }
+  if (effort === route.codexEffort) return route;
+  return { ...route, codexEffort: effort as ChatGptWebCodexEffort, adapterEffort: effort as ChatGptWebAdapterEffort };
 }

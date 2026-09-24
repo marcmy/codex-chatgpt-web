@@ -38,6 +38,8 @@ export interface CompileChatGptWebPromptOptions {
   captureLunaCheckpoint?: boolean;
   experimentalSkillAttachments?: boolean;
   experimentalMultipartParts?: ChatGptWebMultipartPartCount;
+  /** Omit images that already have later assistant output when rebuilding a fresh browser chat. */
+  omitConsumedHistoricalImages?: boolean;
   /**
    * Manual Zero Risk transport keeps ChatGPT model/effort selection and prompt submission under the
    * user's control. The browser bridge may open the owned tab and copy this prompt, but it never
@@ -367,6 +369,30 @@ export function withoutCheckpointedImages(messages: readonly CodexMessage[]): Co
       return message;
     }
     if (message.role === "assistant" || !message.content.some(part => part.type === "image")) {
+      return message;
+    }
+    return {
+      ...message,
+      content: message.content.filter(part => part.type !== "image"),
+    } as CodexMessage;
+  });
+}
+
+
+/**
+ * A fresh browser conversation receives the accumulated textual history, but images that already
+ * have later assistant output were consumed by the previous browser turn and must not be uploaded
+ * again. Preserve images from the still-unanswered suffix so image steering/current input remains
+ * transportable.
+ */
+function withoutConsumedHistoricalImages(messages: readonly CodexMessage[]): CodexMessage[] {
+  const lastAssistantIndex = messages.findLastIndex(message =>
+    message.role === "assistant" && message.content.length > 0
+  );
+  if (lastAssistantIndex < 0) return [...messages];
+  return messages.map((message, index) => {
+    if (index > lastAssistantIndex || typeof message.content === "string"
+      || message.role === "assistant" || !message.content.some(part => part.type === "image")) {
       return message;
     }
     return {
@@ -890,6 +916,9 @@ export function compileChatGptWebPrompt(
   let sourceMessages = withoutCheckpointedImages(
     withoutSupersededModelSwitchContracts(parsed.context.messages),
   );
+  if (options?.omitConsumedHistoricalImages === true) {
+    sourceMessages = withoutConsumedHistoricalImages(sourceMessages);
+  }
   const initialMessageCount = sourceMessages.length;
   let compiled = build(sourceMessages);
   if (!parsed._compactionRequest) return compiled;
