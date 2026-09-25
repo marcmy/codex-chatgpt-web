@@ -126,12 +126,31 @@ test("captured power UI excludes the user footer during streaming and completes 
   expect(markdown).toEndWith("STREAM\\_END\\_927");
   const translated = await snapshot(powerCompleteHtml.replaceAll('aria-label="Copy"', 'aria-label="복사"'));
   expect(translated.completionActionVisible).toBeTrue();
-  const noAssistant = await snapshot(powerCompleteHtml.replaceAll('data-conversation-role="assistant"', 'data-conversation-role="user"'));
+  const noAssistant = await snapshot(powerCompleteHtml
+    .replaceAll('data-conversation-role="assistant"', 'data-conversation-role="user"')
+    .replace(' data-chatgpt-agent-turn-start=""', ''));
   expect(noAssistant.visibleText).toBe("");
   expect(noAssistant.completionActionVisible).toBeFalse();
   const userMarkdown = await snapshot(powerCompleteHtml.replace('data-user-message-bubble="true">',
     'data-user-message-bubble="true"><div class="markdown">USER CONTENT</div>'));
   expect(userMarkdown.visibleText).toBe(complete.visibleText);
+});
+
+test("power UI exposes live commentary after the agent-turn sentinel before the final assistant heading", async () => {
+  const response = await snapshot([
+    '<div id="turn" data-turn-key="live">',
+    '<div data-content-search-turn-key="fallback-turn-0">',
+    '<div data-content-search-unit-key="fallback-turn-0:0:user"><div data-user-message-bubble="true"><div class="markdown">USER CONTENT</div></div></div>',
+    '<span data-chatgpt-agent-turn-start></span>',
+    '<div data-content-search-unit-key="fallback-turn-0:1:assistant"><div data-streaming-response-status><div class="markdown">Checking the repository now.</div></div></div>',
+    '</div></div>',
+  ].join(""));
+  expect(response.visibleText).toBe("");
+  expect(response.traceBlocks.map(({ kind, text }) => ({ kind, text }))).toContainEqual({
+    kind: "commentary",
+    text: "Checking the repository now.",
+  });
+  expect(response.traceBlocks.some(({ text }) => text.includes("USER CONTENT"))).toBeFalse();
 });
 
 test("DIL response extraction preserves ownership, commentary and completion boundaries", async () => {
