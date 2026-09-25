@@ -1995,6 +1995,9 @@ class ChatGptBrowserDiagnostics {
                 htmlChars: (element as HTMLElement).innerHTML.length,
                 markdownCount: element.querySelectorAll('.markdown, [data-markdown-text-style="assistant-message"]').length,
                 streamingStatusCount: element.querySelectorAll("[data-streaming-response-status]").length,
+                agentTurnStartCount: element.querySelectorAll("[data-chatgpt-agent-turn-start]").length,
+                assistantHeadingCount: element.querySelectorAll('[data-conversation-role="assistant"]').length,
+                cotContainerCount: element.querySelectorAll('[data-testid^="cot-v5"]').length,
                 completionActionCount: element.querySelectorAll(completionActionSelector).length,
                 renderedCompletionActionCount: [...element.querySelectorAll(completionActionSelector)]
                   .filter(rendered).length,
@@ -4123,12 +4126,16 @@ export class ChatGptBrowserWorker {
         .filter(renderedInDom);
       const streamingStatusContainers = [...root.querySelectorAll<HTMLElement>("[data-streaming-response-status]")]
         .filter(renderedInDom);
+      const agentTurnStart = root.querySelector("[data-chatgpt-agent-turn-start]");
+      const finalAssistantHeading = root.querySelector('[data-conversation-role="assistant"]');
       // CHATGPT_COMMENTARY_CLASSIFIER_BEGIN
       // Self-contained so the test suite can execute this exact source against a synthetic DOM;
       // it must not close over anything from the surrounding evaluate scope.
       const selectChatGptAnswerRoots = (
         markdownRoots: HTMLElement[],
         statusContainers: HTMLElement[],
+        agentStart: Element | null,
+        answerHeading: Element | null,
       ): { commentaryRoots: HTMLElement[]; answerRoots: HTMLElement[] } => {
         const firstStatusContainer = statusContainers[0];
         const commentary = markdownRoots.filter(candidate => (
@@ -4137,6 +4144,16 @@ export class ChatGptBrowserWorker {
           // a position-independent commentary signal. Position alone cannot separate "commentary
           // between two status containers" from "answer between two tool calls".
           || candidate.closest('[data-testid^="cot-v5"]') !== null
+          // The current agent renderer can expose neither status containers nor cot-v5 while it
+          // writes commentary. Its final assistant heading is mounted only when the answer starts.
+          // Content before that heading, or in an assistant unit without its own heading,
+          // belongs to the live trace. A later tool call can add commentary below an answer.
+          || (agentStart != null
+            && Boolean(agentStart.compareDocumentPosition(candidate) & 4)
+            && ((candidate.closest("[data-content-search-unit-key]") !== null
+              && candidate.closest("[data-content-search-unit-key]")?.querySelector('[data-conversation-role="assistant"]') == null)
+              || answerHeading == null
+              || Boolean(candidate.compareDocumentPosition(answerHeading) & 4)))
           // Only Markdown that precedes the FIRST status container is prior commentary. Keying
           // this on "some status follows me" silently reclassified answer text as commentary as
           // soon as a second tool call opened another status container below it, which both zeroed
@@ -4152,7 +4169,9 @@ export class ChatGptBrowserWorker {
         };
       };
       // CHATGPT_COMMENTARY_CLASSIFIER_END
-      const classified = selectChatGptAnswerRoots(allMarkdownRoots, streamingStatusContainers);
+      const classified = selectChatGptAnswerRoots(
+        allMarkdownRoots, streamingStatusContainers, agentTurnStart, finalAssistantHeading,
+      );
       const commentaryRoots = classified.commentaryRoots;
       const renderedRoots = classified.answerRoots;
       // CHATGPT_MARKDOWN_CONTENT_BEGIN
@@ -4346,7 +4365,14 @@ export class ChatGptBrowserWorker {
         ...(segment.group ? { group: segment.group } : {}),
         ...(segment.sourceStart !== undefined ? { sourceStart: segment.sourceStart } : {}),
         ...(segment.sourceEnd !== undefined ? { sourceEnd: segment.sourceEnd } : {}),
-        streamable: index < segments.length - 1 && !segment.pendingLinks,
+        // Unranged roots can be rewritten under the same index after tool use or React remount.
+        // Only source-addressed blocks with a later source-addressed successor can be committed
+        // before completion; the rest remain buffered until the final DOM settles.
+        streamable: segment.sourceStart !== undefined
+          && segment.sourceEnd !== undefined
+          && segments[index + 1]?.sourceStart !== undefined
+          && segment.sourceEnd < segments[index + 1]!.sourceStart!
+          && !segment.pendingLinks,
         linkTargets: segment.linkTargets,
       }));
       const rendered = renderedRoots.at(-1);
