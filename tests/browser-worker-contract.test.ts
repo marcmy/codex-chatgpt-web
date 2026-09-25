@@ -172,8 +172,9 @@ test("assistant tracking rebinds only one proven replacement after React detache
   )).toThrow("2 new conversation turns");
 });
 
-test("assistant tracking accepts only a prompt-matched user/assistant group remount", async () => {
+test("assistant tracking accepts a stable content-search remount and keeps prompt matching as fallback", async () => {
   const worker = Object.create(ChatGptBrowserWorker.prototype) as any;
+  let reboundContentSearchTurnKey = "fallback-turn-0";
   worker.submissionDomState = async () => ({
     userTurnCount: 1,
     assistantTurnCount: 1,
@@ -181,8 +182,11 @@ test("assistant tracking accepts only a prompt-matched user/assistant group remo
     turnIdentities: ["group:user:remounted", "group:assistant:remounted"],
     userIdentities: ["group:user:remounted"],
     responseIdentities: ["group:assistant:remounted"],
+    responseContentSearchTurnKeys: {
+      "group:assistant:remounted": reboundContentSearchTurnKey,
+    },
   });
-  let renderedPrompt = "the exact submitted prompt";
+  let renderedPrompt = "a DOM projection that does not exactly match the composer";
   const page = {
     locator: () => ({
       count: async () => 1,
@@ -198,11 +202,17 @@ test("assistant tracking accepts only a prompt-matched user/assistant group remo
     identity: "group:assistant:original",
     locator: { count: async () => 0 },
     acceptedTurnIdentities: baseline.initialTurnIdentities,
+    contentSearchTurnKey: "fallback-turn-0",
   });
 
   const rebound = await worker.reconcileAssistantTurnBinding(page, baseline, makeBinding());
   expect(rebound.identity).toBe("group:assistant:remounted");
+  expect(rebound.contentSearchTurnKey).toBe("fallback-turn-0");
 
+  reboundContentSearchTurnKey = "fallback-turn-1";
+  renderedPrompt = "the exact submitted prompt";
+  expect((await worker.reconcileAssistantTurnBinding(page, baseline, makeBinding())).identity)
+    .toBe("group:assistant:remounted");
   renderedPrompt = "a different user message";
   await expect(worker.reconcileAssistantTurnBinding(page, baseline, makeBinding()))
     .rejects.toThrow("ChatGPT opened another user turn while the bound assistant response was detached");
@@ -245,9 +255,11 @@ test("power turn identity separates roles and keeps virtualized groups in the su
   observers.forEach(notify => notify());
   expect(await worker.currentSubmissionEvidence(page, baseline)).toBe("user_turn");
   expect(chatGptNewTurnIdentity(baseline.initialTurnIdentities, (await worker.submissionDomState(page)).responseIdentities)).toBeUndefined();
-  next.innerHTML += '<h4 data-conversation-role="assistant"></h4>';
+  next.innerHTML += '<span data-chatgpt-agent-turn-start></span><div data-content-search-turn-key="fallback-turn-2"></div>';
   observers.forEach(notify => notify());
-  expect(chatGptNewTurnIdentity(baseline.initialTurnIdentities, (await worker.submissionDomState(page)).responseIdentities)).toBe("group:assistant:next");
+  const streamingState = await worker.submissionDomState(page);
+  expect(chatGptNewTurnIdentity(baseline.initialTurnIdentities, streamingState.responseIdentities)).toBe("group:assistant:next");
+  expect(streamingState.responseContentSearchTurnKeys["group:assistant:next"]).toBe("fallback-turn-2");
   window.document.body.appendChild(next.cloneNode(true));
   observers.forEach(notify => notify());
   await expect(worker.submissionDomState(page)).rejects.toThrow("duplicate conversation turn identities");

@@ -39,6 +39,7 @@ export const CHATGPT_ASSISTANT_TURN_SELECTOR = [
   '[data-testid^="conversation-turn-"][data-message-author-role="assistant"]:not([data-turn-key] *)',
   '[data-testid^="conversation-turn-"]:has([data-message-author-role="assistant"]):not([data-turn-key] *)',
   '[data-turn-key]:has([data-conversation-role="assistant"])',
+  '[data-turn-key]:has([data-chatgpt-agent-turn-start])',
 ].join(", ");
 export const CHATGPT_USER_TURN_SELECTOR = [
   '[data-testid^="conversation-turn-"][data-turn="user"]:not([data-turn-key] *)',
@@ -50,9 +51,9 @@ export const CHATGPT_USER_TURN_SELECTOR = [
 /** The new renderer groups both roles under the user's stable turn key. */
 export function chatGptAssistantTurnSelector(identity: string): string {
   const prefix = "group:assistant:";
-  return identity.startsWith(prefix)
-    ? `[data-turn-key=${JSON.stringify(identity.slice(prefix.length))}]:has([data-conversation-role="assistant"])`
-    : `[data-turn-id=${JSON.stringify(identity)}]`;
+  if (!identity.startsWith(prefix)) return `[data-turn-id=${JSON.stringify(identity)}]`;
+  const group = `[data-turn-key=${JSON.stringify(identity.slice(prefix.length))}]`;
+  return `${group}:has([data-conversation-role="assistant"]), ${group}:has([data-chatgpt-agent-turn-start])`;
 }
 
 export interface ChatGptEffortSliderState {

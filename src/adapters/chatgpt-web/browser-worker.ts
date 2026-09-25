@@ -177,6 +177,8 @@ const CHATGPT_DOM_REVISION_ATTRIBUTES = [
   "data-turn-id-container",
   "data-turn-key",
   "data-conversation-role",
+  "data-chatgpt-agent-turn-start",
+  "data-content-search-turn-key",
   "data-user-message-bubble",
   "data-markdown-text-style",
   "disabled",
@@ -1322,6 +1324,8 @@ interface ChatGptAssistantTurnBinding {
   identity: string;
   locator: Locator;
   acceptedTurnIdentities: readonly string[];
+  /** Stable modern-renderer identity that survives outer data-turn-key replacement. */
+  contentSearchTurnKey?: string;
 }
 
 interface ChatGptSubmissionDomState {
@@ -1331,6 +1335,7 @@ interface ChatGptSubmissionDomState {
   turnIdentities: string[];
   userIdentities: string[];
   responseIdentities: string[];
+  responseContentSearchTurnKeys: Record<string, string>;
 }
 
 interface ChatGptSubmissionDomCache {
@@ -2916,6 +2921,7 @@ export class ChatGptBrowserWorker {
         .filter(element => element.getAttribute("data-turn-key") == null);
       const userIdentities = identities(legacyTurns(options.userTurnSelector), "data-turn-id");
       const responseIdentities = identities(legacyTurns(options.assistantTurnSelector), "data-turn-id");
+      const responseContentSearchTurnKeys: Record<string, string> = {};
       const knownTurns = new Set(turnIdentities);
       if ([...userIdentities, ...responseIdentities].some(identity => !knownTurns.has(identity))) {
         throw new Error("ChatGPT conversation turn has no matching identity container");
@@ -2929,7 +2935,16 @@ export class ChatGptBrowserWorker {
         // contents. Remounting an old answer must never acknowledge a new submission.
         turnIdentities.push(user, assistant);
         if (group.querySelector("[data-user-message-bubble]")) userIdentities.push(user);
-        if (group.querySelector('[data-conversation-role="assistant"]')) responseIdentities.push(assistant);
+        if (group.querySelector('[data-conversation-role="assistant"], [data-chatgpt-agent-turn-start]')) {
+          responseIdentities.push(assistant);
+          const contentSearchKeys = [...group.querySelectorAll("[data-content-search-turn-key]")]
+            .map(element => element.getAttribute("data-content-search-turn-key")?.trim())
+            .filter((value): value is string => Boolean(value));
+          const uniqueContentSearchKeys = [...new Set(contentSearchKeys)];
+          if (uniqueContentSearchKeys.length === 1) {
+            responseContentSearchTurnKeys[assistant] = uniqueContentSearchKeys[0]!;
+          }
+        }
       });
       return {
         key: observerKey,
@@ -2940,6 +2955,7 @@ export class ChatGptBrowserWorker {
           turnIdentities,
           userIdentities,
           responseIdentities,
+          responseContentSearchTurnKeys,
         },
       };
     }, {
@@ -3096,6 +3112,7 @@ export class ChatGptBrowserWorker {
         identity,
         locator: observationPage.locator(chatGptAssistantTurnSelector(identity)),
         acceptedTurnIdentities: state.turnIdentities,
+        contentSearchTurnKey: state.responseContentSearchTurnKeys?.[identity],
       };
       // The power UI can expose Stop for a long reasoning phase before mounting any assistant
       // node. Fresh generation evidence extends only DOM grace, never the caller's deadline.
@@ -3137,11 +3154,16 @@ export class ChatGptBrowserWorker {
       binding.identity,
       state.responseIdentities,
     );
+    const reboundContentSearchTurnKey = identity
+      ? state.responseContentSearchTurnKeys?.[identity]
+      : undefined;
     const unexpectedUserIdentities = state.userIdentities.filter(candidate => !acceptedTurns.has(candidate));
     if (unexpectedUserIdentities.length > 0) {
-      let sameSubmittedTurnRemounted = false;
+      let sameSubmittedTurnRemounted = binding.contentSearchTurnKey !== undefined
+        && reboundContentSearchTurnKey === binding.contentSearchTurnKey;
       const assistantGroupPrefix = "group:assistant:";
-      if (unexpectedUserIdentities.length === 1
+      if (!sameSubmittedTurnRemounted
+        && unexpectedUserIdentities.length === 1
         && identity?.startsWith(assistantGroupPrefix)
         && baseline.submittedPromptText !== undefined) {
         const groupKey = identity.slice(assistantGroupPrefix.length);
@@ -3160,11 +3182,18 @@ export class ChatGptBrowserWorker {
         throw new Error("ChatGPT opened another user turn while the bound assistant response was detached");
       }
     }
-    if (!identity || identity === binding.identity) return binding;
+    if (!identity) return binding;
+    if (identity === binding.identity) {
+      if (!binding.contentSearchTurnKey && reboundContentSearchTurnKey) {
+        return { ...binding, contentSearchTurnKey: reboundContentSearchTurnKey };
+      }
+      return binding;
+    }
     return {
       identity,
       locator: page.locator(chatGptAssistantTurnSelector(identity)),
       acceptedTurnIdentities: state.turnIdentities,
+      contentSearchTurnKey: reboundContentSearchTurnKey ?? binding.contentSearchTurnKey,
     };
   }
 
@@ -4081,8 +4110,14 @@ export class ChatGptBrowserWorker {
         .filter(candidate => {
           if (!root.hasAttribute("data-turn-key") && !candidate.hasAttribute("data-markdown-text-style")) return true;
           const unit = candidate.closest("[data-content-search-unit-key]");
-          return Boolean(unit) && Array.from(unit!.children)
-            .some(child => child.getAttribute("data-conversation-role") === "assistant");
+          if (Boolean(unit) && Array.from(unit!.children)
+            .some(child => child.getAttribute("data-conversation-role") === "assistant")) return true;
+          // Modern agent turns mount commentary/tool output before the final assistant heading.
+          // The sentinel is the ownership boundary: user-rendered Markdown precedes it, while
+          // commentary and the eventual final answer follow it.
+          const agentTurnStart = root.querySelector("[data-chatgpt-agent-turn-start]");
+          return Boolean(agentTurnStart
+            && (agentTurnStart.compareDocumentPosition(candidate) & Node.DOCUMENT_POSITION_FOLLOWING));
         })
         .filter(candidate => !candidate.parentElement?.closest(answerRootSelector))
         .filter(renderedInDom);
