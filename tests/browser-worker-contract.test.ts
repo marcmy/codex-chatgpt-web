@@ -4315,12 +4315,10 @@ test("the shipped commentary classifier separates answer Markdown from reasoning
   const worker = readFileSync("src/adapters/chatgpt-web/browser-worker.ts", "utf8");
   const source = worker.split("// CHATGPT_COMMENTARY_CLASSIFIER_BEGIN")[1]?.split("// CHATGPT_COMMENTARY_CLASSIFIER_END")[0];
   if (!source) throw new Error("commentary classifier sentinels are missing from browser-worker.ts");
-  const javascript = source
-    .replace(/:\s*HTMLElement\[\]/g, "")
-    .replace(/\):\s*\{[^}]*\}\s*=>/, ") =>");
+  const javascript = new Bun.Transpiler({ loader: "ts" }).transformSync(source);
   const selectChatGptAnswerRoots = new Function(
     `${javascript}; return selectChatGptAnswerRoots;`,
-  )() as (roots: unknown[], statuses: unknown[]) => { answerRoots: Array<{ textContent: string }> };
+  )() as (roots: unknown[], statuses: unknown[], agentStart: unknown, answerHeading: unknown) => { answerRoots: Array<{ textContent: string }> };
 
   const answerFor = (html: string): string => {
     const document = createDocument(`<body>${html}</body>`);
@@ -4328,7 +4326,11 @@ test("the shipped commentary classifier separates answer Markdown from reasoning
     const roots = Array.from(document.body.querySelectorAll(".markdown"))
       .filter(candidate => !candidate.parentElement?.closest(".markdown"));
     const statuses = Array.from(document.body.querySelectorAll("[data-streaming-response-status]"));
-    return selectChatGptAnswerRoots(roots, statuses).answerRoots
+    return selectChatGptAnswerRoots(
+      roots, statuses,
+      document.body.querySelectorAll("[data-chatgpt-agent-turn-start]")[0] ?? null,
+      document.body.querySelectorAll('[data-conversation-role="assistant"]')[0] ?? null,
+    ).answerRoots
       .map(root => (root.textContent ?? "").trim())
       .filter(Boolean)
       .join(" | ");
@@ -4367,6 +4369,16 @@ test("the shipped commentary classifier separates answer Markdown from reasoning
 
   // A turn with no status container at all is entirely answer.
   expect(answerFor('<div class="markdown">ONLY ANSWER</div>')).toBe("ONLY ANSWER");
+  expect(answerFor('<span data-chatgpt-agent-turn-start></span>'
+    + '<div class="markdown">LIVE COMMENTARY</div>')).toBe("");
+  expect(answerFor('<span data-chatgpt-agent-turn-start></span>'
+    + '<div class="markdown">LIVE COMMENTARY</div>'
+    + '<h4 data-conversation-role="assistant">ChatGPT said:</h4>'
+    + '<div class="markdown">FINAL ANSWER</div>')).toBe("FINAL ANSWER");
+  expect(answerFor('<span data-chatgpt-agent-turn-start></span>'
+    + '<div data-content-search-unit-key="answer"><h4 data-conversation-role="assistant">ChatGPT said:</h4>'
+    + '<div class="markdown">ANSWER BEFORE TOOL</div></div>'
+    + '<div data-content-search-unit-key="tool"><div class="markdown">WORKING AFTER TOOL</div></div>')).toBe("ANSWER BEFORE TOOL");
 });
 
 test("embedded chart hydration cannot replace Markdown answer content with renderer UI", () => {
