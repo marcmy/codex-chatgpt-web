@@ -172,6 +172,42 @@ test("assistant tracking rebinds only one proven replacement after React detache
   )).toThrow("2 new conversation turns");
 });
 
+test("assistant tracking accepts only a prompt-matched user/assistant group remount", async () => {
+  const worker = Object.create(ChatGptBrowserWorker.prototype) as any;
+  worker.submissionDomState = async () => ({
+    userTurnCount: 1,
+    assistantTurnCount: 1,
+    visibleStopButtonCount: 0,
+    turnIdentities: ["group:user:remounted", "group:assistant:remounted"],
+    userIdentities: ["group:user:remounted"],
+    responseIdentities: ["group:assistant:remounted"],
+  });
+  let renderedPrompt = "the exact submitted prompt";
+  const page = {
+    locator: () => ({
+      count: async () => 1,
+      textContent: async () => renderedPrompt,
+    }),
+  } as unknown as Page;
+  const baseline = {
+    initialTurnIdentities: ["group:user:original", "group:assistant:original"],
+    submittedPromptText: "the exact submitted prompt",
+    domCache: {},
+  };
+  const makeBinding = () => ({
+    identity: "group:assistant:original",
+    locator: { count: async () => 0 },
+    acceptedTurnIdentities: baseline.initialTurnIdentities,
+  });
+
+  const rebound = await worker.reconcileAssistantTurnBinding(page, baseline, makeBinding());
+  expect(rebound.identity).toBe("group:assistant:remounted");
+
+  renderedPrompt = "a different user message";
+  await expect(worker.reconcileAssistantTurnBinding(page, baseline, makeBinding()))
+    .rejects.toThrow("ChatGPT opened another user turn while the bound assistant response was detached");
+});
+
 test("power turn identity separates roles and keeps virtualized groups in the submission baseline", async () => {
   const { createWindow } = require("@mixmark-io/domino");
   const window = createWindow('<div data-turn-id-container="legacy"><section data-testid="conversation-turn-0" data-turn="assistant" data-turn-id="legacy"></section></div><div data-turn-key="history"></div><div data-turn-key="previous"><div data-user-message-bubble></div><h4 data-conversation-role="assistant"></h4><div data-turn-id-container="search-only"><section data-testid="conversation-turn-search" data-turn="assistant"><div data-message-author-role="assistant"></div></section></div></div>');
@@ -3810,27 +3846,30 @@ test("a structurally completed trailing Pro commentary does not wait for another
   }]);
 });
 
-test("visible DOM trace emits one complete commentary paragraph before the next action", () => {
+test("visible DOM trace streams stable commentary prefixes and later continuations", () => {
   const tracker = new ChatGptVisibleTraceTracker(100);
   const initial = [
     { kind: "commentary", text: "I’m reading", complete: false },
   ] as const;
   expect(tracker.observe([...initial], false, 1_000)).toEqual([]);
+  expect(tracker.observe([...initial], false, 1_100)).toEqual([
+    { kind: "commentary", text: "I’m reading" },
+  ]);
   const expanded = [
     { kind: "commentary", text: "I’m reading the repository’s mandatory architecture", complete: false },
   ] as const;
   expect(tracker.observe([...expanded], false, 1_150)).toEqual([]);
+  expect(tracker.observe([...expanded], false, 1_250)).toEqual([
+    { kind: "commentary", text: " the repository’s mandatory architecture", continuation: true },
+  ]);
   const completed = [
     { kind: "commentary", text: "I’m reading the repository’s mandatory architecture", complete: true },
     { kind: "status", text: "Read context file contents" },
   ] as const;
-  expect(tracker.observe([...completed], false, 1_250)).toEqual([
-    { kind: "commentary", text: "I’m reading the repository’s mandatory architecture" },
-  ]);
-  expect(tracker.observe([...completed], false, 1_350)).toEqual([
+  expect(tracker.observe([...completed], false, 1_300)).toEqual([]);
+  expect(tracker.observe([...completed], false, 1_400)).toEqual([
     { kind: "reasoning", text: "Read context file contents" },
   ]);
-  expect(tracker.observe([...completed], false, 1_450)).toEqual([]);
 });
 
 test("Stopped thinking is an explicit upstream error, not a user cancellation or a proven quota error", () => {

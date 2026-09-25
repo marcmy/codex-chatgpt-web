@@ -2453,6 +2453,97 @@ test("a later provider round reuses only its exact connector-bound conversation"
   assert.deepEqual(events, ["visible", "published", "descriptor", "browser.tab_reused"]);
 });
 
+test("failed retained conversations stay visible but are not reused", async () => {
+  const conversationKey = "f".repeat(64);
+  const closed = [];
+  const events = [];
+  const turnTabs = new Map();
+  const failed = {
+    id: "failed-retained",
+    surfaceId: "surface-failed",
+    traceId: "trace_failed",
+    conversationKey,
+    connectorIdentity: "Codex Native2",
+    connectorBound: true,
+    interactionMode: "automatic",
+    helperPid: 111,
+    status: "running",
+    loading: true,
+    view: {
+      webContents: {
+        isDestroyed: () => false,
+        setBackgroundThrottling: enabled => events.push("throttle:" + enabled),
+        close: () => closed.push("contents"),
+      },
+    },
+  };
+  turnTabs.set(failed.id, failed);
+  const fixture = Object.assign(Object.create(BrowserHost.prototype), {
+    manualOperation: null,
+    turnTabs,
+    userCancelledTurnOwners: new Map(),
+    closedTurnOwners: new Map(),
+    selectedTabId: failed.id,
+    state: { authenticated: true },
+    syncPowerSaveBlocker() {},
+    syncViewVisibility() {},
+    snapshot: () => ({ tabs: [...turnTabs.values()] }),
+    publishState: () => events.push("published"),
+    writeDescriptor: () => events.push("descriptor"),
+    removeTurnTab: tab => {
+      closed.push(tab.id);
+      turnTabs.delete(tab.id);
+    },
+    logger: { info: event => events.push(event) },
+    createTurnTab: async (traceId, helperPid, key, connectorIdentity) => {
+      assert.deepEqual([traceId, helperPid, key, connectorIdentity], [
+        "trace_next", 222, conversationKey, "Codex Native2",
+      ]);
+      const fresh = { id: "fresh", surfaceId: "surface-fresh" };
+      turnTabs.set(fresh.id, fresh);
+      return fresh;
+    },
+  });
+
+  await BrowserHost.prototype.endTurn.call(
+    fixture,
+    failed.traceId,
+    failed.helperPid,
+    "failed",
+    false,
+    "ChatGPT stopped responding",
+    true,
+    false,
+  );
+
+  assert.equal(turnTabs.get(failed.id), failed);
+  assert.equal(failed.status, "error");
+  assert.equal(failed.loading, false);
+  assert.equal(failed.connectorBound, false);
+  assert.equal(failed.message, "ChatGPT stopped responding");
+  assert.deepEqual(closed, []);
+  assert.ok(events.includes("browser.tab_preserved_after_incomplete_turn"));
+  assert.ok(events.includes("published"));
+  assert.ok(events.includes("descriptor"));
+
+  const lease = await BrowserHost.prototype.beginTurn.call(
+    fixture,
+    "trace_next",
+    false,
+    222,
+    conversationKey,
+    "Codex Native2",
+  );
+  assert.deepEqual(lease, {
+    surfaceId: "surface-fresh",
+    tabId: "fresh",
+    reused: false,
+    connectorBound: false,
+  });
+  assert.equal(turnTabs.get(failed.id), failed);
+  assert.equal(failed.status, "error");
+});
+
 test("a retained conversation is not reused for a different connector identity", async () => {
   const conversationKey = "b".repeat(64);
   const retained = {

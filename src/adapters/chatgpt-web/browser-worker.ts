@@ -1302,6 +1302,8 @@ interface ChatGptSubmissionBaseline {
   responseTurns: Locator;
   initialTurnIdentities: readonly string[];
   domCache: ChatGptSubmissionDomCache;
+  /** In-memory proof for distinguishing a remounted submitted turn from a new user turn. */
+  submittedPromptText?: string;
 }
 
 interface ChatGptSubmissionObservationRecovery {
@@ -1749,10 +1751,8 @@ export class ChatGptVisibleTraceTracker {
         this.traceCandidates.set(slot, candidate);
         if (!completionActionVisible && this.traceStabilityMs > 0) continue;
       }
-      // A commentary Markdown root remains mutable until ChatGPT appends the next reasoning item.
-      // Emitting it earlier lets a tool-status boundary split one semantic paragraph into multiple
-      // Codex messages. The next anchored item (or final completion evidence) is the stable boundary.
-      if (block.kind === "commentary" && block.complete === false && !completionActionVisible) continue;
+      // Emit stable prefixes from live commentary; later growth is forwarded as a continuation
+      // instead of being held until ChatGPT marks the whole block complete.
       if (!completionActionVisible && now - candidate.changedAt < this.traceStabilityMs) continue;
 
       const previous = this.emittedTrace.get(slot);
@@ -3132,14 +3132,34 @@ export class ChatGptBrowserWorker {
     }
     const state = await this.submissionDomState(page, baseline.domCache, signal);
     const acceptedTurns = new Set(binding.acceptedTurnIdentities);
-    if (state.userIdentities.some(identity => !acceptedTurns.has(identity))) {
-      throw new Error("ChatGPT opened another user turn while the bound assistant response was detached");
-    }
     const identity = chatGptReboundTurnIdentity(
       baseline.initialTurnIdentities,
       binding.identity,
       state.responseIdentities,
     );
+    const unexpectedUserIdentities = state.userIdentities.filter(candidate => !acceptedTurns.has(candidate));
+    if (unexpectedUserIdentities.length > 0) {
+      let sameSubmittedTurnRemounted = false;
+      const assistantGroupPrefix = "group:assistant:";
+      if (unexpectedUserIdentities.length === 1
+        && identity?.startsWith(assistantGroupPrefix)
+        && baseline.submittedPromptText !== undefined) {
+        const groupKey = identity.slice(assistantGroupPrefix.length);
+        if (unexpectedUserIdentities[0] === "group:user:" + groupKey) {
+          const userBubble = page.locator(
+            "[data-turn-key=" + JSON.stringify(groupKey) + "] [data-user-message-bubble]",
+          );
+          if (await userBubble.count() === 1) {
+            const renderedPrompt = await userBubble.textContent();
+            sameSubmittedTurnRemounted = renderedPrompt !== null
+              && this.promptTextEquivalent(baseline.submittedPromptText, renderedPrompt);
+          }
+        }
+      }
+      if (!sameSubmittedTurnRemounted) {
+        throw new Error("ChatGPT opened another user turn while the bound assistant response was detached");
+      }
+    }
     if (!identity || identity === binding.identity) return binding;
     return {
       identity,
@@ -3636,6 +3656,12 @@ export class ChatGptBrowserWorker {
       await settleChatGptUi();
     }
     await captureDiagnostic?.("send-ready");
+    try {
+      baseline.submittedPromptText = await this.attachedPromptText(page, abortSignal);
+    } catch (error) {
+      if (abortSignal?.aborted) throw error;
+      // Prompt capture is only extra evidence for a rare React remount; it must not block Send.
+    }
     const initialToolBatchRevision = externalProgress?.snapshot().lastToolBatchRevision ?? 0;
     await submissionLifecycle?.onSendActivated?.();
     await sendButton.press("Enter", {
@@ -4600,7 +4626,7 @@ export class ChatGptBrowserWorker {
           helperPid: process.pid,
           status: terminal,
           ...(terminalMessage ? { message: terminalMessage } : {}),
-          ...(terminal === "completed" && turn.retainConversation ? { retain: true } : {}),
+          ...(turn.retainConversation ? { retain: true } : {}),
           ...(terminal === "completed" && (turn.nativeConnector || turn.capabilities.localToolsEnabled)
             ? { connectorBound: true }
             : {}),

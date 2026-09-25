@@ -2486,6 +2486,17 @@ class BrowserHost {
       this.writeDescriptor();
       return { cancelledByUser };
     }
+    if (status !== "completed" && retain && tab.conversationKey) {
+      // Keep the incomplete DOM available for inspection, but never advertise it as
+      // reusable conversation state. beginTurn() only leases tabs in the ready state.
+      tab.connectorBound = false;
+      tab.lastHeartbeatAt = Date.now();
+      if (hideAfterTurn && !this.activeTraceId) this.hide();
+      this.logger.info("browser.tab_preserved_after_incomplete_turn", { tabId: tab.id, traceId, status });
+      this.publishState?.(this.snapshot());
+      this.writeDescriptor();
+      return { cancelledByUser };
+    }
     // A browser tab represents an active Codex turn, not durable task history. The result already
     // lives in Codex, so release the terminal browser document without touching concurrent turns.
     this.removeTurnTab(tab, false);
