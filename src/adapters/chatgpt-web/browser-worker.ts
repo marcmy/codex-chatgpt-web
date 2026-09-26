@@ -39,6 +39,8 @@ import {
 } from "./input-tokens";
 import {
   CHATGPT_MAX_INPUT_IMAGES,
+  CHATGPT_WEB_PROMPT_JSON_BYTE_BUDGET,
+  chatGptPromptJsonBytes,
   formatChatGptWebMultipartCommit,
   formatChatGptWebMultipartStage,
   isChatGptWebMultipartPartCount,
@@ -822,6 +824,20 @@ const chatGptTerminalErrorAlert = (scope: ChatGptTextScope): Locator => scope
   .getByText(/Something went wrong[\s\S]*help\.openai\.com/i)
   .last();
 
+const chatGptMessageTooLongAlert = (page: Page): Locator => page
+  .locator('[role="alert"]')
+  .filter({ hasText: /The message you submitted was too long|message_length_exceeds_limit/i })
+  .last();
+
+export async function throwIfChatGptMessageTooLongAlert(page: Page, previousAlertCount = 0): Promise<void> {
+  const alerts = chatGptMessageTooLongAlert(page);
+  if (await alerts.count() <= previousAlertCount || !await alerts.last().isVisible().catch(() => false)) return;
+  throw new ChatGptWebAdapterError(
+    "ChatGPT rejected this message as too long. Compact the task and retry the Web model.",
+    { status: 400, errorType: "invalid_request_error", code: "context_length_exceeded", retryable: false },
+  );
+}
+
 // The current UI renders message_length_exceeds_limit as an ordinary response error.
 // Observe only browser-issued submissions from this owned page after Send is activated;
 // an old response, another tab, or a background endpoint cannot classify this turn.
@@ -993,8 +1009,10 @@ export function assertChatGptWebMultipartInputWithinLimits(
     stagingEffort: ChatGptWebModelMode["effort"];
     maxStageMessageTokens: number;
     maxStageChars: number;
+    maxStageJsonBytes?: number;
     finalMessageTokens: number;
     finalMessageChars: number;
+    finalMessageJsonBytes?: number;
     finalImageTokens?: number;
   },
 ): void {
@@ -1019,6 +1037,7 @@ export function assertChatGptWebMultipartInputWithinLimits(
     label: "stage" | "final part",
     messageTokens: number,
     messageChars: number,
+    messageJsonBytes: number | undefined,
     messageEffort: ChatGptWebModelMode["effort"],
     imageTokens = 0,
   ): void => {
@@ -1027,6 +1046,14 @@ export function assertChatGptWebMultipartInputWithinLimits(
       messageEffort,
       capabilities,
     );
+    if (capabilities.experimentalEvenBiggerContext
+      && messageJsonBytes !== undefined
+      && messageJsonBytes > CHATGPT_WEB_PROMPT_JSON_BYTE_BUDGET) {
+      throw new ChatGptWebAdapterError(
+        `An Even Bigger Context ${label} encodes to ${messageJsonBytes.toLocaleString("en-US")} JSON bytes, exceeding the ${CHATGPT_WEB_PROMPT_JSON_BYTE_BUDGET.toLocaleString("en-US")}-byte safe stage budget. Reduce the context before retrying.`,
+        { status: 400, errorType: "invalid_request_error", code: "context_length_exceeded", retryable: false },
+      );
+    }
     if (browserComposerCharLimit !== undefined && messageChars > browserComposerCharLimit) {
       throw new ChatGptWebAdapterError(
         `A Bigger Context ${label} contains ${messageChars.toLocaleString("en-US")} characters, which exceeds the measured ${browserComposerCharLimit.toLocaleString("en-US")}-character ChatGPT composer boundary. The bridge will not split an individual Codex message or JSON record; compact the task before retrying.`,
@@ -1052,17 +1079,19 @@ export function assertChatGptWebMultipartInputWithinLimits(
       "stage",
       transport.maxStageMessageTokens,
       transport.maxStageChars,
+      transport.maxStageJsonBytes,
       transport.stagingEffort,
     );
     assertMessageBoundary(
       "final part",
       transport.finalMessageTokens,
       transport.finalMessageChars,
+      transport.finalMessageJsonBytes,
       effort,
       transport.finalImageTokens,
     );
   } else {
-    assertMessageBoundary("stage", estimatedMessageTokens, maxMessageChars, effort);
+    assertMessageBoundary("stage", estimatedMessageTokens, maxMessageChars, undefined, effort);
   }
   const logicalMultiplier = capabilities.experimentalEvenBiggerContext
     ? CHATGPT_WEB_EVEN_BIGGER_CONTEXT_MULTIPLIER
@@ -1307,6 +1336,7 @@ interface ChatGptSubmissionBaseline {
   responseTurns: Locator;
   initialTurnIdentities: readonly string[];
   domCache: ChatGptSubmissionDomCache;
+  messageTooLongAlertCount: number;
   /** In-memory proof for distinguishing a remounted submitted turn from a new user turn. */
   submittedPromptText?: string;
   submittedText?: string;
@@ -3028,11 +3058,13 @@ export class ChatGptBrowserWorker {
     const responseTurns = page.locator(CHATGPT_ASSISTANT_TURN_SELECTOR);
     const domCache: ChatGptSubmissionDomCache = {};
     const state = await this.submissionDomState(page, domCache);
+    const messageTooLongAlertCount = await chatGptMessageTooLongAlert(page).count();
     return {
       userTurns,
       responseTurns,
       initialTurnIdentities: state.turnIdentities,
       domCache,
+      messageTooLongAlertCount,
       submittedText,
     };
   }
@@ -3068,6 +3100,10 @@ export class ChatGptBrowserWorker {
         throw new Error("ChatGPT web turn timed out");
       }
       await throwIfChatGptSessionFailureAlert(observationPage);
+      await throwIfChatGptMessageTooLongAlert(
+        observationPage,
+        observationBaseline.messageTooLongAlertCount,
+      );
       await throwIfChatGptRateLimitDialog(observationPage);
       let state: ChatGptSubmissionDomState;
       try {
@@ -3789,6 +3825,7 @@ export class ChatGptBrowserWorker {
         throw new Error("ChatGPT Bigger Context transaction timed out while awaiting a stage acknowledgement");
       }
       await throwIfChatGptSessionFailureAlert(page);
+      await throwIfChatGptMessageTooLongAlert(page, submissionBaseline.messageTooLongAlertCount);
       await throwIfChatGptTerminalErrorAlert(responseTurn.locator);
       let snapshot = await this.responseDomSnapshot(responseTurn.locator, responseDomCache);
       if (!snapshot.responsePresent && await responseTurn.locator.count() !== 1) {
@@ -4852,6 +4889,9 @@ export class ChatGptBrowserWorker {
       const maxStageChars = multipartStages
         ? Math.max(...multipartStages.map(stage => stage.text.length))
         : undefined;
+      const maxStageJsonBytes = multipartStages
+        ? Math.max(...multipartStages.map(stage => chatGptPromptJsonBytes(stage.text)))
+        : undefined;
       const stagingMode = multipartStages
         ? resolveChatGptWebMultipartStagingMode(
           turn.modelId,
@@ -4876,12 +4916,15 @@ export class ChatGptBrowserWorker {
           multipartStages
             && multipartFinalPrompt
             && maxStageMessageTokens !== undefined
-            && maxStageChars !== undefined ? {
+            && maxStageChars !== undefined
+            && maxStageJsonBytes !== undefined ? {
             stagingEffort: stagingMode.effort,
             maxStageMessageTokens,
             maxStageChars,
+            maxStageJsonBytes,
             finalMessageTokens: estimateTokens(multipartFinalPrompt, turn.modelId) + skillFileTokens(prepared.skillFiles, turn.modelId),
             finalMessageChars: multipartFinalPrompt.length,
+            finalMessageJsonBytes: chatGptPromptJsonBytes(multipartFinalPrompt),
             finalImageTokens: estimateChatGptWebImageTokens(prepared),
           } : undefined,
         );
@@ -5085,7 +5128,8 @@ export class ChatGptBrowserWorker {
       if (multipartStages) {
         console.info(
           `[chatgpt-web] browser turn ${turn.traceId} multipart staging effort=${stagingMode.effort}`
-          + ` maxStageMessageTokens=${maxStageMessageTokens} maxStageChars=${maxStageChars}`,
+          + ` maxStageMessageTokens=${maxStageMessageTokens} maxStageChars=${maxStageChars}`
+          + ` maxStageJsonBytes=${maxStageJsonBytes}`,
         );
       }
       if (!reuseConversation) {
