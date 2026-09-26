@@ -413,8 +413,8 @@ function exactManagedWorkspaceWriteProfile(
   const uniqueExpectedWritableRoots = [...new Map(expectedWritableRoots.map(path => (
     [pathIdentity(path), path] as const
   ))).values()];
-  if (uniqueExpectedWritableRoots.length !== expectedWritableRoots.length
-    || uniqueExpectedWritableRoots.some(path => !roots.some(root => contains(root, path)))) return undefined;
+  // Native Codex can grant an output directory outside its project roots and can
+  // repeat a grant while composing policies. Compare the exact sets below instead.
 
   let rootRead = 0;
   let projectRootsWrite = 0;
