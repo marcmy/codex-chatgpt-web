@@ -5,6 +5,7 @@ const turndown = new TurndownService({
   headingStyle: "atx",
   bulletListMarker: "-",
   codeBlockStyle: "fenced",
+  preformattedCode: true, // Keep newlines in ChatGPT's <div><code> panes until the rule below runs.
   fence: "```",
   emDelimiter: "*",
   strongDelimiter: "**",
@@ -37,6 +38,26 @@ turndown.addRule("linkInlineFilePaths", {
     const target = path.replaceAll("\\", "/");
     // Code text becomes a plain link label, where backslashes and emphasis must be escaped.
     return `[${turndown.escape(path)}](<${target}>)`;
+  },
+});
+turndown.addRule("modernChatGptCodeBlock", {
+  // ChatGPT's current code pane can render <code> directly inside a <div>, without <pre>.
+  // Turndown otherwise collapses its newlines into inline code and may link a path inside it.
+  filter: node => node.nodeName === "DIV"
+    && node.getAttribute("data-markdown-copy") === "code-block"
+    && node.querySelector("code") !== null,
+  replacement: (_content, node) => {
+    const panel = node as HTMLElement;
+    const code = panel.querySelector("pre code, code")!;
+    const source = (code.textContent ?? "").replace(/\r\n?/g, "\n").replace(/\n$/, "");
+    const label = Array.from(panel.firstElementChild?.children ?? [])
+      .find(child => child.tagName === "DIV" && child.textContent?.trim())
+      ?.textContent?.trim() ?? "";
+    const language = /^[a-z][a-z\d+#-]{0,31}$/i.test(label) ? label : "";
+    let longestTicks = 0;
+    for (const match of source.matchAll(/`+/g)) longestTicks = Math.max(longestTicks, match[0].length);
+    const fence = "`".repeat(Math.max(3, longestTicks + 1));
+    return `\n\n${fence}${language}\n${source}\n${fence}\n\n`;
   },
 });
 turndown.addRule("compactListItem", {

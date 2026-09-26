@@ -78,6 +78,48 @@ test("does not nest a generated file link inside an existing link", () => {
   )).toBe("Open [`src/example.ts`](https://example.com/source).");
 });
 
+test("preserves modern ChatGPT plain-text panes as fenced code, including Windows paths and blank lines", () => {
+  const first = String.raw`C:\Program Files\SVP 4\mpv64\python.exe`;
+  const second = String.raw`C:\Users\marcm\AppData\Local\Python\pythoncore-3.13-64\python.exe`;
+  const source = `${first}\nPython 3.12.9\n\n${second}\nPython 3.13.14`;
+  const html = [
+    "<p>I verified both executables locally:</p>",
+    '<div class="CodeBlock"><div data-markdown-copy="code-block">',
+    '<div class="StickyActionBar"><svg></svg><div>Plain text</div><button>Copy</button></div>',
+    `<div class="chatgpt-code-scrollport"><code class="whitespace-pre block"><span>${source}</span></code></div>`,
+    "</div></div>",
+  ].join("");
+
+  expect(chatGptHtmlToMarkdown(html)).toBe([
+    "I verified both executables locally:",
+    "",
+    "```",
+    source,
+    "```",
+  ].join("\n"));
+});
+
+test("keeps a one-line code-pane directory as code and retains a PowerShell pane's language", () => {
+  const directory = String.raw`C:\Users\marcm\AppData\Local\Python\pythoncore-3.13-64`;
+  const plain = `<div data-markdown-copy="code-block"><div><div>Plain text</div></div><div><code>${directory}</code></div></div>`;
+  const powershell = '<div data-markdown-copy="code-block"><div><div>powershell</div></div><div><pre><code>python --version</code></pre></div></div>';
+
+  expect(chatGptHtmlToMarkdown(`${plain}${powershell}`)).toBe([
+    "```",
+    directory,
+    "```",
+    "",
+    "```powershell",
+    "python --version",
+    "```",
+  ].join("\n"));
+});
+
+test("modern code panes lengthen fences around backticks in their source", () => {
+  const html = '<div data-markdown-copy="code-block"><div><div>Plain text</div></div><div><code>```not a fence\nnext line</code></div></div>';
+  expect(chatGptHtmlToMarkdown(html)).toBe("````\n```not a fence\nnext line\n````");
+});
+
 test("converts Obsidian aliases and headings but preserves code examples and embeds", () => {
   const html = [
     "<p>Open [[Notes/weekly-review|review]] and [[Projects/sample#Status]].</p>",
