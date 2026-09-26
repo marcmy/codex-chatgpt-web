@@ -1118,7 +1118,9 @@ export const browserStageTimeouts = {
   effortSelection: 120_000,
   promptAttachment: 60_000,
   fileAttachment: 120_000,
-  send: 20_000,
+  // Submission acceptance may require a launcher page rebind after Send. Keep this comfortably
+  // above the ordinary DOM probe/rebind path so a transient renderer stall is recoverable.
+  send: 90_000,
   // A Bigger Context stage posts a much larger payload onto a conversation that already holds the
   // earlier parts. This budget covers ChatGPT accepting the submission, not just the click.
   multipartStageSend: 180_000,
@@ -2791,10 +2793,15 @@ export class ChatGptBrowserWorker {
     const progressSignal = signal
       ? AbortSignal.any([progressWaitAbort.signal, signal])
       : progressWaitAbort.signal;
+    const progressWait = externalProgress.waitForChange(afterProgressRevision, progressSignal)
+      .then(() => undefined);
+    // The DOM can win this race. Aborting the now-unused progress waiter rejects it, and Node treats
+    // that detached rejection as fatal unless it already has a rejection observer.
+    void progressWait.catch(() => {});
     try {
       await withBrowserTurnAbort(Promise.race([
         domMutation,
-        externalProgress.waitForChange(afterProgressRevision, progressSignal).then(() => undefined),
+        progressWait,
       ]), signal);
     } finally {
       progressWaitAbort.abort();
@@ -2831,11 +2838,16 @@ export class ChatGptBrowserWorker {
         const progressSignal = signal
           ? AbortSignal.any([progressWaitAbort.signal, signal])
           : progressWaitAbort.signal;
+        const progressWait = externalProgress.waitForChange(progress?.revision ?? 0, progressSignal)
+          .then(() => ({ kind: "external" as const }));
+        // currentSubmissionEvidence normally wins while the DOM is healthy. Observe the rejected
+        // loser before aborting it so cancellation cannot escape as an unhandled helper-process
+        // rejection after the enclosing send stage has already settled.
+        void progressWait.catch(() => {});
         try {
           const observed = await withBrowserTurnAbort(Promise.race([
             this.currentSubmissionEvidence(page, baseline, signal).then(value => ({ kind: "dom" as const, value })),
-            externalProgress.waitForChange(progress?.revision ?? 0, progressSignal)
-              .then(() => ({ kind: "external" as const })),
+            progressWait,
           ]), signal);
           if (observed.kind === "external") continue;
           evidence = observed.value;

@@ -717,11 +717,69 @@ test("chat preparation preserves page-read and composer errors instead of report
 test("a stalled DOM observation fails within its probe budget", async () => {
   expect(CHATGPT_BROWSER_OBSERVATION_PROBE_TIMEOUT_MS).toBe(5_000);
   expect(MAX_CHATGPT_BROWSER_PAGE_REBINDS).toBe(2);
+  expect(browserStageTimeouts.send).toBe(90_000);
   await expect(withChatGptBrowserObservationTimeout(
     new Promise<never>(() => {}),
     5,
   )).rejects.toBeInstanceOf(ChatGptBrowserObservationTimeoutError);
 
+});
+
+test("cancelled external-progress race losers cannot crash the browser helper", async () => {
+  const unhandled: unknown[] = [];
+  const onUnhandled = (reason: unknown) => { unhandled.push(reason); };
+  process.on("unhandledRejection", onUnhandled);
+
+  let abortedWaits = 0;
+  const progress = {
+    snapshot: () => ({ revision: 0, lastToolBatchRevision: 0, activeToolCalls: 0 }),
+    waitForChange: (_afterRevision: number, signal?: AbortSignal) => new Promise<{
+      revision: number;
+      lastToolBatchRevision: number;
+      activeToolCalls: number;
+    }>((_resolve, reject) => {
+      if (!signal) throw new Error("test progress wait requires an abort signal");
+      signal.addEventListener("abort", () => {
+        abortedWaits += 1;
+        reject(new DOMException("ChatGPT external progress wait aborted", "AbortError"));
+      }, { once: true });
+    }),
+    acknowledgeToolBatch: async () => {},
+  };
+
+  try {
+    const waitForTurnDomOrExternalProgress = (ChatGptBrowserWorker.prototype as unknown as {
+      waitForTurnDomOrExternalProgress(
+        page: Page,
+        afterProgressRevision: number,
+        externalProgress: typeof progress,
+      ): Promise<void>;
+    }).waitForTurnDomOrExternalProgress;
+    await waitForTurnDomOrExternalProgress.call({
+      waitForTurnDomMutation: async () => {},
+    }, {} as Page, 0, progress);
+
+    const waitForSubmissionAccepted = (ChatGptBrowserWorker.prototype as unknown as {
+      waitForSubmissionAccepted(
+        page: Page,
+        baseline: unknown,
+        signal: AbortSignal | undefined,
+        externalProgress: typeof progress,
+      ): Promise<string>;
+    }).waitForSubmissionAccepted;
+    let evidenceReads = 0;
+    await expect(waitForSubmissionAccepted.call({
+      currentSubmissionEvidence: async () => (++evidenceReads === 2 ? "user_turn" : undefined),
+      waitForTurnDomOrExternalProgress: async () => {},
+    }, dialogPage("").page, {}, undefined, progress)).resolves.toBe("user_turn");
+
+    // Let Node/Bun perform its unhandled-rejection turn before inspecting the result.
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(abortedWaits).toBe(3);
+    expect(unhandled).toEqual([]);
+  } finally {
+    process.off("unhandledRejection", onUnhandled);
+  }
 });
 
 test("an accepted Full-mode send survives one stalled DOM probe and a later MCP batch without resending", async () => {
