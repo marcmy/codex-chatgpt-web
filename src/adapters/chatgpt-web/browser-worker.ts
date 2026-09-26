@@ -824,14 +824,26 @@ const chatGptTerminalErrorAlert = (scope: ChatGptTextScope): Locator => scope
   .getByText(/Something went wrong[\s\S]*help\.openai\.com/i)
   .last();
 
-const chatGptMessageTooLongAlert = (page: Page): Locator => page
-  .locator('[role="alert"]')
-  .filter({ hasText: /The message you submitted was too long|message_length_exceeds_limit/i })
-  .last();
+const chatGptMessageTooLongAlerts = (page: Page): Locator | undefined => {
+  const alerts = page.locator('[role="alert"]');
+  // Contract tests use deliberately minimal Page/Locator doubles. The real Playwright locator
+  // always exposes filter/count/last; skip this supplemental DOM probe when a test double does not.
+  if (typeof alerts.filter !== "function") return undefined;
+  return alerts.filter({ hasText: /The message you submitted was too long|message_length_exceeds_limit/i });
+};
+
+async function chatGptMessageTooLongAlertCount(page: Page): Promise<number> {
+  const alerts = chatGptMessageTooLongAlerts(page);
+  if (!alerts || typeof alerts.count !== "function") return 0;
+  return alerts.count();
+}
 
 export async function throwIfChatGptMessageTooLongAlert(page: Page, previousAlertCount = 0): Promise<void> {
-  const alerts = chatGptMessageTooLongAlert(page);
-  if (await alerts.count() <= previousAlertCount || !await alerts.last().isVisible().catch(() => false)) return;
+  const alerts = chatGptMessageTooLongAlerts(page);
+  if (!alerts || typeof alerts.count !== "function" || typeof alerts.last !== "function") return;
+  if (await alerts.count() <= previousAlertCount) return;
+  const latest = alerts.last();
+  if (typeof latest.isVisible !== "function" || !await latest.isVisible().catch(() => false)) return;
   throw new ChatGptWebAdapterError(
     "ChatGPT rejected this message as too long. Compact the task and retry the Web model.",
     { status: 400, errorType: "invalid_request_error", code: "context_length_exceeded", retryable: false },
@@ -3058,7 +3070,7 @@ export class ChatGptBrowserWorker {
     const responseTurns = page.locator(CHATGPT_ASSISTANT_TURN_SELECTOR);
     const domCache: ChatGptSubmissionDomCache = {};
     const state = await this.submissionDomState(page, domCache);
-    const messageTooLongAlertCount = await chatGptMessageTooLongAlert(page).count();
+    const messageTooLongAlertCount = await chatGptMessageTooLongAlertCount(page);
     return {
       userTurns,
       responseTurns,
