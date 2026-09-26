@@ -177,14 +177,14 @@ export const CHATGPT_MAX_INPUT_IMAGES = 10;
 
 /**
  * ChatGPT's current `/backend-api/f/conversation` edge rejects large inline JSON bodies before a
- * model sees them. Keep the JSON-encoded visible prompt below this conservative budget so the
- * product request still has room for its own message metadata. Free/Luna additionally needs a
- * measured input-token ceiling below its generic browser composer limit so the model still has
- * room to produce the summary. This applies only to compaction: native Codex also removes the
- * oldest history items until a compaction request fits, then re-injects fresh initial context into
- * the replacement history.
+ * model sees them. Keep each JSON-encoded composer message below this conservative budget so the
+ * product request still has room for its own message metadata. Compaction additionally removes
+ * native history until its single prompt fits; Even Bigger Context planning applies this budget to
+ * each physical stage when choosing between six and eight parts.
  */
-export const CHATGPT_COMPACTION_PROMPT_JSON_BYTE_BUDGET = 110_000;
+export const CHATGPT_WEB_PROMPT_JSON_BYTE_BUDGET = 110_000;
+/** Compatibility name for compaction callers and diagnostics. */
+export const CHATGPT_COMPACTION_PROMPT_JSON_BYTE_BUDGET = CHATGPT_WEB_PROMPT_JSON_BYTE_BUDGET;
 
 export function chatGptPromptJsonBytes(text: string): number {
   return Buffer.byteLength(JSON.stringify(text), "utf8");
