@@ -3722,7 +3722,7 @@ test("Bigger Context preflight expands only the total context ceiling and keeps 
     pro,
     500_000,
     6,
-  )).toThrow("six-part ceiling");
+  )).toThrow("3 logical model windows across 6 transport parts");
   expect(() => assertChatGptWebMultipartInputWithinLimits(
     222_385,
     95_000,
@@ -3740,7 +3740,7 @@ test("Bigger Context preflight expands only the total context ceiling and keeps 
     pro,
     500_000,
     2,
-  )).toThrow("two-part ceiling");
+  )).toThrow("2 logical model windows across 2 transport parts");
   expect(() => assertChatGptWebMultipartInputWithinLimits(
     269_999,
     80_000,
@@ -3758,7 +3758,7 @@ test("Bigger Context preflight expands only the total context ceiling and keeps 
     plus,
     900_000,
     6,
-  )).toThrow("270,000-token six-part ceiling");
+  )).toThrow("3 logical model windows across 6 transport parts");
   expect(() => assertChatGptWebMultipartInputWithinLimits(
     180_000,
     80_000,
@@ -3767,7 +3767,7 @@ test("Bigger Context preflight expands only the total context ceiling and keeps 
     plus,
     900_000,
     2,
-  )).toThrow("180,000-token two-part ceiling");
+  )).toThrow("2 logical model windows across 2 transport parts");
   expect(() => assertChatGptWebMultipartInputWithinLimits(
     280_000,
     103_001,
