@@ -2525,6 +2525,7 @@ class BrowserHost {
     connectorBound = false,
     nativeTurnLineage,
     firstWebMessage,
+    retryRetainedEdit = false,
   ) {
     const tab = [...this.turnTabs.values()].find((candidate) => candidate.traceId === traceId);
     if (!tab) {
@@ -2541,12 +2542,30 @@ class BrowserHost {
         `Browser helper ownership mismatch: expected ${tab.helperPid}, received ${helperPid}`,
       );
     }
+    if (retryRetainedEdit && (
+      status === "completed"
+      || !retain
+      || !tab.conversationKey
+      || !tab.retainedNativeTurn?.firstWebMessage
+    )) {
+      throw new Error("A retained edit can be retried only before an incomplete retained turn is submitted");
+    }
     const cancelledByUser = this.userCancelledTurnOwners.get(traceId) === helperPid;
-    tab.status = status === "completed" ? "ready" : status === "aborted" ? "aborted" : "error";
+    tab.status = retryRetainedEdit ? "ready" : status === "completed" ? "ready" : status === "aborted" ? "aborted" : "error";
     this.syncPowerSaveBlocker();
-    tab.message = status === "completed" ? "Task completed" : message || `ChatGPT turn ${status}`;
+    tab.message = retryRetainedEdit
+      ? "Edited message ready to retry"
+      : status === "completed" ? "Task completed" : message || `ChatGPT turn ${status}`;
     tab.loading = false;
     if (!tab.view.webContents.isDestroyed()) tab.view.webContents.setBackgroundThrottling(true);
+    if (retryRetainedEdit) {
+      tab.lastHeartbeatAt = Date.now();
+      if (hideAfterTurn && !this.activeTraceId) this.hide();
+      this.logger.info("browser.tab_retained_for_edit_retry", { tabId: tab.id, traceId, status });
+      this.publishState?.(this.snapshot());
+      this.writeDescriptor();
+      return { cancelledByUser };
+    }
     if (status === "completed") {
       this.logger.info("browser.tab_completed", { tabId: tab.id, traceId });
     }

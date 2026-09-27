@@ -199,11 +199,19 @@ class BrowserControlServer {
         || Array.isArray(body.firstWebMessage)
         || !/^group:user:[A-Za-z0-9:._-]{1,128}$/.test(body.firstWebMessage.identity)
         || !/^[a-f0-9]{64}$/.test(body.firstWebMessage.digest)
+        || (body.firstWebMessage.contentSearchTurnKey !== undefined
+          && (typeof body.firstWebMessage.contentSearchTurnKey !== "string"
+            || !/^[A-Za-z0-9:._-]{1,256}$/.test(body.firstWebMessage.contentSearchTurnKey)))
         || body.nativeTurnLineage === undefined
       )) throw new Error("firstWebMessage is invalid");
       if (body.retain !== undefined && typeof body.retain !== "boolean") {
         throw new Error("retain is invalid");
       }
+      if (body.retryRetainedEdit !== undefined && (
+        request.url !== "/v1/turn/end"
+        || typeof body.retryRetainedEdit !== "boolean"
+        || body.retain !== true
+      )) throw new Error("retryRetainedEdit is invalid");
       if (body.connectorBound !== undefined && typeof body.connectorBound !== "boolean") {
         throw new Error("connectorBound is invalid");
       }
@@ -370,6 +378,7 @@ class BrowserControlServer {
           body.connectorBound === true,
           body.nativeTurnLineage,
           body.firstWebMessage,
+          body.retryRetainedEdit,
         );
         this.logger.info("browser.turn_ended", { traceId: body.traceId, status: body.status });
         writeJson(response, 200, { ok: true, ...release });

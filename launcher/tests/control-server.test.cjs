@@ -169,7 +169,11 @@ test("browser control server authenticates and owns turn visibility", async () =
   }).start();
   const descriptor = server.descriptor();
   const lineage = { turnId: "native-turn", userItemId: "native-user", historyPrefix: "b".repeat(64) };
-  const firstMessage = { identity: "group:user:first-part", digest: "c".repeat(64) };
+  const firstMessage = {
+    identity: "group:user:first-part",
+    digest: "c".repeat(64),
+    contentSearchTurnKey: "fallback-turn-0",
+  };
   try {
     const unauthenticated = await fetch(`${descriptor.endpoint}/v1/turn/start`, {
       method: "POST",
@@ -261,7 +265,7 @@ test("browser control server authenticates and owns turn visibility", async () =
         true,
       ],
       ["heartbeat", "abcdef123456", process.pid, true],
-      ["end", "abcdef123456", process.pid, "completed", true, undefined, true, true, lineage, firstMessage],
+      ["end", "abcdef123456", process.pid, "completed", true, undefined, true, true, lineage, firstMessage, undefined],
     ]);
     assert.equal(logs.some(([, event]) => event === "browser.turn_started"), true);
     assert.equal(logs.some(([, event]) => event === "browser.turn_ended"), true);

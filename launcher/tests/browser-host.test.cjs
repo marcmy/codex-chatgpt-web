@@ -2633,6 +2633,50 @@ test("an unverified edited turn cannot acquire or mutate its retained tab", asyn
   assert.equal(tab.status, "ready");
 });
 
+test("an edited retained turn that fails before Send stays reusable for the reconnect", async () => {
+  const conversationKey = "7".repeat(64);
+  const oldLineage = { turnId: "turn_old", userItemId: "user_old", historyPrefix: "8".repeat(64) };
+  const oldMessage = {
+    identity: "group:user:old-message",
+    digest: "9".repeat(64),
+    contentSearchTurnKey: "fallback-turn-3",
+  };
+  const tab = {
+    id: "tab-edit-retry", surfaceId: "surface-edit-retry", traceId: "trace_old", conversationKey,
+    connectorIdentity: "Codex Native2", connectorBound: true, interactionMode: "automatic",
+    helperPid: 111, status: "ready", retainedNativeTurn: { ...oldLineage, firstWebMessage: oldMessage },
+    view: { webContents: { isDestroyed: () => false, setBackgroundThrottling() {} } },
+  };
+  const events = [];
+  const fixture = Object.assign(Object.create(BrowserHost.prototype), {
+    manualOperation: null, turnTabs: new Map([[tab.id, tab]]),
+    userCancelledTurnOwners: new Map(), closedTurnOwners: new Map(),
+    selectedTabId: tab.id, syncViewVisibility() {}, syncPowerSaveBlocker() {},
+    snapshot: () => ({ tabs: [] }), publishState() {}, writeDescriptor() {},
+    logger: { info: event => events.push(event) },
+  });
+  const edited = { turnId: "turn_edit", userItemId: "user_edit", historyPrefix: oldLineage.historyPrefix };
+  const firstLease = await BrowserHost.prototype.beginTurn.call(
+    fixture, "trace_edit", false, 222, conversationKey, "Codex Native2", false, undefined, edited,
+  );
+  assert.deepEqual(firstLease.editTarget, oldMessage);
+  await BrowserHost.prototype.endTurn.call(
+    fixture, "trace_edit", 222, "failed", false, "pre-send edit failure", true, false,
+    undefined, undefined, true,
+  );
+  assert.equal(tab.status, "ready");
+  assert.equal(tab.connectorBound, true);
+  assert.deepEqual(tab.retainedNativeTurn, { ...oldLineage, firstWebMessage: oldMessage });
+  assert.ok(events.includes("browser.tab_retained_for_edit_retry"));
+
+  const retryLease = await BrowserHost.prototype.beginTurn.call(
+    fixture, "trace_edit_retry", false, 333, conversationKey, "Codex Native2", false, undefined, edited,
+  );
+  assert.equal(retryLease.reused, true);
+  assert.deepEqual(retryLease.editTarget, oldMessage);
+  assert.equal(retryLease.tabId, tab.id);
+});
+
 test("failed retained conversations stay visible but are not reused", async () => {
   const conversationKey = "f".repeat(64);
   const closed = [];
