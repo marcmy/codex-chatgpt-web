@@ -60,9 +60,16 @@ turndown.addRule("modernChatGptCodeBlock", {
     const label = Array.from(panel.firstElementChild?.children ?? [])
       .find(child => child.tagName === "DIV" && child.textContent?.trim())
       ?.textContent?.trim() ?? "";
-    const language = /^[a-z][a-z\d+#-]{0,31}$/i.test(label) ? label : "";
+    const classLanguage = Array.from(code.classList)
+      .find(value => value.startsWith("language-"))
+      ?.slice("language-".length) ?? "";
+    const languageCandidate = label || classLanguage;
+    const language = /^[a-z][a-z\d+#-]{0,31}$/i.test(languageCandidate) ? languageCandidate : "";
     let longestTicks = 0;
-    for (const match of source.matchAll(/`+/g)) longestTicks = Math.max(longestTicks, match[0].length);
+    for (const line of source.split("\n")) {
+      const run = line.match(/^ {0,3}(`{3,})/)?.[1];
+      if (run) longestTicks = Math.max(longestTicks, run.length);
+    }
     const fence = "`".repeat(Math.max(3, longestTicks + 1));
     return `\n\n${fence}${language}\n${source}\n${fence}\n\n`;
   },
