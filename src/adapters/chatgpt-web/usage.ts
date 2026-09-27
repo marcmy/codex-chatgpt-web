@@ -13,6 +13,8 @@ import type { CodexParsedRequest, CodexUsage } from "../../types";
 import { compiledChatGptWebMessages, estimateChatGptWebImageTokens, estimateCompiledChatGptWebInputTokens } from "./input-tokens";
 import {
   CHATGPT_BIGGER_CONTEXT_PARTS,
+  CHATGPT_EVEN_BIGGER_CONTEXT_EXTENDED_PARTS,
+  CHATGPT_EVEN_BIGGER_CONTEXT_MAX_PARTS,
   CHATGPT_EVEN_BIGGER_CONTEXT_PARTS,
   CHATGPT_MULTIPART_JSON_BYTE_PLANNING_RESERVE,
   CHATGPT_WEB_PROMPT_JSON_BYTE_BUDGET,
@@ -66,9 +68,9 @@ export function estimateChatGptWebInputTokens(
 }
 
 /**
- * The compaction threshold chooses the initial part count. Whole records, fragmented records, and
- * composer limits can require six physical parts even though logical Bigger Context capacity remains
- * three ordinary model windows. Plan the physical transport before browser submission.
+ * The compaction threshold chooses the initial part count. Even Bigger Context can add physical
+ * parts to keep each browser message within its transport budgets; those extra parts never expand
+ * the logical six-window context ceiling. Plan the physical transport before browser submission.
  */
 export function resolveBiggerContextMultipartParts(
   parsed: CodexParsedRequest,
@@ -130,7 +132,13 @@ export function resolveBiggerContextMultipartParts(
   if (initialParts === undefined && inline && fits(inline)) return undefined;
   const minimumParts = initialParts ?? 2;
   const transportParts: readonly ChatGptWebMultipartPartCount[] = capabilities.experimentalEvenBiggerContext
-    ? [2, CHATGPT_BIGGER_CONTEXT_PARTS, CHATGPT_EVEN_BIGGER_CONTEXT_PARTS]
+    ? [
+        2,
+        CHATGPT_BIGGER_CONTEXT_PARTS,
+        CHATGPT_EVEN_BIGGER_CONTEXT_PARTS,
+        CHATGPT_EVEN_BIGGER_CONTEXT_EXTENDED_PARTS,
+        CHATGPT_EVEN_BIGGER_CONTEXT_MAX_PARTS,
+      ]
     : [2, CHATGPT_BIGGER_CONTEXT_PARTS];
   for (const parts of transportParts) {
     if (parts < minimumParts) continue;
@@ -143,7 +151,7 @@ export function resolveBiggerContextMultipartParts(
   // Compaction can safely recover by compiling inline and applying its native-style oldest-history
   // trimming. Ordinary turns cannot discard history, so keep the largest physical shape and let
   // browser preflight report the irreducible context error.
-  return compaction ? undefined : (capabilities.experimentalEvenBiggerContext ? CHATGPT_EVEN_BIGGER_CONTEXT_PARTS : CHATGPT_BIGGER_CONTEXT_PARTS);
+  return compaction ? undefined : (capabilities.experimentalEvenBiggerContext ? CHATGPT_EVEN_BIGGER_CONTEXT_MAX_PARTS : CHATGPT_BIGGER_CONTEXT_PARTS);
 }
 
 export function biggerContextPartCount(
