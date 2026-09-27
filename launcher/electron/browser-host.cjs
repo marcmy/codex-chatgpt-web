@@ -2399,6 +2399,7 @@ class BrowserHost {
     connectorIdentity,
     requireRetainedConversation = false,
     signal,
+    nativeTurnLineage,
   ) {
     signal?.throwIfAborted();
     if (this.manualOperation) {
@@ -2419,8 +2420,12 @@ class BrowserHost {
       tab.interactionMode === "automatic"
       && tab.status === "ready"
       && tab.conversationKey === conversationKey
-      && tab.connectorIdentity === connectorIdentity
-      && (!connectorIdentity || tab.connectorBound === true)
+      && ((tab.connectorIdentity === connectorIdentity
+        && (!connectorIdentity || tab.connectorBound === true))
+        || (nativeTurnLineage && tab.retainedNativeTurn
+          && nativeTurnLineage.turnId !== tab.retainedNativeTurn.turnId
+          && nativeTurnLineage.userItemId !== tab.retainedNativeTurn.userItemId
+          && nativeTurnLineage.historyPrefix === tab.retainedNativeTurn.historyPrefix))
     )) : [];
     if (retainedMatches.length > 1) {
       throw new Error(`ChatGPT retained conversation ${conversationKey} owns multiple browser tabs`);
@@ -2432,6 +2437,15 @@ class BrowserHost {
     const existing = sameTrace?.status === "running" ? sameTrace : exactRetained;
     if (existing) {
       const reused = existing.status === "ready";
+      const previous = existing.retainedNativeTurn;
+      const rewrittenLastTurn = reused && nativeTurnLineage && previous
+        && nativeTurnLineage.turnId !== previous.turnId
+        && nativeTurnLineage.userItemId !== previous.userItemId
+        && nativeTurnLineage.historyPrefix === previous.historyPrefix;
+      if (rewrittenLastTurn && !previous.firstWebMessage) {
+        throw new Error("The retained ChatGPT conversation has no verified first message for this edited Codex turn");
+      }
+      const editTarget = rewrittenLastTurn ? previous.firstWebMessage : undefined;
       if (existing.status === "running" && existing.helperPid !== helperPid) {
         if (processRunning(existing.helperPid)) {
           throw new Error(`ChatGPT browser turn ${traceId} is owned by another helper process`);
@@ -2446,6 +2460,10 @@ class BrowserHost {
       }
       existing.helperPid = helperPid;
       existing.traceId = traceId;
+      if (editTarget && existing.connectorIdentity !== connectorIdentity) {
+        existing.connectorIdentity = connectorIdentity;
+        existing.connectorBound = false;
+      }
       existing.status = "running";
       existing.loading = true;
       existing.message = "ChatGPT is working";
@@ -2474,6 +2492,7 @@ class BrowserHost {
         tabId: existing.id,
         reused,
         connectorBound: existing.connectorBound === true,
+        ...(editTarget ? { editTarget } : {}),
       };
     }
     if (requireRetainedConversation) {
@@ -2504,6 +2523,8 @@ class BrowserHost {
     message,
     retain = false,
     connectorBound = false,
+    nativeTurnLineage,
+    firstWebMessage,
   ) {
     const tab = [...this.turnTabs.values()].find((candidate) => candidate.traceId === traceId);
     if (!tab) {
@@ -2533,6 +2554,15 @@ class BrowserHost {
       && retain
       && tab.conversationKey
       && (!tab.connectorIdentity || connectorBound)) {
+      if (nativeTurnLineage) {
+        const previous = tab.retainedNativeTurn;
+        tab.retainedNativeTurn = previous?.turnId === nativeTurnLineage.turnId
+          && previous.userItemId === nativeTurnLineage.userItemId
+          ? previous
+          : { ...nativeTurnLineage, firstWebMessage };
+      } else {
+        tab.retainedNativeTurn = undefined;
+      }
       tab.connectorBound = connectorBound === true;
       tab.lastHeartbeatAt = Date.now();
       if (hideAfterTurn && !this.activeTraceId) this.hide();

@@ -168,6 +168,8 @@ test("browser control server authenticates and owns turn visibility", async () =
     getPreferences: () => ({ showBrowserDuringTurns: true }),
   }).start();
   const descriptor = server.descriptor();
+  const lineage = { turnId: "native-turn", userItemId: "native-user", historyPrefix: "b".repeat(64) };
+  const firstMessage = { identity: "group:user:first-part", digest: "c".repeat(64) };
   try {
     const unauthenticated = await fetch(`${descriptor.endpoint}/v1/turn/start`, {
       method: "POST",
@@ -193,6 +195,7 @@ test("browser control server authenticates and owns turn visibility", async () =
         conversationKey: "a".repeat(64),
         connectorIdentity: "Codex Native2",
         requireRetainedConversation: true,
+        nativeTurnLineage: lineage,
       }),
     });
     assert.equal(start.status, 200);
@@ -238,9 +241,12 @@ test("browser control server authenticates and owns turn visibility", async () =
         status: "completed",
         retain: true,
         connectorBound: true,
+        nativeTurnLineage: lineage,
+        firstWebMessage: firstMessage,
       }),
     });
     assert.equal(end.status, 200);
+    assert.deepEqual(calls[0].pop(), lineage);
     const acquisitionSignal = calls[0].pop();
     assert.ok(acquisitionSignal instanceof AbortSignal);
     assert.equal(acquisitionSignal.aborted, false);
@@ -255,7 +261,7 @@ test("browser control server authenticates and owns turn visibility", async () =
         true,
       ],
       ["heartbeat", "abcdef123456", process.pid, true],
-      ["end", "abcdef123456", process.pid, "completed", true, undefined, true, true],
+      ["end", "abcdef123456", process.pid, "completed", true, undefined, true, true, lineage, firstMessage],
     ]);
     assert.equal(logs.some(([, event]) => event === "browser.turn_started"), true);
     assert.equal(logs.some(([, event]) => event === "browser.turn_ended"), true);

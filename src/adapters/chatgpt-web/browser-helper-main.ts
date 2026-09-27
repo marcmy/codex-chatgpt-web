@@ -33,6 +33,7 @@ interface RunMessage {
     retainConversation?: boolean;
     requireRetainedConversation?: boolean;
     conversationKey?: string;
+    nativeTurnLineage?: BrowserTurn["nativeTurnLineage"];
     compaction?: boolean;
     captureLunaCheckpoint?: boolean;
     externalProgress?: boolean;
@@ -177,6 +178,11 @@ async function run(message: RunMessage): Promise<void> {
   if (message.turn.conversationKey !== undefined && !/^[a-f0-9]{64}$/.test(message.turn.conversationKey)) {
     throw new Error("Browser helper conversation key is invalid");
   }
+  if (message.turn.nativeTurnLineage !== undefined && (
+    typeof message.turn.nativeTurnLineage.turnId !== "string"
+    || typeof message.turn.nativeTurnLineage.userItemId !== "string"
+    || !/^[a-f0-9]{64}$/.test(message.turn.nativeTurnLineage.historyPrefix)
+  )) throw new Error("Browser helper native turn lineage is invalid");
   if (message.turn.compaction !== undefined && typeof message.turn.compaction !== "boolean") {
     throw new Error("Browser helper compaction flag is invalid");
   }
@@ -228,6 +234,7 @@ async function run(message: RunMessage): Promise<void> {
     ...(message.turn.retainConversation ? { retainConversation: true } : {}),
     ...(message.turn.requireRetainedConversation ? { requireRetainedConversation: true } : {}),
     ...(message.turn.conversationKey ? { conversationKey: message.turn.conversationKey } : {}),
+    ...(message.turn.nativeTurnLineage ? { nativeTurnLineage: message.turn.nativeTurnLineage } : {}),
     abortSignal: abortController.signal,
     ...(message.turn.compaction ? { compaction: true } : {}),
     ...(progress ? {

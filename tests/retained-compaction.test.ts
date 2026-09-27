@@ -21,6 +21,7 @@ import { CompactionTransactionStore } from "../src/adapters/chatgpt-web/compacti
 import {
   chatGptConversationKey,
   retainedConversationResumeRequest,
+  retainedConversationTurnLineage,
 } from "../src/adapters/chatgpt-web/conversation-key";
 import {
   chatGptWebExecutionNamespace,
@@ -143,6 +144,27 @@ test("one browser conversation spans native turns and rotates only at compaction
     content: [{ type: "input_text", text: `${SUMMARY_PREFIX}\ncheckpoint` }],
   });
   expect(chatGptConversationKey(v1Compact, "provider")).not.toBe(chatGptConversationKey(before, "provider"));
+});
+
+test("retained turn lineage distinguishes a replacement from an appended native user turn", () => {
+  const make = (turnId: string, messages: Array<[string, string]>) => {
+    const parsed = request();
+    (parsed._rawBody as { input: unknown[]; client_metadata: Record<string, unknown> }).input = messages.map(([id, owner]) => ({
+      type: "message", role: "user", id,
+      content: [{ type: "input_text", text: id }],
+      internal_chat_message_metadata_passthrough: { turn_id: owner },
+    }));
+    (parsed._rawBody as { client_metadata: Record<string, unknown> }).client_metadata = {
+      "x-codex-turn-metadata": JSON.stringify({ thread_id: "thread_edit", turn_id: turnId }),
+    };
+    return retainedConversationTurnLineage(parsed)!;
+  };
+  const original = make("turn_old", [["earlier", "turn_earlier"], ["original", "turn_old"]]);
+  const edited = make("turn_edit", [["earlier", "turn_earlier"], ["replacement", "turn_edit"]]);
+  const appended = make("turn_next", [["earlier", "turn_earlier"], ["original", "turn_old"], ["next", "turn_next"]]);
+  expect(edited.historyPrefix).toBe(original.historyPrefix);
+  expect(appended.historyPrefix).not.toBe(original.historyPrefix);
+  expect(edited.userItemId).not.toBe(original.userItemId);
 });
 
 test("compaction capability is one-shot and structurally bound to its handoff id", async () => {
