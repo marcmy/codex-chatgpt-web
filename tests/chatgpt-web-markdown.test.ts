@@ -78,6 +78,22 @@ test("does not nest a generated file link inside an existing link", () => {
   )).toBe("Open [`src/example.ts`](https://example.com/source).");
 });
 
+test("normalizes an existing Markdown link to an absolute Windows file", () => {
+  const windowsPath = "C:\\Users\\Dev\\Documents\\Codex\\sample-project\\_test-bundles\\release\\INSTALL_TEST.cmd";
+  const normalizedPath = windowsPath.replaceAll("\\", "/");
+  const markdown = chatGptHtmlToMarkdown(
+    `<p>Open <a href="${windowsPath}">INSTALL_TEST.cmd</a>.</p>`,
+  );
+  expect(markdown).toBe(`Open [INSTALL\\_TEST.cmd](<${normalizedPath}>).`);
+  expect(Bun.markdown.html(markdown)).toContain(`href="${normalizedPath}"`);
+});
+
+test("normalizes the percent-encoded Windows separators emitted by Markdown rendering", () => {
+  const source = "[file.txt](<C:\\Users\\Dev\\Documents\\file.txt>)";
+  expect(chatGptHtmlToMarkdown(Bun.markdown.html(source)))
+    .toBe("[file.txt](<C:/Users/Dev/Documents/file.txt>)");
+});
+
 test("preserves modern ChatGPT plain-text panes as fenced code, including Windows paths and blank lines", () => {
   const first = String.raw`C:\Program Files\SVP 4\mpv64\python.exe`;
   const second = String.raw`C:\Users\marcm\AppData\Local\Python\pythoncore-3.13-64\python.exe`;
