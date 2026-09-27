@@ -1356,6 +1356,12 @@ interface ChatGptSubmissionBaseline {
   acceptedUserIdentity?: string;
 }
 
+interface ChatGptRetainedWebUserMessage {
+  identity: string;
+  digest: string;
+  contentSearchTurnKey?: string;
+}
+
 interface ChatGptSubmissionObservationRecovery {
   page: Page;
   baseline: ChatGptSubmissionBaseline;
@@ -3101,21 +3107,93 @@ export class ChatGptBrowserWorker {
     return createHash("sha256").update(value).digest("hex");
   }
 
+  private async webUserMessageContentSearchTurnKey(group: Locator): Promise<string | undefined> {
+    const keys = await group.locator("[data-content-search-turn-key]").evaluateAll(elements => (
+      [...new Set(elements
+        .map(element => element.getAttribute("data-content-search-turn-key")?.trim())
+        .filter((value): value is string => Boolean(value)))]
+    ));
+    return keys.length === 1 ? keys[0] : undefined;
+  }
+
+  private async resolveWebUserGroupForEdit(
+    page: Page,
+    target: ChatGptRetainedWebUserMessage,
+    baseline: ChatGptSubmissionBaseline,
+    abortSignal?: AbortSignal,
+  ): Promise<{ group: Locator; identity: string }> {
+    const finish = async (group: Locator): Promise<{ group: Locator; identity: string }> => {
+      if (await this.webUserMessageDigest(group) !== target.digest) {
+        throw new Error("The retained ChatGPT edit target changed since its original submission");
+      }
+      const key = await group.getAttribute("data-turn-key", {
+        signal: abortSignal,
+        timeout: CHATGPT_CONNECTOR_ACTION_TIMEOUT_MS,
+      });
+      if (!key || !/^[A-Za-z0-9:._-]{1,128}$/.test(key)) {
+        throw new Error("The retained ChatGPT edit target has no supported current group identity");
+      }
+      const identity = `group:user:${key}`;
+      if (!baseline.initialTurnIdentities.includes(identity)) {
+        const state = await this.submissionDomState(page, baseline.domCache, abortSignal);
+        if (!state.turnIdentities.includes(identity)) {
+          throw new Error("The retained ChatGPT edit target is absent from the current conversation");
+        }
+        baseline.initialTurnIdentities = state.turnIdentities;
+      }
+      return { group, identity };
+    };
+
+    const direct = this.webUserGroup(page, target.identity);
+    const directCount = await direct.count();
+    if (directCount > 1) throw new Error("The retained ChatGPT edit target is ambiguous in the current conversation");
+    if (directCount === 1) return finish(direct);
+
+    if (target.contentSearchTurnKey) {
+      const rebound = page.locator(
+        `[data-turn-key]:has([data-content-search-turn-key=${JSON.stringify(target.contentSearchTurnKey)}])`,
+      );
+      const reboundCount = await rebound.count();
+      if (reboundCount > 1) {
+        throw new Error("The retained ChatGPT edit target has an ambiguous stable turn identity");
+      }
+      if (reboundCount === 1) return finish(rebound);
+    }
+
+    const groups = page.locator('[data-turn-key]:has([data-user-message-bubble])');
+    const matches: Locator[] = [];
+    for (let index = 0; index < await groups.count(); index += 1) {
+      const group = groups.nth(index);
+      if (await this.webUserMessageDigest(group) === target.digest) matches.push(group);
+      if (matches.length > 1) break;
+    }
+    if (matches.length > 1) {
+      throw new Error("The retained ChatGPT edit target digest matches multiple user messages");
+    }
+    if (matches.length === 1) return finish(matches[0]!);
+    throw new Error("The retained ChatGPT edit target is absent from the current conversation");
+  }
+
   private async firstWebMessage(
     page: Page,
     baseline: ChatGptSubmissionBaseline,
-  ): Promise<{ identity: string; digest: string } | undefined> {
+  ): Promise<ChatGptRetainedWebUserMessage | undefined> {
     const state = await this.submissionDomState(page, baseline.domCache);
     const identity = baseline.acceptedUserIdentity
       ?? chatGptNewTurnIdentity(baseline.initialTurnIdentities, state.userIdentities);
     if (!identity || !/^group:user:[A-Za-z0-9:._-]{1,128}$/.test(identity)) return undefined;
     const group = this.webUserGroup(page, identity);
-    return { identity, digest: await this.webUserMessageDigest(group) };
+    const contentSearchTurnKey = await this.webUserMessageContentSearchTurnKey(group);
+    return {
+      identity,
+      digest: await this.webUserMessageDigest(group),
+      ...(contentSearchTurnKey ? { contentSearchTurnKey } : {}),
+    };
   }
 
   private async editFirstWebMessage(
     page: Page,
-    target: { identity: string; digest: string },
+    target: ChatGptRetainedWebUserMessage,
     prompt: string,
     expectConnectorMention: boolean,
     baseline: ChatGptSubmissionBaseline,
@@ -3125,13 +3203,8 @@ export class ChatGptBrowserWorker {
     completionTracker?: ChatGptCompletionTracker,
     recoverObservation?: ChatGptObservationRecovery,
   ): Promise<ChatGptSubmissionEvidence> {
-    if (!baseline.initialTurnIdentities.includes(target.identity)) {
-      throw new Error("The retained ChatGPT edit target is absent from the current conversation");
-    }
-    const group = this.webUserGroup(page, target.identity);
-    if (await this.webUserMessageDigest(group) !== target.digest) {
-      throw new Error("The retained ChatGPT edit target changed since its original submission");
-    }
+    const resolvedTarget = await this.resolveWebUserGroupForEdit(page, target, baseline, abortSignal);
+    const group = resolvedTarget.group;
     const bubble = group.locator("[data-user-message-bubble]");
     await bubble.hover({ signal: abortSignal, timeout: CHATGPT_CONNECTOR_ACTION_TIMEOUT_MS });
     const edit = group.getByRole("button", { name: "Edit message", exact: true });
@@ -3213,7 +3286,7 @@ export class ChatGptBrowserWorker {
       baseline.acceptedUserIdentity ??= chatGptNewTurnIdentity(
         baseline.initialTurnIdentities, state.userIdentities,
       );
-      if (!baseline.acceptedUserIdentity || baseline.acceptedUserIdentity === target.identity) {
+      if (!baseline.acceptedUserIdentity || baseline.acceptedUserIdentity === resolvedTarget.identity) {
         throw new Error("ChatGPT did not replace the edited user turn with a new identity");
       }
       await submissionLifecycle?.onSubmitted?.();
@@ -4880,7 +4953,8 @@ export class ChatGptBrowserWorker {
     });
     const surfaceId = lease.surfaceId;
     const reused = lease.reused === true;
-    let firstWebMessage: { identity: string; digest: string } | undefined;
+    let firstWebMessage: ChatGptRetainedWebUserMessage | undefined;
+    let editSendActivated = false;
     let terminal: "completed" | "failed" | "aborted" = "completed";
     let terminalMessage: string | undefined;
     let originalError: unknown;
@@ -4916,8 +4990,15 @@ export class ChatGptBrowserWorker {
       await turn.onPreparedSelected?.(reused);
       heartbeatTimer = setInterval(sendHeartbeat, LAUNCHER_TURN_HEARTBEAT_INTERVAL_MS);
       heartbeatTimer.unref?.();
+      const activeTurn = lease.editTarget ? {
+        ...turn,
+        onSendActivated: async () => {
+          editSendActivated = true;
+          await turn.onSendActivated?.();
+        },
+      } : turn;
       return await this.runBrowserTurn(
-        turn, surfaceId, undefined, reused, lease.trackUsage === true,
+        activeTurn, surfaceId, undefined, reused, lease.trackUsage === true,
         lease.editTarget,
         message => { firstWebMessage ??= message; },
       );
@@ -4956,6 +5037,9 @@ export class ChatGptBrowserWorker {
           status: terminal,
           ...(terminalMessage ? { message: terminalMessage } : {}),
           ...(turn.retainConversation ? { retain: true } : {}),
+          ...(terminal !== "completed" && lease.editTarget && !editSendActivated
+            ? { retryRetainedEdit: true }
+            : {}),
           ...(terminal === "completed" && turn.nativeTurnLineage
             ? { nativeTurnLineage: turn.nativeTurnLineage,
               ...(firstWebMessage ? { firstWebMessage } : {}) } : {}),
@@ -4982,8 +5066,8 @@ export class ChatGptBrowserWorker {
     maintenancePage?: Page,
     reuseConversation = false,
     trackUsage = false,
-    editTarget?: { identity: string; digest: string },
-    onFirstWebMessage?: (message: { identity: string; digest: string }) => void,
+    editTarget?: ChatGptRetainedWebUserMessage,
+    onFirstWebMessage?: (message: ChatGptRetainedWebUserMessage) => void,
   ): Promise<string> {
     if (turn.abortSignal?.aborted) throw new DOMException("ChatGPT web turn aborted", "AbortError");
     if ((turn.externalProgress !== undefined) !== (turn.completionFence !== undefined)) {

@@ -400,8 +400,9 @@ export type LauncherTurnActivity =
       message?: string;
       retain?: boolean;
       connectorBound?: boolean;
+      retryRetainedEdit?: boolean;
       nativeTurnLineage?: { turnId: string; userItemId: string; historyPrefix: string };
-      firstWebMessage?: { identity: string; digest: string };
+      firstWebMessage?: { identity: string; digest: string; contentSearchTurnKey?: string };
     };
 
 // Startup must outlast the launcher's ten-second idle bootstrap. This is not a model-turn budget.
@@ -648,7 +649,7 @@ export async function notifyLauncherTurn(
   cancelledByUser?: boolean;
   authenticationRequired?: boolean;
   trackUsage?: boolean;
-  editTarget?: { identity: string; digest: string };
+  editTarget?: { identity: string; digest: string; contentSearchTurnKey?: string };
 }> {
   const descriptor = readLauncherBrowserHostDescriptor(descriptorPath);
   const controller = new AbortController();
@@ -701,7 +702,10 @@ export async function notifyLauncherTurn(
         || typeof (editTarget as Record<string, unknown>).identity !== "string"
         || !/^group:user:[A-Za-z0-9:._-]{1,128}$/.test((editTarget as Record<string, unknown>).identity as string)
         || typeof (editTarget as Record<string, unknown>).digest !== "string"
-        || !/^[a-f0-9]{64}$/.test((editTarget as Record<string, unknown>).digest as string))) {
+        || !/^[a-f0-9]{64}$/.test((editTarget as Record<string, unknown>).digest as string)
+        || ((editTarget as Record<string, unknown>).contentSearchTurnKey !== undefined
+          && (typeof (editTarget as Record<string, unknown>).contentSearchTurnKey !== "string"
+            || !/^[A-Za-z0-9:._-]{1,256}$/.test((editTarget as Record<string, unknown>).contentSearchTurnKey as string))))) {
         throw new Error("Launcher browser control channel returned an invalid edit target");
       }
       return {
@@ -709,7 +713,11 @@ export async function notifyLauncherTurn(
         reused: body.reused,
         connectorBound: body.connectorBound,
         trackUsage: body.trackUsage === true,
-        ...(editTarget ? { editTarget: editTarget as { identity: string; digest: string } } : {}),
+        ...(editTarget ? { editTarget: editTarget as {
+          identity: string;
+          digest: string;
+          contentSearchTurnKey?: string;
+        } } : {}),
       };
     }
     if (activity.phase === "heartbeat") {

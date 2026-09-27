@@ -218,6 +218,44 @@ test("assistant tracking accepts a stable content-search remount and keeps promp
     .rejects.toThrow("ChatGPT opened another user turn while the bound assistant response was detached");
 });
 
+test("retained user edits rebind a remounted Web message by stable key and legacy digest", async () => {
+  const makeGroup = (key: string, digest: string) => ({
+    key,
+    digest,
+    count: async () => 1,
+    getAttribute: async (name: string) => name === "data-turn-key" ? key : null,
+  });
+  const missing = { count: async () => 0 };
+  const stable = makeGroup("remounted", "digest-stable");
+  const digestMatch = makeGroup("legacy-remounted", "digest-legacy");
+  const other = makeGroup("other", "digest-other");
+  const collection = {
+    count: async () => 2,
+    nth: (index: number) => [other, digestMatch][index],
+  };
+  const worker = Object.create(ChatGptBrowserWorker.prototype) as any;
+  worker.webUserGroup = () => missing;
+  worker.webUserMessageDigest = async (group: { digest: string }) => group.digest;
+  const page = {
+    locator: (selector: string) => selector.includes("data-content-search-turn-key") ? stable : collection,
+  } as unknown as Page;
+
+  const stableBaseline = { initialTurnIdentities: ["group:user:remounted"], domCache: {} };
+  const rebound = await worker.resolveWebUserGroupForEdit(page, {
+    identity: "group:user:old",
+    digest: "digest-stable",
+    contentSearchTurnKey: "fallback-turn-4",
+  }, stableBaseline);
+  expect(rebound.identity).toBe("group:user:remounted");
+
+  const legacyBaseline = { initialTurnIdentities: ["group:user:legacy-remounted"], domCache: {} };
+  const legacy = await worker.resolveWebUserGroupForEdit(page, {
+    identity: "group:user:old-legacy",
+    digest: "digest-legacy",
+  }, legacyBaseline);
+  expect(legacy.identity).toBe("group:user:legacy-remounted");
+});
+
 test("power turn identity separates roles and keeps virtualized groups in the submission baseline", async () => {
   const { createWindow } = require("@mixmark-io/domino");
   const window = createWindow('<div data-turn-id-container="legacy"><section data-testid="conversation-turn-0" data-turn="assistant" data-turn-id="legacy"></section></div><div data-turn-key="history"></div><div data-turn-key="previous"><div data-user-message-bubble></div><h4 data-conversation-role="assistant"></h4><div data-turn-id-container="search-only"><section data-testid="conversation-turn-search" data-turn="assistant"><div data-message-author-role="assistant"></div></section></div></div>');
