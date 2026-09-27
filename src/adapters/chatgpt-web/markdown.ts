@@ -31,6 +31,13 @@ turndown.addRule("preserveCodexPlanBlockTags", {
     return `\n\n${paragraph}\n\n`;
   },
 });
+turndown.addRule("normalizeWindowsFileLinks", {
+  filter: node => absoluteWindowsLinkTarget(node) !== undefined,
+  replacement: (content, node) => {
+    const target = absoluteWindowsLinkTarget(node)!;
+    return `[${content}](<${target}>)`;
+  },
+});
 turndown.addRule("linkInlineFilePaths", {
   filter: node => inlineFilePath(node) !== undefined,
   replacement: (_content, node) => {
@@ -76,6 +83,13 @@ turndown.addRule("compactListItem", {
     return `${prefix}${normalized}${node.nextSibling ? "\n" : ""}`;
   },
 });
+
+function absoluteWindowsLinkTarget(node: Node): string | undefined {
+  if (node.nodeName !== "A") return undefined;
+  const href = (node as Element).getAttribute("href");
+  if (!href || !/^[a-z]:(?:[\\/]|%5c)/i.test(href)) return undefined;
+  return href.replace(/%5c/gi, "/").replaceAll("\\", "/");
+}
 
 function inlineFilePath(node: Node): string | undefined {
   if (node.nodeName !== "CODE") return undefined;
