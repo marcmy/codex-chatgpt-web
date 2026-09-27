@@ -60,9 +60,16 @@ turndown.addRule("modernChatGptCodeBlock", {
     const label = Array.from(panel.firstElementChild?.children ?? [])
       .find(child => child.tagName === "DIV" && child.textContent?.trim())
       ?.textContent?.trim() ?? "";
-    const language = /^[a-z][a-z\d+#-]{0,31}$/i.test(label) ? label : "";
+    const classLanguage = Array.from(code.classList)
+      .find(value => value.startsWith("language-"))
+      ?.slice("language-".length) ?? "";
+    const languageCandidate = label || classLanguage;
+    const language = /^[a-z][a-z\d+#-]{0,31}$/i.test(languageCandidate) ? languageCandidate : "";
     let longestTicks = 0;
-    for (const match of source.matchAll(/`+/g)) longestTicks = Math.max(longestTicks, match[0].length);
+    for (const line of source.split("\n")) {
+      const run = line.match(/^ {0,3}(`{3,})/)?.[1];
+      if (run) longestTicks = Math.max(longestTicks, run.length);
+    }
     const fence = "`".repeat(Math.max(3, longestTicks + 1));
     return `\n\n${fence}${language}\n${source}\n${fence}\n\n`;
   },
@@ -390,6 +397,10 @@ export class ChatGptMarkdownBuffer {
 
     if (segment.sourceStart !== undefined) return undefined;
     if (!segment.tag) return undefined;
+    // Empty text is not an identity: separate rules and images can share it.
+    // Their exact DOM keys/ranges above remain valid, but a new empty block must
+    // not be mistaken for an earlier committed one by the text-only match.
+    if (!segment.text.trim()) return undefined;
     const semanticMatches = this.committed
       .map((committed, index) => ({ committed, index }))
       .filter(({ committed }) => committed.tag === segment.tag && committed.text === segment.text);
@@ -405,6 +416,7 @@ export class ChatGptMarkdownBuffer {
     if (exact.length === 1) return true;
     if (segment.sourceStart !== undefined) return false;
     if (!segment.tag) return false;
+    if (!segment.text.trim()) return false;
     return this.latest.filter(candidate => (
       candidate.tag === segment.tag && candidate.text === segment.text
     )).length === 1;
