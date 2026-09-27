@@ -3701,6 +3701,53 @@ describe("ChatGPT outer-native harness v4", () => {
     }
   }, 10_000);
 
+  test("a disconnected broker invocation abandons only that call and accepts its late result", async () => {
+    const socketPath = brokerTestEndpoint(`cgw-h3-invoke-timeout-${process.pid}-${Date.now()}`);
+    const broker = TurnBroker.forSocket(socketPath);
+    const environment = extractChatGptTurnEnvironment(parsed(environmentXml));
+    environment.tools = [
+      { name: "exec_command", description: "Run a Codex command", parameters: { type: "object" } },
+    ];
+    const token = await broker.register(environment, undefined, "invoke-timeout-turn");
+    const activityId = "activity_timeout_invocation_1234";
+
+    try {
+      const claimed = await callTurnBroker<{ bindingId: string }>(socketPath, {
+        method: "claim",
+        token,
+        activityId,
+      });
+      const disconnected = new AbortController();
+      const invocation = callTurnBroker<BrokerToolResult>(socketPath, {
+        method: "invoke",
+        bindingId: claimed.bindingId,
+        wireName: "exec_command",
+        freeform: false,
+        arguments: { cmd: "slow command" },
+      }, null, disconnected.signal);
+      const [request] = await broker.nextToolBatch(token);
+      expect(request).toMatchObject({ wireName: "exec_command" });
+      disconnected.abort(new Error("synthetic invocation disconnect"));
+      await expect(invocation).rejects.toBeDefined();
+      await Bun.sleep(25);
+
+      await callTurnBroker(socketPath, { method: "activity_complete", token, activityId }, null);
+      const nextActivityId = "activity_after_timeout_1234";
+      await expect(callTurnBroker(socketPath, {
+        method: "claim",
+        token,
+        activityId: nextActivityId,
+      })).resolves.toMatchObject({ bindingId: claimed.bindingId });
+      await callTurnBroker(socketPath, { method: "activity_complete", token, activityId: nextActivityId }, null);
+
+      expect(() => broker.completeTool(token, request!.callId, toolResult({ output: "late" }))).not.toThrow();
+      expect(broker.beginCompletionFence(token)).toBeNumber();
+    } finally {
+      broker.revoke(token);
+      await broker.close();
+    }
+  }, 10_000);
+
   test("a native tool deadline returns an explicit MCP timeout instead of a transport failure", async () => {
     const socketPath = brokerTestEndpoint(`cgw-h3-mcp-timeout-${process.pid}-${Date.now()}`);
     const broker = TurnBroker.forSocket(socketPath);

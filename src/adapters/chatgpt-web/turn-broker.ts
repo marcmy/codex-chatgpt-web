@@ -68,6 +68,7 @@ interface TurnChannel {
   bindingId?: string;
   queuedCallIds: string[];
   deliveredCallIds: Set<string>;
+  abandonedCallIds: Set<string>;
   invocations: Map<string, PendingInvocation>;
   waiters: Set<ToolWaiter>;
   compactionRequested: boolean;
@@ -299,6 +300,7 @@ export class TurnBroker implements TurnBrokerOwner {
       },
       queuedCallIds: [],
       deliveredCallIds: new Set(),
+      abandonedCallIds: new Set(),
       invocations: new Map(),
       waiters: new Set(),
       compactionRequested: false,
@@ -431,7 +433,13 @@ export class TurnBroker implements TurnBrokerOwner {
     if (!channel) throw new Error("turn token is invalid or expired");
     this.assertSafeHarnessRunning(channel, true);
     const invocation = channel.invocations.get(callId);
-    if (!invocation) throw new Error(`tool call is not pending: ${callId}`);
+    if (!invocation) {
+      if (channel.abandonedCallIds.delete(callId)) {
+        console.info(`[chatgpt-web] broker trace=${channel.traceId} ignored late completion for abandoned call=${callId.slice(0, 17)}`);
+        return;
+      }
+      throw new Error(`tool call is not pending: ${callId}`);
+    }
     if (!channel.deliveredCallIds.delete(callId)) {
       throw new Error(`tool call was completed before it was delivered: ${callId}`);
     }
@@ -1149,6 +1157,20 @@ export class TurnBroker implements TurnBrokerOwner {
     return new Promise<BrokerToolResult>((resolveInvoke, rejectInvoke) => {
       binding.channel.invocations.set(callId, { request: toolRequest, resolve: resolveInvoke, reject: rejectInvoke });
       binding.channel.queuedCallIds.push(callId);
+      const abandon = () => {
+        const pending = binding.channel.invocations.get(callId);
+        if (!pending) return;
+        binding.channel.invocations.delete(callId);
+        binding.channel.queuedCallIds = binding.channel.queuedCallIds.filter(queued => queued !== callId);
+        if (binding.channel.deliveredCallIds.delete(callId)) binding.channel.abandonedCallIds.add(callId);
+        console.info(`[chatgpt-web] broker trace=${binding.channel.traceId} abandoned disconnected call=${callId.slice(0, 17)}`);
+        pending.reject(new DOMException("turn broker invocation client disconnected", "AbortError"));
+      };
+      if (socketSignal?.aborted) {
+        abandon();
+        return;
+      }
+      socketSignal?.addEventListener("abort", abandon, { once: true });
       console.info(
         `[chatgpt-web] broker trace=${binding.channel.traceId} queued call=${callId.slice(0, 17)} tool=${wireName} waiters=${binding.channel.waiters.size}`,
       );
@@ -1210,6 +1232,7 @@ export class TurnBroker implements TurnBrokerOwner {
     channel.invocations.clear();
     channel.queuedCallIds = [];
     channel.deliveredCallIds.clear();
+    channel.abandonedCallIds.clear();
   }
 
   private prune(): void {

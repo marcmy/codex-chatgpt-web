@@ -2818,6 +2818,60 @@ test("failed retained conversations stay visible but are not reused", async () =
   assert.equal(failed.status, "error");
 });
 
+test("aborted retained conversations are released instead of accumulating dead tabs", async () => {
+  const conversationKey = "a".repeat(64);
+  const closed = [];
+  const events = [];
+  const turnTabs = new Map();
+  const aborted = {
+    id: "aborted-retained",
+    surfaceId: "surface-aborted",
+    traceId: "trace_aborted",
+    conversationKey,
+    connectorIdentity: "Codex Native2",
+    connectorBound: true,
+    interactionMode: "automatic",
+    helperPid: 111,
+    status: "running",
+    loading: true,
+    view: {
+      webContents: {
+        isDestroyed: () => false,
+        setBackgroundThrottling: enabled => events.push("throttle:" + enabled),
+      },
+    },
+  };
+  turnTabs.set(aborted.id, aborted);
+  const fixture = Object.assign(Object.create(BrowserHost.prototype), {
+    turnTabs,
+    userCancelledTurnOwners: new Map(),
+    closedTurnOwners: new Map(),
+    selectedTabId: aborted.id,
+    syncPowerSaveBlocker() {},
+    removeTurnTab: tab => {
+      closed.push(tab.id);
+      turnTabs.delete(tab.id);
+    },
+    logger: { info: event => events.push(event) },
+  });
+
+  await BrowserHost.prototype.endTurn.call(
+    fixture,
+    aborted.traceId,
+    aborted.helperPid,
+    "aborted",
+    false,
+    "ChatGPT web turn aborted",
+    true,
+    false,
+  );
+
+  assert.deepEqual(closed, [aborted.id]);
+  assert.equal(turnTabs.has(aborted.id), false);
+  assert.equal(events.includes("browser.tab_preserved_after_incomplete_turn"), false);
+  assert.ok(events.includes("browser.tab_released"));
+});
+
 test("a retained conversation is not reused for a different connector identity", async () => {
   const conversationKey = "b".repeat(64);
   const retained = {
