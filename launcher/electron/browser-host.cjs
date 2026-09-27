@@ -2590,9 +2590,10 @@ class BrowserHost {
       this.writeDescriptor();
       return { cancelledByUser };
     }
-    if (status !== "completed" && retain && tab.conversationKey) {
-      // Keep the incomplete DOM available for inspection, but never advertise it as
-      // reusable conversation state. beginTurn() only leases tabs in the ready state.
+    if (status === "failed" && retain && tab.conversationKey) {
+      // Keep a failed DOM available for inspection, but never advertise it as reusable
+      // conversation state. Aborted turns are client-owned cancellation/disconnect cleanup and
+      // must not accumulate as dead retained tabs. beginTurn() only leases tabs in the ready state.
       tab.connectorBound = false;
       tab.lastHeartbeatAt = Date.now();
       if (hideAfterTurn && !this.activeTraceId) this.hide();

@@ -561,9 +561,21 @@ export async function runChatGptMcpServer(options: {
       }, timeoutMs, signal);
       return asMcpResult(response);
     } catch (error) {
-      // A cancelled/timed-out MCP request no longer has a consumer for the native result. Revoke
-      // the whole turn capability so the broker drops the pending invocation and every later call
-      // from that abandoned ChatGPT response fails explicitly against its retired binding.
+      if (error instanceof TurnBrokerTimeoutError) {
+        const toolName = wireName(tool);
+        console.error(
+          `[chatgpt-web-mcp] ${toolName} did not complete within ${timeoutMs}ms; abandoned only that invocation`,
+        );
+        return result({
+          code: "codex_tool_timeout",
+          tool: toolName,
+          timeout_ms: timeoutMs,
+          retryable: false,
+          message: `Codex tool ${toolName} did not complete before the MCP transport deadline. Do not retry that tool call; the current ChatGPT turn remains available.`,
+        }, true);
+      }
+      // An explicitly cancelled or failed MCP request no longer has a consumer for the native
+      // result. Revoke the whole turn capability so later calls cannot use an abandoned response.
       try {
         await callTurnBroker(options.brokerSocketPath, {
           method: "release",
@@ -574,19 +586,6 @@ export async function runChatGptMcpServer(options: {
           [error, releaseError],
           "Codex Native invocation failed and its abandoned broker binding could not be retired",
         );
-      }
-      if (error instanceof TurnBrokerTimeoutError) {
-        const toolName = wireName(tool);
-        console.error(
-          `[chatgpt-web-mcp] ${toolName} did not complete within ${timeoutMs}ms; retired its turn binding`,
-        );
-        return result({
-          code: "codex_tool_timeout",
-          tool: toolName,
-          timeout_ms: timeoutMs,
-          retryable: false,
-          message: `Codex tool ${toolName} did not complete before the MCP transport deadline. The current turn binding was retired; do not retry it in this ChatGPT response.`,
-        }, true);
       }
       throw error;
     }
