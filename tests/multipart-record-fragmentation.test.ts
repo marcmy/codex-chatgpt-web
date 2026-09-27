@@ -1,7 +1,13 @@
 import { expect, test } from "bun:test";
 import {
   CHATGPT_BIGGER_CONTEXT_PARTS,
+  CHATGPT_EVEN_BIGGER_CONTEXT_PARTS,
+  CHATGPT_MULTIPART_JSON_BYTE_PLANNING_RESERVE,
+  CHATGPT_WEB_PROMPT_JSON_BYTE_BUDGET,
+  chatGptPromptJsonBytes,
   compileChatGptWebPrompt,
+  formatChatGptWebMultipartCommit,
+  formatChatGptWebMultipartStage,
 } from "../src/adapters/chatgpt-web/prompt";
 import { CHATGPT_WEB_MODEL_ID } from "../src/adapters/chatgpt-web/model";
 import type { CodexParsedRequest } from "../src/types";
@@ -88,4 +94,34 @@ test("ordinary oversized Bigger Context turns are not silently trimmed by compac
 
   expect(compiled.multipart).toBeDefined();
   expect(compiled.trimmedCompactionMessages).toBeUndefined();
+});
+
+test("Even Bigger Context fragments JSON-escape-heavy records before browser preflight", () => {
+  const parsed = oversizedRequest(false);
+  parsed.context.messages = [
+    { role: "user", content: "\\".repeat(70_000), timestamp: 1 },
+    { role: "user", content: "latest-request", timestamp: 2 },
+  ];
+  const compiled = compileChatGptWebPrompt(
+    parsed,
+    { ...capabilities, experimentalBiggerContext: true, experimentalEvenBiggerContext: true },
+    undefined,
+    { experimentalMultipartParts: CHATGPT_EVEN_BIGGER_CONTEXT_PARTS },
+  );
+  const records = compiled.multipart!.parts.flatMap(part => (
+    (JSON.parse(part) as { records: Array<Record<string, unknown>> }).records
+  ));
+  const fragments = records.filter(record => (
+    record.kind === "record_fragment" && record.record_index === 0
+  ));
+  expect(fragments.length).toBeGreaterThan(1);
+
+  const transactionId = "ctx_" + "b".repeat(32);
+  const byteLimit = CHATGPT_WEB_PROMPT_JSON_BYTE_BUDGET - CHATGPT_MULTIPART_JSON_BYTE_PLANNING_RESERVE;
+  for (const [index, part] of compiled.multipart!.parts.slice(0, -1).entries()) {
+    const stage = formatChatGptWebMultipartStage(part, transactionId, index + 1, CHATGPT_EVEN_BIGGER_CONTEXT_PARTS);
+    expect(chatGptPromptJsonBytes(stage.text)).toBeLessThanOrEqual(byteLimit);
+  }
+  expect(chatGptPromptJsonBytes(formatChatGptWebMultipartCommit(compiled.multipart!, transactionId)))
+    .toBeLessThanOrEqual(byteLimit);
 });

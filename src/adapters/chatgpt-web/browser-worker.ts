@@ -4954,6 +4954,7 @@ export class ChatGptBrowserWorker {
     const surfaceId = lease.surfaceId;
     const reused = lease.reused === true;
     let firstWebMessage: ChatGptRetainedWebUserMessage | undefined;
+    let sendActivated = false;
     let editSendActivated = false;
     let terminal: "completed" | "failed" | "aborted" = "completed";
     let terminalMessage: string | undefined;
@@ -4990,13 +4991,14 @@ export class ChatGptBrowserWorker {
       await turn.onPreparedSelected?.(reused);
       heartbeatTimer = setInterval(sendHeartbeat, LAUNCHER_TURN_HEARTBEAT_INTERVAL_MS);
       heartbeatTimer.unref?.();
-      const activeTurn = lease.editTarget ? {
+      const activeTurn = {
         ...turn,
         onSendActivated: async () => {
-          editSendActivated = true;
+          sendActivated = true;
+          if (lease.editTarget) editSendActivated = true;
           await turn.onSendActivated?.();
         },
-      } : turn;
+      };
       return await this.runBrowserTurn(
         activeTurn, surfaceId, undefined, reused, lease.trackUsage === true,
         lease.editTarget,
@@ -5036,7 +5038,9 @@ export class ChatGptBrowserWorker {
           helperPid: process.pid,
           status: terminal,
           ...(terminalMessage ? { message: terminalMessage } : {}),
-          ...(turn.retainConversation ? { retain: true } : {}),
+          ...(turn.retainConversation
+            && (terminal === "completed" || sendActivated || reused || (lease.editTarget && !editSendActivated))
+            ? { retain: true } : {}),
           ...(terminal !== "completed" && lease.editTarget && !editSendActivated
             ? { retryRetainedEdit: true }
             : {}),
