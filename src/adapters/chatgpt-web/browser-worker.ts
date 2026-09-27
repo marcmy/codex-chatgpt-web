@@ -5038,7 +5038,9 @@ export class ChatGptBrowserWorker {
           status: terminal,
           ...(terminalMessage ? { message: terminalMessage } : {}),
           ...(turn.retainConversation
-            && (terminal === "completed" || sendActivated || reused || (lease.editTarget && !editSendActivated))
+            && (terminal === "completed"
+              || (terminal === "failed" && (sendActivated || reused))
+              || (lease.editTarget && !editSendActivated))
             ? { retain: true } : {}),
           ...(terminal !== "completed" && lease.editTarget && !editSendActivated
             ? { retryRetainedEdit: true }
