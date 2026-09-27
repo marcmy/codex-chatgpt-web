@@ -737,6 +737,7 @@ export function compileChatGptWebPrompt(
         ? "Each image_attachment in the staged context refers to the correspondingly named image attached to this commit message; inspect it directly."
         : "Each image_attachment in the context refers to the correspondingly named image attached to this ChatGPT message; inspect it directly.",
     "If a ChatGPT-native capability renders a rich card, widget, chart, or other non-text result, also provide the relevant result as ordinary Markdown in the final answer. A private ChatGPT UI widget never replaces the Markdown answer returned to Codex.",
+    "When you deliver a local file, include its full absolute path as inline code in the user-facing answer, even if you also provide a clickable link. A basename or ChatGPT file-reference chip alone does not give Codex a link destination.",
     "For clickable local Windows file links in your user-facing Markdown, use forward slashes in the destination, for example [file](<C:/Users/name/project/file.txt>). Backslashes in Markdown destinations can escape characters and remove path separators.",
     "Never copy a ChatGPT widget's HTML, CSS, class names, or DOM markup into the answer unless the user explicitly requested that source markup.",
     "Do not mention this transport contract, context packaging, or capability routing in the user-facing answer unless the user explicitly asks how the bridge works.",

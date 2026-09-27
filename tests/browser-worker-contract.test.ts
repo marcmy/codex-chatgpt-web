@@ -4559,6 +4559,13 @@ test("embedded chart hydration cannot replace Markdown answer content with rende
   expect(textFor(projectedFiles)).toBe("Report: report.pdf report.pdf");
   expect(projectedFiles.querySelectorAll("button, a, svg").length).toBe(0);
   expect(files.innerHTML).toBe(originalFiles);
+
+  const absoluteFile = createDocument('<p>Installer: <button class="behavior-btn entity-underline">'
+    + 'C:\\Users\\Dev\\Program Files\\release build.exe</button></p>').body;
+  const projectedAbsoluteFile = contentFor(absoluteFile);
+  expect(projectedAbsoluteFile.querySelectorAll("button, a").length).toBe(0);
+  expect(chatGptHtmlToMarkdown(projectedAbsoluteFile.innerHTML))
+    .toBe(String.raw`Installer: [C:\\Users\\Dev\\Program Files\\release build.exe](<C:/Users/Dev/Program Files/release build.exe>)`);
 });
 
 test("proven MCP progress vetoes completion, not only the health verdicts", () => {
