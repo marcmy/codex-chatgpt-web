@@ -53,6 +53,7 @@ export const CHATGPT_BIGGER_CONTEXT_PARTS = 6 as const;
 export const CHATGPT_EVEN_BIGGER_CONTEXT_PARTS = 8 as const;
 export type ChatGptWebMultipartPartCount = 2 | typeof CHATGPT_BIGGER_CONTEXT_PARTS | typeof CHATGPT_EVEN_BIGGER_CONTEXT_PARTS;
 export type ChatGptWebMultipartParts = readonly string[];
+export const CHATGPT_MULTIPART_JSON_BYTE_PLANNING_RESERVE = 2_048;
 
 export function isChatGptWebMultipartPartCount(value: number): value is ChatGptWebMultipartPartCount {
   return value === 2 || value === CHATGPT_BIGGER_CONTEXT_PARTS || value === CHATGPT_EVEN_BIGGER_CONTEXT_PARTS;
@@ -452,18 +453,22 @@ type MultipartWireRecord = MultipartContextRecord | MultipartRecordFragment;
 interface MultipartRecordWeight {
   tokens: number;
   chars: number;
+  jsonBytes: number;
 }
 
 function multipartRecordWeight(record: MultipartWireRecord): MultipartRecordWeight {
   const text = withoutRetiredTurnHandles(JSON.stringify(record));
-  return { tokens: estimateTokens(text) + 1, chars: text.length + 1 };
+  const jsonBytes = Math.max(0, chatGptPromptJsonBytes(text) - 2) + 1;
+  return { tokens: estimateTokens(text) + 1, chars: text.length + 1, jsonBytes };
 }
 
 function multipartWeightFitsBudget(
   weight: MultipartRecordWeight,
   budget: MultipartRecordWeight,
 ): boolean {
-  return weight.tokens <= budget.tokens && weight.chars <= budget.chars;
+  return weight.tokens <= budget.tokens
+    && weight.chars <= budget.chars
+    && weight.jsonBytes <= budget.jsonBytes;
 }
 
 interface PreparedMultipartRecords {
@@ -484,6 +489,7 @@ function fragmentOversizedMultipartRecords(
   const conservativeBudget: MultipartRecordWeight = {
     tokens: Math.min(...budgets.map(budget => budget.tokens)),
     chars: Math.min(...budgets.map(budget => budget.chars)),
+    jsonBytes: Math.min(...budgets.map(budget => budget.jsonBytes)),
   };
   const wireRecords: MultipartWireRecord[] = [];
   const weights: MultipartRecordWeight[] = [];
@@ -556,28 +562,33 @@ function partitionMultipartRecordWeights(
 ): number[] {
   // A fixed-point fraction of each part's own remaining budget. One step is less than one token.
   const scale = 1_000_000;
-  const load = (part: number, tokens: number, chars: number): number => Math.max(
+  const load = (part: number, tokens: number, chars: number, jsonBytes: number): number => Math.max(
     Math.ceil(tokens * scale / budgets[part]!.tokens),
     Math.ceil(chars * scale / budgets[part]!.chars),
+    Math.ceil(jsonBytes * scale / budgets[part]!.jsonBytes),
   );
   let lower = 0;
   let totalTokens = 0;
   let totalChars = 0;
+  let totalJsonBytes = 0;
   for (const weight of weights) {
     totalTokens += weight.tokens;
     totalChars += weight.chars;
+    totalJsonBytes += weight.jsonBytes;
   }
-  let upper = load(0, totalTokens, totalChars);
+  let upper = load(0, totalTokens, totalChars, totalJsonBytes);
   const boundaries = (capacity: number): number[] => {
     let offset = 0;
     return budgets.map((_budget, part) => {
       let tokens = 0;
       let chars = 0;
+      let jsonBytes = 0;
       while (offset < weights.length) {
         const weight = weights[offset]!;
-        if (load(part, tokens + weight.tokens, chars + weight.chars) > capacity) break;
+        if (load(part, tokens + weight.tokens, chars + weight.chars, jsonBytes + weight.jsonBytes) > capacity) break;
         tokens += weight.tokens;
         chars += weight.chars;
+        jsonBytes += weight.jsonBytes;
         offset += 1;
       }
       return offset;
@@ -880,13 +891,18 @@ export function compileChatGptWebPrompt(
           : formatChatGptWebMultipartStage(payload, transactionId, index + 1, multipartParts!).text;
         const tokens = tokenLimit - estimateTokens(fixedMessage);
         const chars = (limits.browserComposerCharLimit ?? Infinity) - fixedMessage.length;
-        if (tokens <= 0 || chars <= 0) {
+        const jsonBytes = capabilities.experimentalEvenBiggerContext
+          ? CHATGPT_WEB_PROMPT_JSON_BYTE_BUDGET
+            - CHATGPT_MULTIPART_JSON_BYTE_PLANNING_RESERVE
+            - chatGptPromptJsonBytes(fixedMessage)
+          : Infinity;
+        if (tokens <= 0 || chars <= 0 || jsonBytes <= 0) {
           throw new ChatGptWebAdapterError(
             `The Bigger Context ${final ? "final part's instructions and attachments" : "stage wrapper"} exceed the available message budget before any task history is added. Reduce those inputs before retrying.`,
             { status: 400, errorType: "invalid_request_error", code: "context_length_exceeded", retryable: false },
           );
         }
-        return { tokens, chars };
+        return { tokens, chars, jsonBytes };
       });
       multipart.parts = partitionMultipartContext(records, multipartParts!, budgets);
       return { text: multipart.commit, images, ...attachments, multipart };

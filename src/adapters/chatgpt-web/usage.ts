@@ -14,6 +14,7 @@ import { compiledChatGptWebMessages, estimateChatGptWebImageTokens, estimateComp
 import {
   CHATGPT_BIGGER_CONTEXT_PARTS,
   CHATGPT_EVEN_BIGGER_CONTEXT_PARTS,
+  CHATGPT_MULTIPART_JSON_BYTE_PLANNING_RESERVE,
   CHATGPT_WEB_PROMPT_JSON_BYTE_BUDGET,
   chatGptPromptJsonBytes,
   compileChatGptWebPrompt,
@@ -24,8 +25,6 @@ import {
 import { extractChatGptTurnIdentity } from "./environment";
 import { CHATGPT_WEB_LUNA_MODEL_ID, resolveChatGptWebModelMode, type ChatGptWebCapabilities } from "./model";
 import type { BrokerToolRequest } from "./turn-broker";
-
-const CHATGPT_MULTIPART_JSON_BYTE_PLANNING_RESERVE = 2_048;
 
 // The real capability has the same length. Keeping it out of usage accounting would make
 // estimates differ slightly between the prepared browser prompt and later Codex tool rounds.
