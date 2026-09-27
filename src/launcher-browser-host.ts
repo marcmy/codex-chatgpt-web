@@ -383,6 +383,7 @@ export type LauncherTurnActivity =
       conversationKey?: string;
       connectorIdentity?: string;
       requireRetainedConversation?: boolean;
+      nativeTurnLineage?: { turnId: string; userItemId: string; historyPrefix: string };
     }
   | {
       phase: "heartbeat";
@@ -399,6 +400,8 @@ export type LauncherTurnActivity =
       message?: string;
       retain?: boolean;
       connectorBound?: boolean;
+      nativeTurnLineage?: { turnId: string; userItemId: string; historyPrefix: string };
+      firstWebMessage?: { identity: string; digest: string };
     };
 
 // Startup must outlast the launcher's ten-second idle bootstrap. This is not a model-turn budget.
@@ -645,6 +648,7 @@ export async function notifyLauncherTurn(
   cancelledByUser?: boolean;
   authenticationRequired?: boolean;
   trackUsage?: boolean;
+  editTarget?: { identity: string; digest: string };
 }> {
   const descriptor = readLauncherBrowserHostDescriptor(descriptorPath);
   const controller = new AbortController();
@@ -690,11 +694,22 @@ export async function notifyLauncherTurn(
       if (typeof body.connectorBound !== "boolean") {
         throw new Error("Launcher browser control channel returned an invalid connector state");
       }
+      const editTarget = body.editTarget;
+      if (editTarget !== undefined && (!body.reused
+        || !activity.conversationKey || !activity.nativeTurnLineage
+        || !editTarget || typeof editTarget !== "object" || Array.isArray(editTarget)
+        || typeof (editTarget as Record<string, unknown>).identity !== "string"
+        || !/^group:user:[A-Za-z0-9:._-]{1,128}$/.test((editTarget as Record<string, unknown>).identity as string)
+        || typeof (editTarget as Record<string, unknown>).digest !== "string"
+        || !/^[a-f0-9]{64}$/.test((editTarget as Record<string, unknown>).digest as string))) {
+        throw new Error("Launcher browser control channel returned an invalid edit target");
+      }
       return {
         surfaceId: body.surfaceId,
         reused: body.reused,
         connectorBound: body.connectorBound,
         trackUsage: body.trackUsage === true,
+        ...(editTarget ? { editTarget: editTarget as { identity: string; digest: string } } : {}),
       };
     }
     if (activity.phase === "heartbeat") {

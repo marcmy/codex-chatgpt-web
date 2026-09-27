@@ -2552,6 +2552,87 @@ test("a later provider round reuses only its exact connector-bound conversation"
   assert.deepEqual(events, ["visible", "published", "descriptor", "browser.tab_reused"]);
 });
 
+test("rewriting the last native turn leases its first Web message for edit", async () => {
+  const conversationKey = "a".repeat(64);
+  const oldLineage = { turnId: "turn_old", userItemId: "user_old", historyPrefix: "b".repeat(64) };
+  const oldMessage = { identity: "group:user:first-part", digest: "c".repeat(64) };
+  const tab = {
+    id: "tab-edit", surfaceId: "surface-edit", traceId: "trace_old", conversationKey,
+    connectorIdentity: "Codex Native2", connectorBound: true, interactionMode: "automatic",
+    helperPid: 111, status: "ready", retainedNativeTurn: { ...oldLineage, firstWebMessage: oldMessage },
+    view: { webContents: { isDestroyed: () => false, setBackgroundThrottling() {} } },
+  };
+  const fixture = Object.assign(Object.create(BrowserHost.prototype), {
+    manualOperation: null, turnTabs: new Map([[tab.id, tab]]),
+    userCancelledTurnOwners: new Map(), closedTurnOwners: new Map(),
+    selectedTabId: tab.id, syncViewVisibility() {}, syncPowerSaveBlocker() {},
+    snapshot: () => ({ tabs: [] }), publishState() {}, writeDescriptor() {},
+    logger: { info() {} },
+  });
+  const edited = { turnId: "turn_edit", userItemId: "user_edit", historyPrefix: oldLineage.historyPrefix };
+  const lease = await BrowserHost.prototype.beginTurn.call(
+    fixture, "trace_edit", false, 222, conversationKey, "Codex Native2", false, undefined, edited,
+  );
+  assert.deepEqual(lease.editTarget, oldMessage);
+  const replacement = { identity: "group:user:new-first-part", digest: "d".repeat(64) };
+  await BrowserHost.prototype.endTurn.call(
+    fixture, "trace_edit", 222, "completed", false, undefined, true, true, edited, replacement,
+  );
+  assert.deepEqual(tab.retainedNativeTurn, { ...edited, firstWebMessage: replacement });
+  const sameTurn = await BrowserHost.prototype.beginTurn.call(
+    fixture, "trace_edit_round_2", false, 333, conversationKey, "Codex Native2", false, undefined, edited,
+  );
+  assert.equal(sameTurn.editTarget, undefined);
+  await BrowserHost.prototype.endTurn.call(
+    fixture, "trace_edit_round_2", 333, "completed", false, undefined, true, true, edited,
+  );
+  assert.deepEqual(tab.retainedNativeTurn.firstWebMessage, replacement);
+  const withoutConnector = { turnId: "turn_plain", userItemId: "user_plain", historyPrefix: oldLineage.historyPrefix };
+  const plainLease = await BrowserHost.prototype.beginTurn.call(
+    fixture, "trace_plain", false, 555, conversationKey, undefined, false, undefined, withoutConnector,
+  );
+  assert.deepEqual(plainLease.editTarget, replacement);
+  assert.equal(tab.connectorIdentity, undefined);
+  const plainMessage = { identity: "group:user:plain-edit", digest: "f".repeat(64) };
+  await BrowserHost.prototype.endTurn.call(
+    fixture, "trace_plain", 555, "completed", false, undefined, true, false, withoutConnector, plainMessage,
+  );
+  const withConnector = { turnId: "turn_connector", userItemId: "user_connector", historyPrefix: oldLineage.historyPrefix };
+  const connectorLease = await BrowserHost.prototype.beginTurn.call(
+    fixture, "trace_connector", false, 666, conversationKey, "Codex Native2", false, undefined, withConnector,
+  );
+  assert.deepEqual(connectorLease.editTarget, plainMessage);
+  assert.equal(tab.connectorIdentity, "Codex Native2");
+  assert.equal(tab.connectorBound, false);
+  await BrowserHost.prototype.endTurn.call(
+    fixture, "trace_connector", 666, "completed", false, undefined, true, true, withConnector,
+    { identity: "group:user:connector-edit", digest: "f".repeat(64) },
+  );
+  const appended = { turnId: "turn_next", userItemId: "user_next", historyPrefix: "e".repeat(64) };
+  const next = await BrowserHost.prototype.beginTurn.call(
+    fixture, "trace_next", false, 444, conversationKey, "Codex Native2", false, undefined, appended,
+  );
+  assert.equal(next.editTarget, undefined);
+});
+
+test("an unverified edited turn cannot acquire or mutate its retained tab", async () => {
+  const lineage = { turnId: "old", userItemId: "old_user", historyPrefix: "a".repeat(64) };
+  const tab = {
+    id: "unverified", traceId: "old_trace", surfaceId: "old_surface", conversationKey: "b".repeat(64),
+    connectorIdentity: "Codex Native2", connectorBound: true, interactionMode: "automatic",
+    status: "ready", helperPid: 111, retainedNativeTurn: lineage,
+  };
+  const fixture = Object.assign(Object.create(BrowserHost.prototype), {
+    manualOperation: null, turnTabs: new Map([[tab.id, tab]]), userCancelledTurnOwners: new Map(),
+  });
+  await assert.rejects(BrowserHost.prototype.beginTurn.call(
+    fixture, "new_trace", false, 222, tab.conversationKey, tab.connectorIdentity,
+    false, undefined, { turnId: "edited", userItemId: "new_user", historyPrefix: lineage.historyPrefix },
+  ), /no verified first message/);
+  assert.equal(tab.traceId, "old_trace");
+  assert.equal(tab.status, "ready");
+});
+
 test("failed retained conversations stay visible but are not reused", async () => {
   const conversationKey = "f".repeat(64);
   const closed = [];

@@ -53,6 +53,7 @@ import {
 import {
   chatGptConversationKey,
   retainedConversationResumeRequest,
+  retainedConversationTurnLineage,
 } from "./conversation-key";
 
 function brokerSocketPath(provider: CodexProviderConfig): string {
@@ -796,7 +797,11 @@ export function createChatGptWebAdapter(
       capabilities: turnCapabilities,
       prepare: () => prepareWith(checkpointInput.parsed),
       ...(resumeInput ? { prepareResume: () => prepareWith(resumeInput) } : {}),
-      ...(retainConversation ? { retainConversation: true, conversationKey } : {}),
+      ...(retainConversation ? {
+        retainConversation: true,
+        conversationKey,
+        nativeTurnLineage: retainedConversationTurnLineage(checkpointInput.parsed),
+      } : {}),
       abortSignal: browserAbort.signal,
       ...(parsed._compactionRequest ? { compaction: true } : {}),
       ...submissionLifecycle,

@@ -181,6 +181,26 @@ class BrowserControlServer {
       if (body.connectorIdentity !== undefined && body.conversationKey === undefined) {
         throw new Error("connectorIdentity requires conversationKey");
       }
+      if (body.nativeTurnLineage !== undefined && (
+        (request.url === "/v1/turn/start" && body.conversationKey === undefined)
+        || body.nativeTurnLineage === null
+        || typeof body.nativeTurnLineage !== "object"
+        || Array.isArray(body.nativeTurnLineage)
+        || typeof body.nativeTurnLineage.turnId !== "string"
+        || !body.nativeTurnLineage.turnId
+        || typeof body.nativeTurnLineage.userItemId !== "string"
+        || !body.nativeTurnLineage.userItemId
+        || !/^[a-f0-9]{64}$/.test(body.nativeTurnLineage.historyPrefix)
+      )) throw new Error("nativeTurnLineage is invalid");
+      if (body.firstWebMessage !== undefined && (
+        request.url !== "/v1/turn/end"
+        || body.firstWebMessage === null
+        || typeof body.firstWebMessage !== "object"
+        || Array.isArray(body.firstWebMessage)
+        || !/^group:user:[A-Za-z0-9:._-]{1,128}$/.test(body.firstWebMessage.identity)
+        || !/^[a-f0-9]{64}$/.test(body.firstWebMessage.digest)
+        || body.nativeTurnLineage === undefined
+      )) throw new Error("firstWebMessage is invalid");
       if (body.retain !== undefined && typeof body.retain !== "boolean") {
         throw new Error("retain is invalid");
       }
@@ -322,6 +342,7 @@ class BrowserControlServer {
             body.connectorIdentity,
             body.requireRetainedConversation === true,
             acquisition.signal,
+            body.nativeTurnLineage,
           );
         } finally {
           response.off("close", onClose);
@@ -347,6 +368,8 @@ class BrowserControlServer {
           body.message,
           body.retain === true,
           body.connectorBound === true,
+          body.nativeTurnLineage,
+          body.firstWebMessage,
         );
         this.logger.info("browser.turn_ended", { traceId: body.traceId, status: body.status });
         writeJson(response, 200, { ok: true, ...release });
