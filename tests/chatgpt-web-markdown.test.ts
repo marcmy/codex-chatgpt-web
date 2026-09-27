@@ -88,6 +88,13 @@ test("normalizes an existing Markdown link to an absolute Windows file", () => {
   expect(Bun.markdown.html(markdown)).toContain(`href="${normalizedPath}"`);
 });
 
+test("does not copy an HTML title into a normalized Windows file link", () => {
+  const markdown = chatGptHtmlToMarkdown(
+    '<a href="C:\\Users\\Dev\\file.txt" title="unsafe\\&quot; tail">file.txt</a>',
+  );
+  expect(markdown).toBe("[file.txt](<C:/Users/Dev/file.txt>)");
+});
+
 test("normalizes the percent-encoded Windows separators emitted by Markdown rendering", () => {
   const source = "[file.txt](<C:\\Users\\Dev\\Documents\\file.txt>)";
   expect(chatGptHtmlToMarkdown(Bun.markdown.html(source)))

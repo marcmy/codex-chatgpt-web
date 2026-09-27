@@ -35,9 +35,7 @@ turndown.addRule("normalizeWindowsFileLinks", {
   filter: node => absoluteWindowsLinkTarget(node) !== undefined,
   replacement: (content, node) => {
     const target = absoluteWindowsLinkTarget(node)!;
-    const title = (node as Element).getAttribute("title")?.trim();
-    const titleSuffix = title ? ` "${title.replace(/"/g, '\\"')}"` : "";
-    return `[${content}](<${target}>${titleSuffix})`;
+    return `[${content}](<${target}>)`;
   },
 });
 turndown.addRule("linkInlineFilePaths", {
