@@ -24,6 +24,10 @@ test("turns observed inline file path formats into Markdown links", () => {
       target: "C:/Users/Dev/Documents/Codex/path-format-probe/zeta-result.pdf",
     },
     {
+      path: String.raw`C:\Users\Dev\Program Files\My Project\release build.exe`,
+      target: "C:/Users/Dev/Program Files/My Project/release build.exe",
+    },
+    {
       path: String.raw`C:\Codex_Project_Unity\_Editor\file.cs`,
       target: "C:/Codex_Project_Unity/_Editor/file.cs",
     },
@@ -49,7 +53,7 @@ test("turns observed inline file path formats into Markdown links", () => {
     const markdown = chatGptHtmlToMarkdown(`<p>Created <code>${path}</code>.</p>`);
     expect(markdown).toContain(`](<${target}>)`);
     expect(Bun.markdown.html(markdown))
-      .toBe(`<p>Created <a href="${target}">${path}</a>.</p>\n`);
+      .toBe(`<p>Created <a href="${target.replaceAll(" ", "%20")}">${path}</a>.</p>\n`);
   }
 });
 

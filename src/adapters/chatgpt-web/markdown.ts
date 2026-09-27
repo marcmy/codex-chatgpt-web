@@ -105,7 +105,12 @@ function inlineFilePath(node: Node): string | undefined {
   }
 
   const path = node.textContent ?? "";
-  if (path !== path.trim() || /[\s`<>()[\]]/.test(path)) return undefined;
+  if (path !== path.trim() || /[\x00-\x1f`<>()[\]]/.test(path)) return undefined;
+  // Relative code containing spaces is often a command, not a file. An absolute Windows
+  // path has enough structure to allow spaces in directory and file names.
+  if (path.includes(" ") && !/^[a-z]:[\\/]/i.test(path) && !/^\\\\[^\\]+\\[^\\]+\\/.test(path)) {
+    return undefined;
+  }
   if (/^[a-z][a-z\d+.-]*:\/\//i.test(path)) return undefined;
 
   const withoutLocation = path.replace(/:\d+(?::\d+)?$/, "");

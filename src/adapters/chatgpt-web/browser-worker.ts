@@ -4523,7 +4523,17 @@ export class ChatGptBrowserWorker {
             for (const hidden of Array.from(button.querySelectorAll('[hidden], [aria-hidden="true"], .sr-only, [role="tooltip"]'))) {
               hidden.remove();
             }
-            button.replaceWith(content.ownerDocument.createTextNode(button.textContent ?? ""));
+            const label = button.textContent ?? "";
+            // A full path displayed by the control is usable evidence. Project it as inline
+            // code so the Markdown converter can make a local link. A bare filename still
+            // has no trustworthy destination and stays plain text.
+            if (/^[a-z]:[\\/][^\x00-\x1f`<>()[\]]+\.[a-z\d][a-z\d._-]*$/i.test(label.trim())) {
+              const code = content.ownerDocument.createElement("code");
+              code.textContent = label.trim();
+              button.replaceWith(code);
+            } else {
+              button.replaceWith(content.ownerDocument.createTextNode(label));
+            }
           } else {
             button.remove();
           }
