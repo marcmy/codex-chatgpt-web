@@ -52,15 +52,15 @@ jobs:
           merge_status=0
           git merge --no-commit --no-ff upstream/main || merge_status=$?
 
-          # Fork workflows are maintenance infrastructure; keep them exactly as-is.
+          # Keep the fork's workflow layer unchanged.
           git rm -r -f --ignore-unmatch .github/workflows
           if git cat-file -e "$original_head:.github/workflows" 2>/dev/null; then
             git checkout "$original_head" -- .github/workflows
           fi
 
-          # Keep Git's non-conflicting merge result. For each remaining text
-          # conflict, preserve the fork side only inside the conflicting hunk.
-          # Binary/delete-modify conflicts conservatively keep the fork side.
+          # Keep Git's non-conflicting merge result. Inside any remaining text
+          # conflict hunk, prefer the fork side only. For binary or delete/modify
+          # conflicts, conservatively preserve the fork side.
           while IFS= read -r -d '' path; do
             ours=0
             theirs=0
@@ -69,10 +69,10 @@ jobs:
 
             if [[ "$ours" -eq 1 && "$theirs" -eq 1 ]]; then
               is_binary=0
-              if git show ":2:$path" | python3 -c 'import sys; raise SystemExit(0 if b"\0" in sys.stdin.buffer.read() else 1)'; then
+              if git show ":2:$path" | python3 -c 'import sys; raise SystemExit(0 if b"\\0" in sys.stdin.buffer.read() else 1)'; then
                 is_binary=1
               fi
-              if [[ "$is_binary" -eq 0 ]] && git show ":3:$path" | python3 -c 'import sys; raise SystemExit(0 if b"\0" in sys.stdin.buffer.read() else 1)'; then
+              if [[ "$is_binary" -eq 0 ]] && git show ":3:$path" | python3 -c 'import sys; raise SystemExit(0 if b"\\0" in sys.stdin.buffer.read() else 1)'; then
                 is_binary=1
               fi
 
@@ -84,40 +84,15 @@ jobs:
               fi
 
               git checkout --conflict=merge -- "$path"
-              python3 - "$path" <<'PY'
-import sys
-from pathlib import Path
-
-path = Path(sys.argv[1])
-lines = path.read_bytes().splitlines(keepends=True)
-out = []
-i = 0
-conflicts = 0
-while i < len(lines):
-    if lines[i].startswith(b"<<<<<<< "):
-        conflicts += 1
-        i += 1
-        ours = []
-        while i < len(lines) and not lines[i].startswith(b"======="):
-            ours.append(lines[i])
-            i += 1
-        if i >= len(lines):
-            raise SystemExit(f"Malformed conflict in {path}: missing separator")
-        i += 1
-        while i < len(lines) and not lines[i].startswith(b">>>>>>> "):
-            i += 1
-        if i >= len(lines):
-            raise SystemExit(f"Malformed conflict in {path}: missing end marker")
-        i += 1
-        out.extend(ours)
-    else:
-        out.append(lines[i])
-        i += 1
-
-if conflicts == 0:
-    raise SystemExit(f"Expected conflict markers in {path}")
-path.write_bytes(b"".join(out))
-PY
+              tmp="$(mktemp)"
+              awk '
+                /^<<<<<<< / { in_conflict=1; keep=1; found=1; next }
+                in_conflict && /^=======$/ { keep=0; next }
+                in_conflict && /^>>>>>>> / { in_conflict=0; keep=1; next }
+                !in_conflict || keep { print }
+                END { if (!found) exit 2 }
+              ' "$path" > "$tmp"
+              mv "$tmp" "$path"
               git add -- "$path"
             elif [[ "$ours" -eq 1 ]]; then
               echo "Delete/modify conflict; preserving fork file: $path"
