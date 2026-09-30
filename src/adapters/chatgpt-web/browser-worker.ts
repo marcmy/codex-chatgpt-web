@@ -1651,10 +1651,10 @@ export class ChatGptTurnDomHealthTracker {
     externalProgressLive?: boolean;
   }, now = Date.now()): string | undefined {
     if (state.responsePresent) this.sawResponse = true;
-    if (state.externalProgressLive) {
+    if (state.externalProgressLive || state.running) {
       // Every conclusion below asserts that ChatGPT stopped producing this turn. A tool call that
-      // is still completing disproves all of them, whatever the renderer is currently exposing, so
-      // no window may accrue while the model is provably working.
+      // is still completing or a visible Stop control disproves that, whatever response content
+      // the renderer currently exposes. Start a fresh grace period once generation stops.
       this.missingResponseSince = undefined;
       this.emptyCompletionSince = undefined;
       this.missingCompletionAction = undefined;
@@ -4506,6 +4506,19 @@ export class ChatGptBrowserWorker {
       // CHATGPT_MARKDOWN_CONTENT_BEGIN
       const chatGptMarkdownContent = (markdownRoot: HTMLElement): HTMLElement => {
         const content = markdownRoot.cloneNode(true) as HTMLElement;
+        // Writing cards expose a copy-content boundary separate from their title,
+        // format picker and other changing controls. Keep only that owned content.
+        const writingCard = '[data-markdown-copy="rich-block"]';
+        const cards = [...(content.matches(writingCard) ? [content] : []),
+          ...Array.from(content.querySelectorAll<HTMLElement>(writingCard))];
+        for (const card of cards.reverse()) {
+          const bodies = Array.from(card.querySelectorAll('[data-markdown-copy-content="true"]'))
+            .filter(body => body.closest(writingCard) === card);
+          if (bodies.length !== 1) continue;
+          const children = Array.from(bodies[0]!.childNodes);
+          card.textContent = "";
+          for (const child of children) card.appendChild(child);
+        }
         // These are embedded renderers, not Markdown answer text. Their loading labels, controls
         // and plot axes change independently of generation (including after a later paragraph).
         // Keep their UI out of both the emitted HTML and the text consistency fingerprint.
