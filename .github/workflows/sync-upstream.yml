@@ -1,0 +1,146 @@
+name: Sync upstream
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "23 */6 * * *"
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/sync-upstream.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sync-upstream
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out fork branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          fetch-depth: 0
+          token: ${{ github.token }}
+          persist-credentials: true
+
+      - name: Merge upstream conservatively
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config merge.conflictStyle merge
+          git remote add upstream https://github.com/miuuyy/codex-chatgpt-web.git
+          git fetch --prune --no-tags upstream main
+
+          original_head="$(git rev-parse HEAD)"
+          upstream_sha="$(git rev-parse upstream/main)"
+
+          if git merge-base --is-ancestor upstream/main HEAD; then
+            echo "Fork already contains current upstream main."
+            exit 0
+          fi
+
+          merge_status=0
+          git merge --no-commit --no-ff upstream/main || merge_status=$?
+
+          # Fork workflows are maintenance infrastructure; keep them exactly as-is.
+          git rm -r -f --ignore-unmatch .github/workflows
+          if git cat-file -e "$original_head:.github/workflows" 2>/dev/null; then
+            git checkout "$original_head" -- .github/workflows
+          fi
+
+          # Keep Git's non-conflicting merge result. For each remaining text
+          # conflict, preserve the fork side only inside the conflicting hunk.
+          # Binary/delete-modify conflicts conservatively keep the fork side.
+          while IFS= read -r -d '' path; do
+            ours=0
+            theirs=0
+            git cat-file -e ":2:$path" 2>/dev/null && ours=1 || true
+            git cat-file -e ":3:$path" 2>/dev/null && theirs=1 || true
+
+            if [[ "$ours" -eq 1 && "$theirs" -eq 1 ]]; then
+              is_binary=0
+              if git show ":2:$path" | python3 -c 'import sys; raise SystemExit(0 if b"\0" in sys.stdin.buffer.read() else 1)'; then
+                is_binary=1
+              fi
+              if [[ "$is_binary" -eq 0 ]] && git show ":3:$path" | python3 -c 'import sys; raise SystemExit(0 if b"\0" in sys.stdin.buffer.read() else 1)'; then
+                is_binary=1
+              fi
+
+              if [[ "$is_binary" -eq 1 ]]; then
+                echo "Binary conflict; preserving fork file: $path"
+                git checkout --ours -- "$path"
+                git add -- "$path"
+                continue
+              fi
+
+              git checkout --conflict=merge -- "$path"
+              python3 - "$path" <<'PY'
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+lines = path.read_bytes().splitlines(keepends=True)
+out = []
+i = 0
+conflicts = 0
+while i < len(lines):
+    if lines[i].startswith(b"<<<<<<< "):
+        conflicts += 1
+        i += 1
+        ours = []
+        while i < len(lines) and not lines[i].startswith(b"======="):
+            ours.append(lines[i])
+            i += 1
+        if i >= len(lines):
+            raise SystemExit(f"Malformed conflict in {path}: missing separator")
+        i += 1
+        while i < len(lines) and not lines[i].startswith(b">>>>>>> "):
+            i += 1
+        if i >= len(lines):
+            raise SystemExit(f"Malformed conflict in {path}: missing end marker")
+        i += 1
+        out.extend(ours)
+    else:
+        out.append(lines[i])
+        i += 1
+
+if conflicts == 0:
+    raise SystemExit(f"Expected conflict markers in {path}")
+path.write_bytes(b"".join(out))
+PY
+              git add -- "$path"
+            elif [[ "$ours" -eq 1 ]]; then
+              echo "Delete/modify conflict; preserving fork file: $path"
+              git checkout --ours -- "$path"
+              git add -- "$path"
+            else
+              echo "Fork deleted conflicted path; preserving fork deletion: $path"
+              git rm -f --ignore-unmatch -- "$path"
+            fi
+          done < <(git diff --name-only --diff-filter=U -z)
+
+          unresolved="$(git diff --name-only --diff-filter=U)"
+          if [[ -n "$unresolved" ]]; then
+            echo "::error::Unresolved merge conflicts remain:"
+            printf '%s\n' "$unresolved"
+            exit 1
+          fi
+
+          if [[ "$merge_status" -ne 0 ]] && ! git rev-parse -q --verify MERGE_HEAD >/dev/null; then
+            echo "::error::git merge failed without a resolvable merge state."
+            exit "$merge_status"
+          fi
+
+          git commit -m "Merge upstream miuuyy/codex-chatgpt-web main"
+          git push origin HEAD:refs/heads/main
+          echo "Merged upstream $upstream_sha."
