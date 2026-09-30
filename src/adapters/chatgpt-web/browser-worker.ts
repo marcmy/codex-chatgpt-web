@@ -2594,7 +2594,7 @@ export class ChatGptBrowserWorker {
     await throwIfChatGptRateLimitDialog(page);
     let activation = await activateChatGptEffortMenu(page, currentEffort);
     if (modelFamily) activation = await selectChatGptModelFamily(
-      page, activation, modelFamily, () => activateChatGptEffortMenu(page, currentEffort),
+      activation, modelFamily, () => activateChatGptEffortMenu(page, currentEffort),
     );
     if (activation.method === "pointerdown") {
       await captureDiagnostic?.("effort-menu-pointerdown-fallback");
