@@ -157,7 +157,11 @@ function sameAuthority(left: ChatGptTurnEnvironment, right: ChatGptTurnEnvironme
   };
   return pathIdentity(left.cwd) === pathIdentity(right.cwd)
     && samePaths(left.roots, right.roots)
-    && samePaths(left.writableRoots, right.writableRoots)
+    // Steering envelopes can omit Codex's extra output directories. The current
+    // native rollout remains the authority returned to the caller, never the claim.
+    && (steering
+      ? left.writableRoots.every(path => right.writableRoots.some(root => pathIdentity(root) === pathIdentity(path)))
+      : samePaths(left.writableRoots, right.writableRoots))
     && left.sandboxPolicy.type === right.sandboxPolicy.type
     && (left.sandboxPolicy.type === "dangerFullAccess" || (right.sandboxPolicy.type !== "dangerFullAccess"
       && left.sandboxPolicy.networkAccess === right.sandboxPolicy.networkAccess));

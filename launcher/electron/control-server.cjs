@@ -98,6 +98,7 @@ class BrowserControlServer {
     const isTurn = request.url === "/v1/turn/start"
       || request.url === "/v1/turn/heartbeat"
       || request.url === "/v1/turn/usage"
+      || request.url === "/v1/turn/approval"
       || request.url === "/v1/turn/end";
     const isTurnRelease = request.url === "/v1/turn/release";
     const isSessionInspect = request.url === "/v1/session/inspect";
@@ -319,6 +320,13 @@ class BrowserControlServer {
           body.retain === true,
         );
         writeJson(response, 200, { ok: true, ...release });
+        return;
+      }
+      if (request.url === "/v1/turn/approval") {
+        if (host.browserInteractionMode() === "manual") throw new Error("Automatic browser interaction is disabled");
+        host.setTurnApprovalPending(body.traceId, body.helperPid, body.pending);
+        this.logger.info("browser.tool_approval", { traceId: body.traceId, pending: body.pending });
+        writeJson(response, 200, { ok: true });
         return;
       }
       if (request.url === "/v1/turn/usage") {
