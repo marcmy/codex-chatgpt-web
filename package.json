@@ -1,6 +1,6 @@
 {
   "name": "codex-chatgpt-web",
-  "version": "6.1.4",
+  "version": "6.1.5",
   "private": true,
   "description": "A focused local Responses bridge that runs Codex tasks through a user-authenticated ChatGPT web session.",
   "repository": {
@@ -55,7 +55,7 @@
   },
   "dependencies": {
     "@mixmark-io/domino": "2.2.0",
-    "@modelcontextprotocol/sdk": "^1.30.0",
+    "@modelcontextprotocol/sdk": "^1.31.0",
     "ajv": "8.20.0",
     "ajv-formats": "3.0.1",
     "chromium-bidi": "12.1.0",
