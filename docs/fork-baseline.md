@@ -20,6 +20,8 @@ commit, not a history rewrite.
   comparisons, single-pass XML entity decoding and single-line public errors.
 - The existing 90-second CI allowance for the tokenizer-heavy multipart test,
   retaining upstream assertions and transport behavior.
+- A 30-second allowance for the 600,000-character multipart prompt contract,
+  matching its adjacent large-history test on slower hosted runners.
 
 ## Scope for subsequent changes
 
