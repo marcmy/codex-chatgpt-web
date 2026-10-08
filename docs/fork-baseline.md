@@ -8,6 +8,8 @@ commit, not a history rewrite.
 ## Retained infrastructure and security
 
 - Fork-owned GitHub workflows and Windows installer artifact uploads.
+- Ad-hoc macOS signing for pull-request packages when no signing identity is set,
+  preserving the existing fork CI fix and strict archive-signature verification.
 - Upstream sync now stops on conflicts, validates the merged tree and opens a PR.
   It explicitly dispatches platform CI instead of relying on GITHUB_TOKEN pushes.
   The repository must allow Actions to create pull requests.

@@ -37,6 +37,8 @@ const builderArgs = [
   "never",
 ];
 if (target === "--mac" && !env.CSC_LINK && !env.CSC_NAME) {
+  // PR packages still need an ad-hoc signature; no signing identity is discovered.
+  env.CSC_FOR_PULL_REQUEST = "true";
   builderArgs.push("--config.mac.identity=-");
 }
 if (target === "--linux") {
