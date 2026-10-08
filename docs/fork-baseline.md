@@ -33,17 +33,21 @@ their tests remain available in the pre-reset history.
 ## Model picker
 
 GPT-6 support, browser selection and measured transport limits come from upstream
-6.1.6. The fork groups Instant, Medium, High and account-supported Extra High under
+6.1.6. The fork groups Medium, High and account-supported Extra High under
 `chatgpt-web/gpt-6-sol` (displayed as GPT-6 (Web)) and `chatgpt-web/gpt-5.6-sol`.
 The separate Instant slugs remain hidden and routable for saved tasks.
 
-A single catalog row must advertise a budget safe for all its efforts. Both rows
-therefore use the minimum context and compaction budget across supported efforts:
-41,000 / 32,000 on Plus in standard-context mode. GPT-6 retains that budget on Plus
-when Bigger Context is enabled, and 111,193 / 95,000 on Pro. This can make Codex
-compact earlier when a higher effort is selected. Actual browser transport limits
-still follow upstream's selected-effort rules, including GPT-6's 240,000 / 220,000
-Pro reasoning limit with Bigger Context. Native model metadata remains intact.
+A single catalog row must advertise the same budget for every supported effort.
+Instant is hidden and excluded from the reasoning rows to preserve their full
+context limits. On Plus, both rows use 90,000 / 80,000 in standard mode. With
+Bigger Context, GPT-5.6 uses 270,000 / 240,000; GPT-6 retains its standard Plus
+budget under upstream's measured account rules. On Pro with Bigger Context,
+GPT-6 uses 240,000 / 220,000 and GPT-5.6 uses 333,579 / 285,000. Native model
+metadata remains intact.
+
+Native filesystem snapshots can omit network policy after compaction or steering.
+Those claims are checked against the current native rollout, which supplies the
+omitted network value. Explicit policy conflicts and unproven grants still fail.
 
 The two primary Web rows are inserted before GPT-6 Astra and GPT-5.6 Sol using
 their native priorities. Existing account-gated Pro and other native models remain

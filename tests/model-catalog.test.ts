@@ -74,8 +74,8 @@ describe("native /models augmentation", () => {
     for (const family of ["6", "5.6"]) {
       expect(models.find(model => model.slug === `chatgpt-web/gpt-${family}-sol-instant`)?.visibility).toBe("hide");
       expect(models.find(model => model.slug === `chatgpt-web/gpt-${family}-sol`)).toMatchObject({
-        context_window: 41_000, auto_compact_token_limit: 32_000,
-        supported_reasoning_levels: [{ effort: "low", description: expect.stringContaining("Instant") }, { effort: "medium" }, { effort: "high" }],
+        context_window: 90_000, auto_compact_token_limit: 80_000,
+        supported_reasoning_levels: [{ effort: "medium" }, { effort: "high" }],
       });
     }
   });
@@ -125,9 +125,9 @@ describe("native /models augmentation", () => {
         .toEqual([...chatGptWebRouteEfforts(route, config)]);
     }
     expect((web[1]!.supported_reasoning_levels as Array<{ effort: string }>).map(level => level.effort))
-      .toEqual(["low", "medium", "high", "xhigh"]);
+      .toEqual(["medium", "high", "xhigh"]);
     expect(() => buildChatGptWebModel(originalModels[1], {
-      ...CHATGPT_WEB_MODEL_ROUTES[1]!, useMinimumContextBudget: false, supportedCodexEfforts: ["low", "medium"],
+      ...CHATGPT_WEB_MODEL_ROUTES[1]!, supportedCodexEfforts: ["low", "medium"],
     }, { ...config, proAvailable: false })).toThrow("Cannot group different context budgets");
   });
 
@@ -151,8 +151,10 @@ describe("native /models augmentation", () => {
       const models = augmentNativeModelCatalog(source(), config).models as Array<Record<string, unknown>>;
       for (const suffix of ["sol-instant", "sol"] as const) {
         const six = models.find(model => model.slug === `chatgpt-web/gpt-6-${suffix}`)!;
-        const commonWindow = proAvailable ? 111_193 : 41_000;
-        const commonCompact = proAvailable ? 95_000 : 32_000;
+        const commonWindow = suffix === "sol"
+          ? proAvailable ? 240_000 : 90_000 : proAvailable ? 111_193 : 41_000;
+        const commonCompact = suffix === "sol"
+          ? proAvailable ? 220_000 : 80_000 : proAvailable ? 95_000 : 32_000;
         expect(six).toMatchObject({ context_window: commonWindow,
           max_context_window: commonWindow, auto_compact_token_limit: commonCompact });
         expect(resolveChatGptWebContextLimits("gpt-5.6-sol", "high", config, "6")).toMatchObject({
@@ -160,7 +162,8 @@ describe("native /models augmentation", () => {
         });
         expect(six.description).toContain("standard context");
         expect(models.find(model => model.slug === `chatgpt-web/gpt-5.6-${suffix}`)).toMatchObject({
-          context_window: commonWindow * 3, auto_compact_token_limit: commonCompact * 3,
+          context_window: (suffix === "sol" ? proAvailable ? 111_193 : 90_000 : commonWindow) * 3,
+          auto_compact_token_limit: (suffix === "sol" ? proAvailable ? 95_000 : 80_000 : commonCompact) * 3,
         });
       }
       if (proAvailable) {
@@ -260,9 +263,9 @@ describe("native /models augmentation", () => {
       effectiveContextWindowPercent: model.effective_context_window_percent,
       autoCompactTokenLimit: model.auto_compact_token_limit,
     }))).toEqual([
+      { contextWindow: 90_000, effectiveContextWindowPercent: 89, autoCompactTokenLimit: 80_000 },
       { contextWindow: 41_000, effectiveContextWindowPercent: 78, autoCompactTokenLimit: 32_000 },
-      { contextWindow: 41_000, effectiveContextWindowPercent: 78, autoCompactTokenLimit: 32_000 },
-      { contextWindow: 41_000, effectiveContextWindowPercent: 78, autoCompactTokenLimit: 32_000 },
+      { contextWindow: 90_000, effectiveContextWindowPercent: 89, autoCompactTokenLimit: 80_000 },
       { contextWindow: 41_000, effectiveContextWindowPercent: 78, autoCompactTokenLimit: 32_000 },
       { contextWindow: 41_000, effectiveContextWindowPercent: 78, autoCompactTokenLimit: 32_000 },
       { contextWindow: 90_000, effectiveContextWindowPercent: 89, autoCompactTokenLimit: 80_000 },
@@ -348,7 +351,7 @@ describe("native /models augmentation", () => {
       const route = availableChatGptWebModelRoutes(config, true).find(route => route.slug === model.slug)!;
       const limits = resolveChatGptWebContextLimits(
         route.backendModel,
-        route.useMinimumContextBudget ? "low" : route.adapterEffort,
+        route.adapterEffort,
         config,
         route.interactionMode === "automatic" ? route.modelFamily : undefined,
       );

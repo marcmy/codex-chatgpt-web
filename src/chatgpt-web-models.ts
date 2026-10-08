@@ -284,8 +284,6 @@ interface ChatGptWebModelRouteBase {
   legacy?: boolean;
   /** Omission denotes an immutable route, including all pre-6.0 task identities. */
   supportedCodexEfforts?: readonly ChatGptWebCodexEffort[];
-  /** A unified picker row advertises the smallest budget of its supported efforts. */
-  useMinimumContextBudget?: boolean;
 }
 
 export interface ChatGptWebAutomaticModelRoute extends ChatGptWebModelRouteBase {
@@ -442,7 +440,7 @@ export const CHATGPT_WEB_LEGACY_MODEL_ROUTES: readonly ChatGptWebAutomaticModelR
   },
 ];
 
-/** Unified rows advertise a conservative common budget; saved Instant slugs stay routable. */
+/** Reasoning rows share their full budget; saved Instant slugs stay hidden and routable. */
 export const CHATGPT_WEB_MODEL_ROUTES: readonly ChatGptWebAutomaticModelRoute[] = [
   {
     slug: "chatgpt-web/gpt-6-sol-instant",
@@ -460,14 +458,13 @@ export const CHATGPT_WEB_MODEL_ROUTES: readonly ChatGptWebAutomaticModelRoute[] 
   {
     slug: "chatgpt-web/gpt-6-sol",
     displayName: "GPT-6 (Web)",
-    description: "GPT-6 through ChatGPT with Instant, Medium, High, or account-supported Extra High. Instant uses standard context; Bigger Context supports reasoning efforts on Pro.",
+    description: "GPT-6 through ChatGPT with Medium, High, or account-supported Extra High. Plus uses standard context; Bigger Context supports reasoning efforts on Pro.",
     interactionMode: "automatic",
     backendModel: CHATGPT_WEB_BACKEND_MODEL,
     modelFamily: "6",
     codexEffort: "high",
     adapterEffort: "high",
-    supportedCodexEfforts: ["low", "medium", "high", "xhigh"],
-    useMinimumContextBudget: true,
+    supportedCodexEfforts: ["medium", "high", "xhigh"],
     requiresPro: false,
   },
   {
@@ -486,14 +483,13 @@ export const CHATGPT_WEB_MODEL_ROUTES: readonly ChatGptWebAutomaticModelRoute[] 
   {
     slug: "chatgpt-web/gpt-5.6-sol",
     displayName: "GPT-5.6 Sol (Web)",
-    description: "GPT-5.6 Sol through ChatGPT with Instant, Medium, High, or account-supported Extra High reasoning.",
+    description: "GPT-5.6 Sol through ChatGPT with Medium, High, or account-supported Extra High reasoning.",
     interactionMode: "automatic",
     backendModel: CHATGPT_WEB_BACKEND_MODEL,
     modelFamily: "5.6",
     codexEffort: "high",
     adapterEffort: "high",
-    supportedCodexEfforts: ["low", "medium", "high", "xhigh"],
-    useMinimumContextBudget: true,
+    supportedCodexEfforts: ["medium", "high", "xhigh"],
     requiresPro: false,
   },
   {

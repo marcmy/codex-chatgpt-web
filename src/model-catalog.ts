@@ -104,18 +104,13 @@ export function buildChatGptWebModel(
     throw new Error("ChatGPT Web model template must be a native Codex model");
   }
   const modelFamily = route.interactionMode === "automatic" ? route.modelFamily : undefined;
-  let limits = resolveChatGptWebContextLimits(route.backendModel, route.adapterEffort, config, modelFamily);
+  const limits = resolveChatGptWebContextLimits(route.backendModel, route.adapterEffort, config, modelFamily);
   const efforts = chatGptWebRouteEfforts(route, config);
   for (const effort of efforts) {
     const adapterEffort = route.supportedCodexEfforts ? effort : route.adapterEffort;
     if (adapterEffort === "ultra") throw new Error("Ultra is not a browser effort");
     const candidate = resolveChatGptWebContextLimits(route.backendModel, adapterEffort, config, modelFamily);
-    if (route.useMinimumContextBudget) {
-      const contextWindow = Math.min(limits.contextWindow, candidate.contextWindow);
-      const autoCompactTokenLimit = Math.min(limits.autoCompactTokenLimit, candidate.autoCompactTokenLimit);
-      limits = { contextWindow, autoCompactTokenLimit,
-        effectiveContextWindowPercent: Math.round(autoCompactTokenLimit / contextWindow * 100) };
-    } else if (JSON.stringify(candidate) !== JSON.stringify(limits)) {
+    if (JSON.stringify(candidate) !== JSON.stringify(limits)) {
       throw new Error(`Cannot group different context budgets under ${route.slug}`);
     }
   }
