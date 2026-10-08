@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { canonicalChatGptSubmission, guardChatGptSubmissionText } from "../src/adapters/chatgpt-web/submission-text";
 import type { Page, Route } from "playwright-core";
+import { createHash } from "node:crypto";
 
 const prompt = 'transaction_id: ctx_fixture\n<probe>\n```json\n' + JSON.stringify({
   text: "**bold** C:\\Probe\\file.txt", nested: JSON.stringify({ sample: '"quote"' }),
@@ -25,6 +26,21 @@ test("restores connector Markdown escaping and preserves images and connector me
 test("leaves exact submissions untouched with and without a connector", () => {
   expect(canonicalChatGptSubmission(body(prompt, false), prompt)).toBeUndefined();
   expect(canonicalChatGptSubmission(body(prefix + prompt), prompt)).toBeUndefined();
+});
+
+test("a staged JSON payload retains its declared digest after Markdown serialization is corrected", () => {
+  const payload = JSON.stringify({ version: 1, part_index: 3, total_parts: 6, records: [{
+    kind: "message", message_index: 22, message: { role: "assistant", content: [
+      { type: "text", text: '**253k** and **283k**; C:\\Probe\\file.txt; '.repeat(500) },
+    ] },
+  }] });
+  const digest = createHash("sha256").update(payload).digest("hex");
+  const stage = `transaction_id: ctx_fixture\npayload_sha256: ${digest}\n<codex_context_part_json>\n\`\`\`json\n${payload}\n\`\`\`\n</codex_context_part_json>`;
+  const serialized = stage.replaceAll("\\", "\\\\").replaceAll("*", "\\*").replaceAll("`", "\\`").replaceAll("<", "\\<");
+  const restored = JSON.parse(canonicalChatGptSubmission(body(serialized), stage)!);
+  const storedPayload = restored.messages[0].content.parts[0].split("\n")[4];
+  expect(createHash("sha256").update(storedPayload).digest("hex")).toBe(digest);
+  expect(JSON.parse(storedPayload).records[0].message_index).toBe(22);
 });
 test("rejects a foreign transaction or unclassified mutation", () => {
   expect(() => canonicalChatGptSubmission(body("foreign text"), prompt)).toThrow("bound");
