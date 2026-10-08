@@ -16,7 +16,6 @@ const {
   allowedAuthUrl,
   BrowserHost,
   IDLE_BROWSER_URL,
-  isChatGptOriginUrl,
   isChatGptCloudflareChallengeResponse,
   isTemporaryChatUrl,
   loadCommittedBrowserSurface,
@@ -507,14 +506,6 @@ test("smoke preserves an already-hydrated Temporary Chat page", () => {
   assert.equal(isTemporaryChatUrl("not a url"), false);
 });
 
-test("ChatGPT navigation accepts only the exact HTTPS origin", () => {
-  assert.equal(isChatGptOriginUrl("https://chatgpt.com/c/abc"), true);
-  assert.equal(isChatGptOriginUrl("https://chatgpt.com.evil.example/"), false);
-  assert.equal(isChatGptOriginUrl("https://chatgpt.com@evil.example/"), false);
-  assert.equal(isChatGptOriginUrl("http://chatgpt.com/"), false);
-  assert.equal(isChatGptOriginUrl("not a URL"), false);
-});
-
 test("session inspection delegates navigation and capability detection to the shared browser helper", async () => {
   const calls = [];
   const fixture = Object.assign(Object.create(BrowserHost.prototype), {
@@ -745,37 +736,6 @@ test("turn tabs use the hidden viewport when the launcher window is hidden", () 
     ["visible", true],
   ]);
   assert.deepEqual(tab.deviceEmulationViewport, { width: 1120, height: 720 });
-});
-
-test("retained automatic tabs stay drawable offscreen between turns", () => {
-  const events = [];
-  const hiddenBounds = { x: 1121, y: 721, width: 1120, height: 720 };
-  const tab = {
-    id: "tab-retained-hidden",
-    interactionMode: "automatic",
-    status: "ready",
-    rendererReady: true,
-    deviceEmulationViewport: { width: 1120, height: 720 },
-    deviceEmulationDirty: false,
-    view: {
-      setBounds: bounds => events.push(["bounds", bounds]),
-      setVisible: visible => events.push(["visible", visible]),
-      webContents: {
-        enableDeviceEmulation: options => events.push(["emulate", options]),
-        disableDeviceEmulation: () => events.push(["disable-emulation"]),
-      },
-    },
-  };
-  const fixture = Object.assign(Object.create(BrowserHost.prototype), {
-    hiddenTurnBounds: () => hiddenBounds,
-  });
-
-  BrowserHost.prototype.presentTurnView.call(fixture, tab, false);
-
-  assert.deepEqual(events, [
-    ["bounds", hiddenBounds],
-    ["visible", true],
-  ]);
 });
 
 test("new turn tabs defer device emulation until their renderer finishes loading", () => {
@@ -2063,46 +2023,6 @@ test("a live turn heartbeat refreshes its lease and rejects another helper", () 
   );
 });
 
-test("turn heartbeat surfaces a blocked authentication redirect", () => {
-  const tab = {
-    traceId: "auth-heartbeat",
-    helperPid: 444,
-    status: "running",
-    authenticationRequired: true,
-    lastHeartbeatAt: 0,
-  };
-  const fixture = Object.assign(Object.create(BrowserHost.prototype), {
-    turnTabs: new Map([["tab-auth", tab]]),
-    snapshot: () => ({ activeTabId: "tab-auth" }),
-  });
-
-  assert.deepEqual(
-    BrowserHost.prototype.heartbeatTurn.call(fixture, tab.traceId, tab.helperPid),
-    { activeTabId: "tab-auth", authenticationRequired: true },
-  );
-});
-
-test("fresh automatic turns fail closed after the launcher marks the saved session signed out", async () => {
-  const fixture = Object.assign(Object.create(BrowserHost.prototype), {
-    manualOperation: null,
-    state: { authenticated: false },
-    userCancelledTurnOwners: new Map(),
-    turnTabs: new Map(),
-  });
-
-  const error = await BrowserHost.prototype.beginTurn.call(
-    fixture,
-    "auth-required",
-    false,
-    444,
-    undefined,
-    undefined,
-    false,
-  ).catch(caught => caught);
-  assert.equal(error?.code, "authentication_required");
-  assert.match(error?.message ?? "", /sign in again/i);
-});
-
 test("a viewport-refresh heartbeat reapplies hidden emulation before CDP reconnect", () => {
   const events = [];
   const tab = {
@@ -2434,6 +2354,39 @@ test("concurrent launcher session refresh requests share one browser operation",
   assert.equal(fixture.sessionRefreshOperation, null);
 });
 
+test("startup sign-in redirects become signed-out state while real navigation errors remain errors", async () => {
+  for (const redirected of [true, false]) {
+    let url = IDLE_BROWSER_URL;
+    const failure = Object.assign(new Error("navigation stopped"), { code: -3 });
+    const fixture = Object.assign(Object.create(BrowserHost.prototype), {
+      state: { authenticated: true },
+      snapshot() { return { ...this.state }; },
+      setState(patch) { Object.assign(this.state, patch); },
+      withManualOperation: async (_name, action) => await action(),
+      view: { webContents: {
+        isDestroyed: () => false,
+        getURL: () => url,
+        loadURL: async () => {
+          if (redirected) url = "https://chatgpt.com/auth/login?next=%2F";
+          throw failure;
+        },
+        executeJavaScript: async () => { throw new Error("must not probe a login page"); },
+      } },
+    });
+    if (redirected) {
+      const state = await fixture.refreshAuthentication();
+      assert.equal(state.status, "signed-out");
+      assert.equal(state.authenticated, false);
+      assert.equal(state.message, "Sign in to ChatGPT");
+    } else {
+      await assert.rejects(fixture.refreshAuthentication(), error => error === failure);
+      assert.equal(fixture.state.status, "error");
+      assert.equal(fixture.state.loading, false);
+    }
+    assert.equal(fixture.sessionRefreshOperation, null);
+  }
+});
+
 test("manual browser operations disable background throttling until completion", async () => {
   const throttling = [];
   const surfaces = [];
@@ -2674,7 +2627,6 @@ test("a later provider round reuses only its exact connector-bound conversation"
     loading: false,
     message: "Task completed",
     bootstrapReady: true,
-    deviceEmulationDirty: false,
     view: {
       webContents: {
         isDestroyed: () => false,
@@ -2716,280 +2668,9 @@ test("a later provider round reuses only its exact connector-bound conversation"
   assert.equal(tab.loading, true);
   assert.equal(tab.message, "ChatGPT is working");
   assert.equal(tab.bootstrapReady, true);
-  assert.equal(tab.deviceEmulationDirty, true);
   assert.equal(fixture.selectedTabId, tab.id);
   assert.deepEqual(throttling, [false]);
   assert.deepEqual(events, ["visible", "published", "descriptor", "browser.tab_reused"]);
-});
-
-test("rewriting the last native turn leases its first Web message for edit", async () => {
-  const conversationKey = "a".repeat(64);
-  const oldLineage = { turnId: "turn_old", userItemId: "user_old", historyPrefix: "b".repeat(64) };
-  const oldMessage = { identity: "group:user:first-part", digest: "c".repeat(64) };
-  const tab = {
-    id: "tab-edit", surfaceId: "surface-edit", traceId: "trace_old", conversationKey,
-    connectorIdentity: "Codex Native2", connectorBound: true, interactionMode: "automatic",
-    helperPid: 111, status: "ready", retainedNativeTurn: { ...oldLineage, firstWebMessage: oldMessage },
-    view: { webContents: { isDestroyed: () => false, setBackgroundThrottling() {} } },
-  };
-  const fixture = Object.assign(Object.create(BrowserHost.prototype), {
-    manualOperation: null, turnTabs: new Map([[tab.id, tab]]),
-    userCancelledTurnOwners: new Map(), closedTurnOwners: new Map(),
-    selectedTabId: tab.id, syncViewVisibility() {}, syncPowerSaveBlocker() {},
-    snapshot: () => ({ tabs: [] }), publishState() {}, writeDescriptor() {},
-    logger: { info() {} },
-  });
-  const edited = { turnId: "turn_edit", userItemId: "user_edit", historyPrefix: oldLineage.historyPrefix };
-  const lease = await BrowserHost.prototype.beginTurn.call(
-    fixture, "trace_edit", false, 222, conversationKey, "Codex Native2", false, undefined, edited,
-  );
-  assert.deepEqual(lease.editTarget, oldMessage);
-  const replacement = { identity: "group:user:new-first-part", digest: "d".repeat(64) };
-  await BrowserHost.prototype.endTurn.call(
-    fixture, "trace_edit", 222, "completed", false, undefined, true, true, edited, replacement,
-  );
-  assert.deepEqual(tab.retainedNativeTurn, { ...edited, firstWebMessage: replacement });
-  const sameTurn = await BrowserHost.prototype.beginTurn.call(
-    fixture, "trace_edit_round_2", false, 333, conversationKey, "Codex Native2", false, undefined, edited,
-  );
-  assert.equal(sameTurn.editTarget, undefined);
-  await BrowserHost.prototype.endTurn.call(
-    fixture, "trace_edit_round_2", 333, "completed", false, undefined, true, true, edited,
-  );
-  assert.deepEqual(tab.retainedNativeTurn.firstWebMessage, replacement);
-  const withoutConnector = { turnId: "turn_plain", userItemId: "user_plain", historyPrefix: oldLineage.historyPrefix };
-  const plainLease = await BrowserHost.prototype.beginTurn.call(
-    fixture, "trace_plain", false, 555, conversationKey, undefined, false, undefined, withoutConnector,
-  );
-  assert.deepEqual(plainLease.editTarget, replacement);
-  assert.equal(tab.connectorIdentity, undefined);
-  const plainMessage = { identity: "group:user:plain-edit", digest: "f".repeat(64) };
-  await BrowserHost.prototype.endTurn.call(
-    fixture, "trace_plain", 555, "completed", false, undefined, true, false, withoutConnector, plainMessage,
-  );
-  const withConnector = { turnId: "turn_connector", userItemId: "user_connector", historyPrefix: oldLineage.historyPrefix };
-  const connectorLease = await BrowserHost.prototype.beginTurn.call(
-    fixture, "trace_connector", false, 666, conversationKey, "Codex Native2", false, undefined, withConnector,
-  );
-  assert.deepEqual(connectorLease.editTarget, plainMessage);
-  assert.equal(tab.connectorIdentity, "Codex Native2");
-  assert.equal(tab.connectorBound, false);
-  await BrowserHost.prototype.endTurn.call(
-    fixture, "trace_connector", 666, "completed", false, undefined, true, true, withConnector,
-    { identity: "group:user:connector-edit", digest: "f".repeat(64) },
-  );
-  const appended = { turnId: "turn_next", userItemId: "user_next", historyPrefix: "e".repeat(64) };
-  const next = await BrowserHost.prototype.beginTurn.call(
-    fixture, "trace_next", false, 444, conversationKey, "Codex Native2", false, undefined, appended,
-  );
-  assert.equal(next.editTarget, undefined);
-});
-
-test("an unverified edited turn cannot acquire or mutate its retained tab", async () => {
-  const lineage = { turnId: "old", userItemId: "old_user", historyPrefix: "a".repeat(64) };
-  const tab = {
-    id: "unverified", traceId: "old_trace", surfaceId: "old_surface", conversationKey: "b".repeat(64),
-    connectorIdentity: "Codex Native2", connectorBound: true, interactionMode: "automatic",
-    status: "ready", helperPid: 111, retainedNativeTurn: lineage,
-  };
-  const fixture = Object.assign(Object.create(BrowserHost.prototype), {
-    manualOperation: null, turnTabs: new Map([[tab.id, tab]]), userCancelledTurnOwners: new Map(),
-  });
-  await assert.rejects(BrowserHost.prototype.beginTurn.call(
-    fixture, "new_trace", false, 222, tab.conversationKey, tab.connectorIdentity,
-    false, undefined, { turnId: "edited", userItemId: "new_user", historyPrefix: lineage.historyPrefix },
-  ), /no verified first message/);
-  assert.equal(tab.traceId, "old_trace");
-  assert.equal(tab.status, "ready");
-});
-
-test("an edited retained turn that fails before Send stays reusable for the reconnect", async () => {
-  const conversationKey = "7".repeat(64);
-  const oldLineage = { turnId: "turn_old", userItemId: "user_old", historyPrefix: "8".repeat(64) };
-  const oldMessage = {
-    identity: "group:user:old-message",
-    digest: "9".repeat(64),
-    contentSearchTurnKey: "fallback-turn-3",
-  };
-  const tab = {
-    id: "tab-edit-retry", surfaceId: "surface-edit-retry", traceId: "trace_old", conversationKey,
-    connectorIdentity: "Codex Native2", connectorBound: true, interactionMode: "automatic",
-    helperPid: 111, status: "ready", retainedNativeTurn: { ...oldLineage, firstWebMessage: oldMessage },
-    view: { webContents: { isDestroyed: () => false, setBackgroundThrottling() {} } },
-  };
-  const events = [];
-  const fixture = Object.assign(Object.create(BrowserHost.prototype), {
-    manualOperation: null, turnTabs: new Map([[tab.id, tab]]),
-    userCancelledTurnOwners: new Map(), closedTurnOwners: new Map(),
-    selectedTabId: tab.id, syncViewVisibility() {}, syncPowerSaveBlocker() {},
-    snapshot: () => ({ tabs: [] }), publishState() {}, writeDescriptor() {},
-    logger: { info: event => events.push(event) },
-  });
-  const edited = { turnId: "turn_edit", userItemId: "user_edit", historyPrefix: oldLineage.historyPrefix };
-  const firstLease = await BrowserHost.prototype.beginTurn.call(
-    fixture, "trace_edit", false, 222, conversationKey, "Codex Native2", false, undefined, edited,
-  );
-  assert.deepEqual(firstLease.editTarget, oldMessage);
-  await BrowserHost.prototype.endTurn.call(
-    fixture, "trace_edit", 222, "failed", false, "pre-send edit failure", true, false,
-    undefined, undefined, true,
-  );
-  assert.equal(tab.status, "ready");
-  assert.equal(tab.connectorBound, true);
-  assert.deepEqual(tab.retainedNativeTurn, { ...oldLineage, firstWebMessage: oldMessage });
-  assert.ok(events.includes("browser.tab_retained_for_edit_retry"));
-
-  const retryLease = await BrowserHost.prototype.beginTurn.call(
-    fixture, "trace_edit_retry", false, 333, conversationKey, "Codex Native2", false, undefined, edited,
-  );
-  assert.equal(retryLease.reused, true);
-  assert.deepEqual(retryLease.editTarget, oldMessage);
-  assert.equal(retryLease.tabId, tab.id);
-});
-
-test("failed retained conversations stay visible but are not reused", async () => {
-  const conversationKey = "f".repeat(64);
-  const closed = [];
-  const events = [];
-  const turnTabs = new Map();
-  const failed = {
-    id: "failed-retained",
-    surfaceId: "surface-failed",
-    traceId: "trace_failed",
-    conversationKey,
-    connectorIdentity: "Codex Native2",
-    connectorBound: true,
-    interactionMode: "automatic",
-    helperPid: 111,
-    status: "running",
-    loading: true,
-    view: {
-      webContents: {
-        isDestroyed: () => false,
-        setBackgroundThrottling: enabled => events.push("throttle:" + enabled),
-        close: () => closed.push("contents"),
-      },
-    },
-  };
-  turnTabs.set(failed.id, failed);
-  const fixture = Object.assign(Object.create(BrowserHost.prototype), {
-    manualOperation: null,
-    turnTabs,
-    userCancelledTurnOwners: new Map(),
-    closedTurnOwners: new Map(),
-    selectedTabId: failed.id,
-    state: { authenticated: true },
-    syncPowerSaveBlocker() {},
-    syncViewVisibility() {},
-    snapshot: () => ({ tabs: [...turnTabs.values()] }),
-    publishState: () => events.push("published"),
-    writeDescriptor: () => events.push("descriptor"),
-    removeTurnTab: tab => {
-      closed.push(tab.id);
-      turnTabs.delete(tab.id);
-    },
-    logger: { info: event => events.push(event) },
-    createTurnTab: async (traceId, helperPid, key, connectorIdentity) => {
-      assert.deepEqual([traceId, helperPid, key, connectorIdentity], [
-        "trace_next", 222, conversationKey, "Codex Native2",
-      ]);
-      const fresh = { id: "fresh", surfaceId: "surface-fresh" };
-      turnTabs.set(fresh.id, fresh);
-      return fresh;
-    },
-  });
-
-  await BrowserHost.prototype.endTurn.call(
-    fixture,
-    failed.traceId,
-    failed.helperPid,
-    "failed",
-    false,
-    "ChatGPT stopped responding",
-    true,
-    false,
-  );
-
-  assert.equal(turnTabs.get(failed.id), failed);
-  assert.equal(failed.status, "error");
-  assert.equal(failed.loading, false);
-  assert.equal(failed.connectorBound, false);
-  assert.equal(failed.message, "ChatGPT stopped responding");
-  assert.deepEqual(closed, []);
-  assert.ok(events.includes("browser.tab_preserved_after_incomplete_turn"));
-  assert.ok(events.includes("published"));
-  assert.ok(events.includes("descriptor"));
-
-  const lease = await BrowserHost.prototype.beginTurn.call(
-    fixture,
-    "trace_next",
-    false,
-    222,
-    conversationKey,
-    "Codex Native2",
-  );
-  assert.deepEqual(lease, {
-    surfaceId: "surface-fresh",
-    tabId: "fresh",
-    reused: false,
-    connectorBound: false,
-  });
-  assert.equal(turnTabs.get(failed.id), failed);
-  assert.equal(failed.status, "error");
-});
-
-test("aborted retained conversations are released instead of accumulating dead tabs", async () => {
-  const conversationKey = "a".repeat(64);
-  const closed = [];
-  const events = [];
-  const turnTabs = new Map();
-  const aborted = {
-    id: "aborted-retained",
-    surfaceId: "surface-aborted",
-    traceId: "trace_aborted",
-    conversationKey,
-    connectorIdentity: "Codex Native2",
-    connectorBound: true,
-    interactionMode: "automatic",
-    helperPid: 111,
-    status: "running",
-    loading: true,
-    view: {
-      webContents: {
-        isDestroyed: () => false,
-        setBackgroundThrottling: enabled => events.push("throttle:" + enabled),
-      },
-    },
-  };
-  turnTabs.set(aborted.id, aborted);
-  const fixture = Object.assign(Object.create(BrowserHost.prototype), {
-    turnTabs,
-    userCancelledTurnOwners: new Map(),
-    closedTurnOwners: new Map(),
-    selectedTabId: aborted.id,
-    syncPowerSaveBlocker() {},
-    removeTurnTab: tab => {
-      closed.push(tab.id);
-      turnTabs.delete(tab.id);
-    },
-    logger: { info: event => events.push(event) },
-  });
-
-  await BrowserHost.prototype.endTurn.call(
-    fixture,
-    aborted.traceId,
-    aborted.helperPid,
-    "aborted",
-    false,
-    "ChatGPT web turn aborted",
-    true,
-    false,
-  );
-
-  assert.deepEqual(closed, [aborted.id]);
-  assert.equal(turnTabs.has(aborted.id), false);
-  assert.equal(events.includes("browser.tab_preserved_after_incomplete_turn"), false);
-  assert.ok(events.includes("browser.tab_released"));
 });
 
 test("a retained conversation is not reused for a different connector identity", async () => {

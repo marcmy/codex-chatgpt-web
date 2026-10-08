@@ -600,7 +600,6 @@ class BrowserHost {
       conversationKey,
       connectorIdentity,
       connectorBound: false,
-      authenticationRequired: false,
       helperPid,
       view,
       status: "running",
@@ -1489,10 +1488,7 @@ class BrowserHost {
       tab.deviceEmulationDirty = true;
       this.syncViewVisibility();
     }
-    const snapshot = this.snapshot();
-    return tab.authenticationRequired === true
-      ? { ...snapshot, authenticationRequired: true }
-      : snapshot;
+    return this.snapshot();
   }
 
   setTurnApprovalPending(traceId, helperPid, pending) {
@@ -1691,11 +1687,7 @@ class BrowserHost {
       }
       tab.view.setBounds(bounds);
     }
-    // Retained automatic tabs must stay drawable while idle. Electron collapses a hidden
-    // WebContentsView renderer to 0x0, and re-enabling device emulation after that collapse is not
-    // sufficient to make the next Playwright lease operational reliably. Keep the retained view
-    // attached offscreen; endTurn() still enables background throttling while it is idle.
-    tab.view.setVisible(true);
+    tab.view.setVisible(visible || tab.status === "running");
   }
 
   presentPrimaryView(visible) {
@@ -2470,7 +2462,6 @@ class BrowserHost {
     connectorIdentity,
     requireRetainedConversation = false,
     signal,
-    nativeTurnLineage,
   ) {
     signal?.throwIfAborted();
     if (this.manualOperation) {
@@ -2491,12 +2482,8 @@ class BrowserHost {
       tab.interactionMode === "automatic"
       && tab.status === "ready"
       && tab.conversationKey === conversationKey
-      && ((tab.connectorIdentity === connectorIdentity
-        && (!connectorIdentity || tab.connectorBound === true))
-        || (nativeTurnLineage && tab.retainedNativeTurn
-          && nativeTurnLineage.turnId !== tab.retainedNativeTurn.turnId
-          && nativeTurnLineage.userItemId !== tab.retainedNativeTurn.userItemId
-          && nativeTurnLineage.historyPrefix === tab.retainedNativeTurn.historyPrefix))
+      && tab.connectorIdentity === connectorIdentity
+      && (!connectorIdentity || tab.connectorBound === true)
     )) : [];
     if (retainedMatches.length > 1) {
       throw new Error(`ChatGPT retained conversation ${conversationKey} owns multiple browser tabs`);
@@ -2508,15 +2495,6 @@ class BrowserHost {
     const existing = sameTrace?.status === "running" ? sameTrace : exactRetained;
     if (existing) {
       const reused = existing.status === "ready";
-      const previous = existing.retainedNativeTurn;
-      const rewrittenLastTurn = reused && nativeTurnLineage && previous
-        && nativeTurnLineage.turnId !== previous.turnId
-        && nativeTurnLineage.userItemId !== previous.userItemId
-        && nativeTurnLineage.historyPrefix === previous.historyPrefix;
-      if (rewrittenLastTurn && !previous.firstWebMessage) {
-        throw new Error("The retained ChatGPT conversation has no verified first message for this edited Codex turn");
-      }
-      const editTarget = rewrittenLastTurn ? previous.firstWebMessage : undefined;
       if (existing.status === "running" && existing.helperPid !== helperPid) {
         if (processRunning(existing.helperPid)) {
           throw new Error(`ChatGPT browser turn ${traceId} is owned by another helper process`);
@@ -2531,22 +2509,12 @@ class BrowserHost {
       }
       existing.helperPid = helperPid;
       existing.traceId = traceId;
-      if (editTarget && existing.connectorIdentity !== connectorIdentity) {
-        existing.connectorIdentity = connectorIdentity;
-        existing.connectorBound = false;
-      }
       existing.status = "running";
       existing.approvalPending = false;
       existing.turnProgress = undefined;
       existing.activity = undefined;
       existing.loading = true;
       existing.message = "ChatGPT is working";
-      if (reused) {
-        // The previous helper disconnects its Playwright CDP session when the turn settles.
-        // Chromium may drop effective device emulation with that connection, so force the hidden
-        // viewport contract to be reapplied before the retained surface is leased again.
-        existing.deviceEmulationDirty = true;
-      }
       if (!reused) {
         existing.bootstrapReady = false;
         existing.bootstrapDeadlineAt = Date.now() + TURN_TAB_BOOTSTRAP_TIMEOUT_MS;
@@ -2566,17 +2534,11 @@ class BrowserHost {
         tabId: existing.id,
         reused,
         connectorBound: existing.connectorBound === true,
-        ...(editTarget ? { editTarget } : {}),
       };
     }
     if (requireRetainedConversation) {
       const error = new Error("The retained ChatGPT conversation is no longer available");
       error.code = "retained_conversation_unavailable";
-      throw error;
-    }
-    if (this.state?.authenticated === false) {
-      const error = new Error("The saved ChatGPT session is no longer authenticated; sign in again from Setup");
-      error.code = "authentication_required";
       throw error;
     }
     const tab = await this.createTurnTab(traceId, helperPid, conversationKey, connectorIdentity, signal);
@@ -2597,9 +2559,6 @@ class BrowserHost {
     message,
     retain = false,
     connectorBound = false,
-    nativeTurnLineage,
-    firstWebMessage,
-    retryRetainedEdit = false,
   ) {
     const tab = [...this.turnTabs.values()].find((candidate) => candidate.traceId === traceId);
     if (!tab) {
@@ -2616,32 +2575,17 @@ class BrowserHost {
         `Browser helper ownership mismatch: expected ${tab.helperPid}, received ${helperPid}`,
       );
     }
-    if (retryRetainedEdit && (
-      status === "completed"
-      || !retain
-      || !tab.conversationKey
-      || !tab.retainedNativeTurn?.firstWebMessage
-    )) {
-      throw new Error("A retained edit can be retried only before an incomplete retained turn is submitted");
-    }
     const cancelledByUser = this.userCancelledTurnOwners.get(traceId) === helperPid;
     const authenticationRequired = tab.authenticationRequired === true;
     if (authenticationRequired && status === "completed") status = "failed";
-    tab.status = retryRetainedEdit ? "ready" : status === "completed" ? "ready" : status === "aborted" ? "aborted" : "error";
+    tab.status = status === "completed" ? "ready" : status === "aborted" ? "aborted" : "error";
+    tab.approvalPending = false;
+    tab.turnProgress = undefined;
+    tab.activity = undefined;
     this.syncPowerSaveBlocker();
-    tab.message = retryRetainedEdit
-      ? "Edited message ready to retry"
-      : status === "completed" ? "Task completed" : message || `ChatGPT turn ${status}`;
+    tab.message = status === "completed" ? "Task completed" : message || `ChatGPT turn ${status}`;
     tab.loading = false;
     if (!tab.view.webContents.isDestroyed()) tab.view.webContents.setBackgroundThrottling(true);
-    if (retryRetainedEdit) {
-      tab.lastHeartbeatAt = Date.now();
-      if (hideAfterTurn && !this.activeTraceId) this.hide();
-      this.logger.info("browser.tab_retained_for_edit_retry", { tabId: tab.id, traceId, status });
-      this.publishState?.(this.snapshot());
-      this.writeDescriptor();
-      return { cancelledByUser, ...(authenticationRequired ? { authenticationRequired: true } : {}) };
-    }
     if (status === "completed") {
       this.logger.info("browser.tab_completed", { tabId: tab.id, traceId });
     }
@@ -2649,31 +2593,10 @@ class BrowserHost {
       && retain
       && tab.conversationKey
       && (!tab.connectorIdentity || connectorBound)) {
-      if (nativeTurnLineage) {
-        const previous = tab.retainedNativeTurn;
-        tab.retainedNativeTurn = previous?.turnId === nativeTurnLineage.turnId
-          && previous.userItemId === nativeTurnLineage.userItemId
-          ? previous
-          : { ...nativeTurnLineage, firstWebMessage };
-      } else {
-        tab.retainedNativeTurn = undefined;
-      }
       tab.connectorBound = connectorBound === true;
       tab.lastHeartbeatAt = Date.now();
       if (hideAfterTurn && !this.activeTraceId) this.hide();
       this.logger.info("browser.tab_retained", { tabId: tab.id, traceId });
-      this.publishState?.(this.snapshot());
-      this.writeDescriptor();
-      return { cancelledByUser };
-    }
-    if (status === "failed" && retain && tab.conversationKey) {
-      // Keep a failed DOM available for inspection, but never advertise it as reusable
-      // conversation state. Aborted turns are client-owned cancellation/disconnect cleanup and
-      // must not accumulate as dead retained tabs. beginTurn() only leases tabs in the ready state.
-      tab.connectorBound = false;
-      tab.lastHeartbeatAt = Date.now();
-      if (hideAfterTurn && !this.activeTraceId) this.hide();
-      this.logger.info("browser.tab_preserved_after_incomplete_turn", { tabId: tab.id, traceId, status });
       this.publishState?.(this.snapshot());
       this.writeDescriptor();
       return { cancelledByUser };
@@ -2724,7 +2647,7 @@ class BrowserHost {
         this.show();
         this.logger.info("browser.login_opened");
         const current = this.view.webContents.getURL();
-        if (this.reauthenticationRequired || !isChatGptOriginUrl(current)) {
+        if (this.primaryNavigationError || this.reauthenticationRequired || !isChatGptOriginUrl(current)) {
           await this.view.webContents.loadURL(TEMPORARY_CHAT_URL);
         }
         await this.probeAuthentication();
@@ -2902,7 +2825,13 @@ class BrowserHost {
     const operation = this.withManualOperation("session refresh", async () => {
       this.setState({ status: "loading", message: "Checking saved ChatGPT session" });
       if (!isTemporaryChatUrl(this.view.webContents.getURL())) {
-        await this.view.webContents.loadURL(TEMPORARY_CHAT_URL);
+        try {
+          await this.view.webContents.loadURL(TEMPORARY_CHAT_URL);
+        } catch (error) {
+          // ChatGPT may replace the home navigation with its sign-in page. The
+          // observed auth URL is a signed-out state, not a broken installation.
+          if (!isAbortedNavigationError(error) || !allowedAuthUrl(this.view.webContents.getURL())) throw error;
+        }
       }
       const state = await this.probeAuthentication();
       if (state.authenticated) {
@@ -2911,7 +2840,14 @@ class BrowserHost {
       return this.snapshot();
     });
     let tracked;
-    tracked = operation.finally(() => {
+    tracked = operation.catch((error) => {
+      this.setState({
+        status: "error",
+        message: "Could not check ChatGPT sign-in. Open sign in to try again.",
+        loading: false,
+      });
+      throw error;
+    }).finally(() => {
       if (this.sessionRefreshOperation === tracked) this.sessionRefreshOperation = null;
     });
     this.sessionRefreshOperation = tracked;
@@ -2937,13 +2873,8 @@ class BrowserHost {
         });
         return this.snapshot();
       }
-      let isChatGptOrigin = false;
-      try {
-        isChatGptOrigin = new URL(url).origin === new URL(CHATGPT_ORIGIN).origin;
-      } catch {
-        isChatGptOrigin = false;
-      }
-      if (!isChatGptOrigin) {
+      const awaitingLogin = allowedAuthUrl(url) && this.manualOperation !== "ChatGPT login" && !this.authView;
+      if (awaitingLogin || !isChatGptOriginUrl(url)) {
         this.setState({ status: "signed-out", message: "Sign in to ChatGPT", authenticated: false, url });
         return this.snapshot();
       }
@@ -3284,7 +3215,6 @@ module.exports = {
   BrowserTurnCancelledError,
   CHATGPT_VIEWPORT_CSS,
   IDLE_BROWSER_URL,
-  isChatGptOriginUrl,
   isChatGptCloudflareChallengeResponse,
   isTemporaryChatUrl,
   loadCommittedBrowserSurface,

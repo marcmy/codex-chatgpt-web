@@ -1139,42 +1139,6 @@ class RuntimeHost {
     return { ...result, mode, enabled: enabled === true };
   }
 
-  async setEvenBiggerContext(enabled) {
-    const current = this.runtimeConfigSnapshot();
-    if (!current.configured) {
-      throw new Error("Initialize the runtime before changing Even Bigger Context");
-    }
-    if (current.config?.experimentalBiggerContext !== true) {
-      throw new Error("Enable Bigger Context before enabling Even Bigger Context");
-    }
-    const mode = current.mode;
-    const contextFlag = enabled === true ? "--even-bigger-context" : "--bigger-context";
-    const development = this.launcherProfile === "development";
-    const args = [
-      ...(development ? ["dev", "setup"] : ["setup"]),
-      mode === "full" ? "--full" : "--browser-only",
-      "--browser-host-descriptor",
-      this.browserDescriptorPath,
-      ...this.browserInteractionArgs(),
-      ...(development ? [] : ["--replace-codex-route", "--restart-service"]),
-      "--acknowledge-unofficial",
-      contextFlag,
-    ];
-    if (current.config?.autoApproveToolCalls === true) args.push("--auto-approve-tool-calls");
-    const result = development
-      ? await this.runDevSetup("even-bigger-context", args, {
-        message: enabled ? "Enabling Even Bigger Context" : "Restoring Bigger Context",
-        successMessage: enabled ? "Even Bigger Context enabled" : "Bigger Context restored",
-        timeoutMs: CORE_SETUP_TIMEOUT_MS,
-      })
-      : await this.runSetup("even-bigger-context", args, {
-        message: enabled ? "Enabling Even Bigger Context" : "Restoring Bigger Context",
-        successMessage: enabled ? "Even Bigger Context enabled; restart Codex" : "Bigger Context restored; restart Codex",
-        timeoutMs: CORE_SETUP_TIMEOUT_MS,
-      });
-    return { ...result, mode, enabled: enabled === true };
-  }
-
   async setSkillAttachments(enabled) {
     const current = this.runtimeConfigSnapshot();
     if (!current.configured) throw new Error("Initialize the runtime before changing Skills as files");
@@ -1357,9 +1321,9 @@ class RuntimeHost {
       existing.mode === "full" ? "--full" : "--browser-only",
       "--browser-host-descriptor",
       this.browserDescriptorPath,
-      // A release may repair capability detection. Reusing the previous result can
-      // keep eligible models disabled even after the corrected probe is installed.
-      ...this.browserInteractionArgs({ mode: interactionMode, refreshCapabilities: true }),
+      // Preserve the installed model selection during an update. Account refresh is
+      // a separate Setup action and must not prevent the local bridge from starting.
+      ...this.browserInteractionArgs({ mode: interactionMode }),
       "--acknowledge-unofficial",
       "--restart-service",
     ];
@@ -1371,6 +1335,7 @@ class RuntimeHost {
         ? `${interactionMode === "manual" ? "Zero Risk" : "Automatic"} MCP profile migrated`
         : `Launcher runtime upgraded to ${currentVersion}`,
       timeoutMs: existing.mode === "full" ? MCP_SETUP_TIMEOUT_MS : CORE_SETUP_TIMEOUT_MS,
+      previousRuntimeCompatible: existing.config.releaseVersion === currentVersion,
     });
     return {
       updated: true,
@@ -1494,11 +1459,9 @@ class RuntimeHost {
       ...this.browserInteractionArgs({ mode, refreshCapabilities: true }),
       "--acknowledge-unofficial",
       ...(this.launcherProfile === "production" ? ["--replace-codex-route", "--restart-service"] : []),
-      mode === "automatic" && current.config?.experimentalEvenBiggerContext === true
-        ? "--even-bigger-context"
-        : mode === "automatic" && current.config?.experimentalBiggerContext === true
-          ? "--bigger-context"
-          : "--standard-context",
+      mode === "automatic" && current.config?.experimentalBiggerContext === true
+        ? "--bigger-context"
+        : "--standard-context",
     ];
     if (current.config?.autoApproveToolCalls === true) args.push("--auto-approve-tool-calls");
     const options = {
@@ -1535,6 +1498,7 @@ class RuntimeHost {
     this.lifecycleOperation = name;
     let setupCommandStarted = false;
     let runtimeTransitionStarted = false;
+    let runtimeStartAttempted = false;
     try {
       if (this.launcherProfile === "production") {
         await this.run(name, [...args, "--preflight-only"], {
@@ -1549,6 +1513,7 @@ class RuntimeHost {
       else await this.supervisor.stopForSetup();
       setupCommandStarted = true;
       const result = await this.run(name, args, options);
+      runtimeStartAttempted = true;
       const runtime = await this.supervisor.startIfConfigured();
       if (runtime.status !== "ready") {
         throw new Error(`Setup completed, but the launcher-owned runtime is ${runtime.status}: ${runtime.detail || "not ready"}`);
@@ -1560,6 +1525,7 @@ class RuntimeHost {
       const failures = [];
       let rolledBack = false;
       let checkpointChanged = false;
+      let checkpointRestored = false;
       if (!previousRuntime.configured && setupCommandStarted) {
         try {
           rolledBack = await this.rollbackFirstSetup(checkpoint);
@@ -1579,13 +1545,25 @@ class RuntimeHost {
           );
         }
         try {
+          if (options.previousRuntimeCompatible === false && runtimeStartAttempted) {
+            // Stop any incomplete new runtime while its own configuration is still
+            // available. Never restore old process inputs underneath a live candidate.
+            await this.supervisor.stopForSetup();
+          }
           this.restoreSetupCheckpoint(checkpoint);
+          checkpointRestored = true;
         } catch (caught) {
           failures.push(caught instanceof Error ? caught.message : String(caught));
         }
       }
       let recoveryError;
-      if (runtimeTransitionStarted) {
+      if (runtimeTransitionStarted && options.previousRuntimeCompatible === false) {
+        // The installed launcher cannot run an older configuration. Keep the restored
+        // inputs for a retry instead of attempting an impossible runtime rollback.
+        if (checkpointRestored) {
+          failures.push("The saved configuration was preserved. Restart the launcher to retry the update.");
+        }
+      } else if (runtimeTransitionStarted) {
         try {
           await this.restorePreviousRuntime(previousRuntime, name, {
             repairExternal: previousRuntime.owner === "external" && checkpointChanged,

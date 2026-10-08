@@ -182,37 +182,9 @@ class BrowserControlServer {
       if (body.connectorIdentity !== undefined && body.conversationKey === undefined) {
         throw new Error("connectorIdentity requires conversationKey");
       }
-      if (body.nativeTurnLineage !== undefined && (
-        (request.url === "/v1/turn/start" && body.conversationKey === undefined)
-        || body.nativeTurnLineage === null
-        || typeof body.nativeTurnLineage !== "object"
-        || Array.isArray(body.nativeTurnLineage)
-        || typeof body.nativeTurnLineage.turnId !== "string"
-        || !body.nativeTurnLineage.turnId
-        || typeof body.nativeTurnLineage.userItemId !== "string"
-        || !body.nativeTurnLineage.userItemId
-        || !/^[a-f0-9]{64}$/.test(body.nativeTurnLineage.historyPrefix)
-      )) throw new Error("nativeTurnLineage is invalid");
-      if (body.firstWebMessage !== undefined && (
-        request.url !== "/v1/turn/end"
-        || body.firstWebMessage === null
-        || typeof body.firstWebMessage !== "object"
-        || Array.isArray(body.firstWebMessage)
-        || !/^group:user:[A-Za-z0-9:._-]{1,128}$/.test(body.firstWebMessage.identity)
-        || !/^[a-f0-9]{64}$/.test(body.firstWebMessage.digest)
-        || (body.firstWebMessage.contentSearchTurnKey !== undefined
-          && (typeof body.firstWebMessage.contentSearchTurnKey !== "string"
-            || !/^[A-Za-z0-9:._-]{1,256}$/.test(body.firstWebMessage.contentSearchTurnKey)))
-        || body.nativeTurnLineage === undefined
-      )) throw new Error("firstWebMessage is invalid");
       if (body.retain !== undefined && typeof body.retain !== "boolean") {
         throw new Error("retain is invalid");
       }
-      if (body.retryRetainedEdit !== undefined && (
-        request.url !== "/v1/turn/end"
-        || typeof body.retryRetainedEdit !== "boolean"
-        || body.retain !== true
-      )) throw new Error("retryRetainedEdit is invalid");
       if (body.connectorBound !== undefined && typeof body.connectorBound !== "boolean") {
         throw new Error("connectorBound is invalid");
       }
@@ -358,7 +330,6 @@ class BrowserControlServer {
             body.connectorIdentity,
             body.requireRetainedConversation === true,
             acquisition.signal,
-            body.nativeTurnLineage,
           );
         } finally {
           response.off("close", onClose);
@@ -367,12 +338,9 @@ class BrowserControlServer {
         writeJson(response, 200, { ok: true, ...lease, trackUsage: this.limits?.enabled() === true });
         return;
       } else if (request.url === "/v1/turn/heartbeat") {
-        const heartbeat = host.heartbeatTurn(body.traceId, body.helperPid, body.refreshViewport === true);
+        host.heartbeatTurn(body.traceId, body.helperPid, body.refreshViewport === true, body.progress);
         this.logger.debug?.("browser.turn_heartbeat", { traceId: body.traceId });
-        writeJson(response, 200, {
-          ok: true,
-          ...(heartbeat?.authenticationRequired === true ? { authenticationRequired: true } : {}),
-        });
+        writeJson(response, 200, { ok: true });
         return;
       } else {
         if (!['completed', 'failed', 'aborted'].includes(body.status)) throw new Error("turn status is invalid");
@@ -384,9 +352,6 @@ class BrowserControlServer {
           body.message,
           body.retain === true,
           body.connectorBound === true,
-          body.nativeTurnLineage,
-          body.firstWebMessage,
-          body.retryRetainedEdit,
         );
         this.logger.info("browser.turn_ended", { traceId: body.traceId, status: body.status });
         writeJson(response, 200, { ok: true, ...release });
@@ -397,22 +362,18 @@ class BrowserControlServer {
       this.logger.warn("browser.control_rejected", { message });
       const cancelled = error?.code === "turn_cancelled";
       const retainedUnavailable = error?.code === "retained_conversation_unavailable";
-      const authenticationRequired = error?.code === "authentication_required";
       const manualInspectionDisabled = error?.code === "manual_browser_inspection_disabled";
       const manualOwnerLost = error?.code === "manual_turn_owner_lost";
       const manualTimedOut = error?.code === "manual_turn_timed_out";
       writeJson(
         response,
-        authenticationRequired
-          ? 401
-          : cancelled || retainedUnavailable || manualInspectionDisabled || manualOwnerLost
-            ? 409
-            : manualTimedOut ? 408 : 400,
+        cancelled || retainedUnavailable || manualInspectionDisabled || manualOwnerLost
+          ? 409
+          : manualTimedOut ? 408 : 400,
         {
         error: message,
         ...(cancelled ? { code: "turn_cancelled" } : {}),
         ...(retainedUnavailable ? { code: "retained_conversation_unavailable" } : {}),
-        ...(authenticationRequired ? { code: "authentication_required" } : {}),
         ...(manualInspectionDisabled ? { code: "manual_browser_inspection_disabled" } : {}),
         ...(manualOwnerLost ? { code: "manual_turn_owner_lost" } : {}),
         ...(manualTimedOut ? { code: "manual_turn_timed_out" } : {}),
