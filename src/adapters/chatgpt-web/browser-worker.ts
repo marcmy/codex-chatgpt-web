@@ -47,6 +47,7 @@ import {
   type ChatGptWebMultipartStage,
 } from "./prompt";
 import { estimateCompiledChatGptWebInputTokens } from "./input-tokens";
+import { guardChatGptSubmissionText } from "./submission-text";
 import {
   assertAuthenticatedChatGptPage,
   assertNewChatPage,
@@ -3863,25 +3864,38 @@ export class ChatGptBrowserWorker {
     await captureDiagnostic?.("send-ready");
     const initialToolBatchRevision = externalProgress?.snapshot().lastToolBatchRevision ?? 0;
     await submissionLifecycle?.onSendActivated?.();
-    await sendButton.press("Enter", {
-      noWaitAfter: true,
-      signal: abortSignal,
-      // runStage owns the operation budget. A second Locator timeout would silently collapse the
-      // 180-second Bigger Context budget back to the ordinary 20 seconds after Enter has already
-      // submitted the message; semantic submission evidence below remains the authority.
-      timeout: 0,
-    });
-    const evidence = await this.waitForSubmissionAcceptedWithRecovery(
-      page,
-      baseline,
-      abortSignal,
-      externalProgress,
-      initialToolBatchRevision,
-      completionTracker,
-      recoverObservation,
-    );
-    await submissionLifecycle?.onSubmitted?.();
-    return evidence;
+    const submissionAbort = new AbortController();
+    const submissionSignal = abortSignal ? AbortSignal.any([abortSignal, submissionAbort.signal]) : submissionAbort.signal;
+    const textGuard = baseline.submittedText
+      ? await guardChatGptSubmissionText(page, baseline.submittedText, () => submissionAbort.abort())
+      : undefined;
+    try {
+      await sendButton.press("Enter", {
+        noWaitAfter: true,
+        signal: submissionSignal,
+        // runStage owns the operation budget. A second Locator timeout would silently collapse the
+        // 180-second Bigger Context budget back to the ordinary 20 seconds after Enter has already
+        // submitted the message; semantic submission evidence below remains the authority.
+        timeout: 0,
+      });
+      const evidence = await this.waitForSubmissionAcceptedWithRecovery(
+        page,
+        baseline,
+        submissionSignal,
+        externalProgress,
+        initialToolBatchRevision,
+        completionTracker,
+        recoverObservation,
+      );
+      await submissionLifecycle?.onSubmitted?.();
+      return evidence;
+    } catch (error) {
+      const integrityFailure = textGuard?.failure();
+      if (integrityFailure) throw new ChatGptPromptAttachmentIntegrityError(integrityFailure.message, integrityFailure);
+      throw error;
+    } finally {
+      await textGuard?.dispose();
+    }
   }
 
   private async waitForMultipartAcknowledgement(
