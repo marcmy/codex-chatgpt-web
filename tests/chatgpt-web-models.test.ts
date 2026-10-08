@@ -39,14 +39,14 @@ describe("fixed ChatGPT Web model routes", () => {
 
   test("both unified Web rows resolve every supported effort while saved Instant identities retain their bindings", () => {
     for (const family of ["6", "5.6"] as const) {
-      for (const effort of ["low", "medium", "high", "xhigh"] as const) {
+      for (const effort of ["medium", "high", "xhigh"] as const) {
         const request = parsed(`chatgpt-web/gpt-${family}-sol`, effort);
         const route = routeChatGptWebRequest(request, { ...defaultConfig("full"), ...pro });
         expect(route.adapterEffort).toBe(effort);
         expect(request._chatgptModelFamily).toBe(family);
         expect(request.options.reasoning).toBe(effort);
       }
-      for (const effort of ["max", "ultra", "invented"]) {
+      for (const effort of ["low", "max", "ultra", "invented"]) {
         expect(() => requireChatGptWebModelRoute(`chatgpt-web/gpt-${family}-sol`, pro, effort)).toThrow();
       }
       expect(requireChatGptWebModelRoute(`chatgpt-web/gpt-${family}-sol-instant`, plus)).toMatchObject({ adapterEffort: "low", modelFamily: family, legacy: true });
@@ -341,7 +341,7 @@ describe("fixed ChatGPT Web model routes", () => {
   test("new families honor effort, gate availability, and separate pinned retained conversations", () => {
     const config = { ...defaultConfig("full"), extraHighAvailable: true, proAvailable: true };
     for (const family of ["5.6", "6"] as const) {
-      for (const effort of ["low", "medium", "high", "xhigh"] as const) {
+      for (const effort of ["medium", "high", "xhigh"] as const) {
         const request = parsed(`chatgpt-web/gpt-${family}-sol`, effort);
         routeChatGptWebRequest(request, config);
         expect(request.options.reasoning).toBe(effort);
@@ -351,7 +351,7 @@ describe("fixed ChatGPT Web model routes", () => {
       routeChatGptWebRequest(instant, config);
       expect(instant._chatgptModelFamily).toBe(family);
       expect(instant.options.reasoning).toBe("low");
-      for (const effort of ["max", "ultra", "invented"]) {
+      for (const effort of ["low", "max", "ultra", "invented"]) {
         expect(() => routeChatGptWebRequest(parsed(`chatgpt-web/gpt-${family}-sol`, effort), config)).toThrow("does not support effort");
       }
       expect(() => routeChatGptWebRequest(parsed(`chatgpt-web/gpt-${family}-sol`, "xhigh"), {

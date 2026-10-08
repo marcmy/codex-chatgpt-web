@@ -1197,7 +1197,7 @@ describe("trusted Codex task environment continuity", () => {
   }
 
   // Reproduction from @itruonghai in PR #728, with additional grant-boundary checks.
-  test("steering accepts a native output write root beyond the workspace roots", () => {
+  for (const networkAccess of [false, true]) test(`steering accepts native output grants and recovers omitted network access (${networkAccess})`, () => {
     const { codexHome, request, body, rolloutPath, environment, auxiliary } = steeredRolloutFixture(false, []);
     const output = join(codexHome, "visualizations", "current-task");
     environment.content[1]!.text = environment.content[1]!.text.replace(
@@ -1216,8 +1216,8 @@ describe("trusted Codex task environment continuity", () => {
       { type: "session_meta", payload: { id: rolloutThreadId, source: "vscode" } },
       childTurnContext(rolloutTurnId, {
         workspace_roots: [root, auxiliary],
-        sandbox_policy: { type: "workspace-write", writable_roots: [auxiliary, output], network_access: false },
-        permission_profile: { type: "managed", file_system: { type: "restricted", entries }, network: "restricted" },
+        sandbox_policy: { type: "workspace-write", writable_roots: [auxiliary, output], network_access: networkAccess },
+        permission_profile: { type: "managed", file_system: { type: "restricted", entries }, network: networkAccess ? "enabled" : "restricted" },
         file_system_sandbox_policy: { kind: "restricted", entries },
       }),
     ].map(value => JSON.stringify(value)).join("\n") + "\n");
@@ -1226,7 +1226,7 @@ describe("trusted Codex task environment continuity", () => {
     expect(actual.roots).toEqual([root, auxiliary]);
     expect(actual.writableRoots).toEqual([root, auxiliary, output]);
     expect(actual.sandboxPolicy).toEqual({
-      type: "workspaceWrite", writableRoots: [root, auxiliary, output], networkAccess: false,
+      type: "workspaceWrite", writableRoots: [root, auxiliary, output], networkAccess,
     });
 
     const originalClaim = environment.content[1]!.text;
@@ -1235,6 +1235,13 @@ describe("trusted Codex task environment continuity", () => {
     );
     // Envelope entries cannot add grants: only the current native rollout can.
     expect(new ChatGptThreadEnvironmentStore(undefined, Date.now, codexHome).resolve(request)).toEqual(actual);
+    environment.content[1]!.text = originalClaim;
+
+    environment.content[1]!.text = originalClaim.replace(
+      "</environment_context>", `<network_access>${networkAccess ? "restricted" : "enabled"}</network_access></environment_context>`,
+    );
+    expect(() => new ChatGptThreadEnvironmentStore(undefined, Date.now, codexHome).resolve(request))
+      .toThrow("Steering environment conflicts");
     environment.content[1]!.text = originalClaim;
 
     environment.content[1]!.text = environment.content[1]!.text.replace(
@@ -1300,16 +1307,35 @@ describe("trusted Codex task environment continuity", () => {
     }
   });
 
-  for (const format of ["v1", "v2"]) for (const groupedPreamble of [false, true]) test(`${format} ${groupedPreamble ? "grouped preamble" : "context-only"} continuation requires a matching current rollout, not just a checkpoint`, () => {
+  for (const format of ["v1", "v2"]) for (const groupedPreamble of [false, true]) for (const managed of [false, true]) test(`${format} ${groupedPreamble ? "grouped preamble" : "context-only"} ${managed ? "managed" : "full-access"} continuation requires a matching current rollout, not just a checkpoint`, () => {
     const { codexHome, request, rolloutPath } = resumedRootFixture();
-    const body = request._rawBody as { input: Array<Record<string, unknown>> };
+    const body = request._rawBody as { input: Array<Record<string, unknown>>; client_metadata: Record<string, string> };
+    const currentEnvironmentXml = managed ? filesystemEnvironmentXml(workspaceWriteProfileXml) : environmentXml;
+    if (managed) {
+      const metadata = JSON.parse(body.client_metadata["x-codex-turn-metadata"]!);
+      metadata.sandbox_mode = "workspace-write";
+      body.client_metadata["x-codex-turn-metadata"] = JSON.stringify(metadata);
+      const entries = [
+        { path: { type: "special", value: { kind: "root" } }, access: "read" },
+        { path: { type: "path", path: root }, access: "write" },
+        ...["slash_tmp", "tmpdir"].map(kind => ({ path: { type: "special", value: { kind } }, access: "write" })),
+      ];
+      writeFileSync(rolloutPath, [
+        { type: "session_meta", payload: { id: rolloutThreadId, source: "vscode" } },
+        childTurnContext(rolloutTurnId, {
+          sandbox_policy: { type: "workspace-write", network_access: true },
+          permission_profile: { type: "managed", file_system: { type: "restricted", entries }, network: "enabled" },
+          file_system_sandbox_policy: { kind: "restricted", entries },
+        }),
+      ].map(value => JSON.stringify(value)).join("\n") + "\n");
+    }
     const oldTurnId = "01a06c66-0000-75c6-a0df-318f890ef6de";
     body.input[0]!.internal_chat_message_metadata_passthrough = { turn_id: oldTurnId };
     const summary = `Confirmed ${format} checkpoint`;
     rememberCompactionContinuation({ ...request, _compactionRequest: true }, extractChatGptTurnIdentity(request), [
       { turnId: oldTurnId, content: body.input[0]!.content },
     ], summary);
-    const environmentPart = { type: "input_text", text: environmentXml };
+    const environmentPart = { type: "input_text", text: currentEnvironmentXml };
     const current = {
       type: "message", role: "user", id: "msg_current_environment",
       content: groupedPreamble ? [
@@ -1327,16 +1353,21 @@ describe("trusted Codex task environment continuity", () => {
     body.input.push(checkpoint);
     const store = new ChatGptThreadEnvironmentStore(undefined, Date.now, codexHome);
     expect(store.resolve(request).cwd).toBe(root);
+    if (managed) {
+      expect(store.resolve(request).sandboxPolicy).toEqual({ type: "workspaceWrite", writableRoots: [root], networkAccess: true });
+      environmentPart.text = currentEnvironmentXml.replace("</environment_context>", "<network_access>restricted</network_access></environment_context>");
+      expect(() => store.resolve(request)).toThrow("Compaction continuation environment conflicts");
+      environmentPart.text = currentEnvironmentXml;
+    }
     for (const text of [
-      environmentXml.replaceAll(root, resolve(root, "another-workspace")),
-      environmentXml.replace('<permission_profile type="disabled"><file_system type="unrestricted" /></permission_profile>',
-        '<sandbox_mode>read-only</sandbox_mode>'),
+      currentEnvironmentXml.replaceAll(root, resolve(root, "another-workspace")),
+      filesystemEnvironmentXml(readOnlyProfileXml),
       "<environment_context><cwd/></environment_context>",
     ]) {
       environmentPart.text = text;
       expect(() => store.resolve(request)).toThrow();
     }
-    environmentPart.text = environmentXml;
+    environmentPart.text = currentEnvironmentXml;
     body.input.pop();
     expect(() => store.resolve(request)).toThrow("missing cwd");
     body.input.push(checkpoint);

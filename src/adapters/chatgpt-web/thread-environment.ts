@@ -19,6 +19,7 @@ import {
   MissingTrustedCodexEnvironmentError,
   type ChatGptSandboxPolicy,
   type ChatGptTurnEnvironment,
+  type ChatGptTurnEnvironmentClaim,
 } from "./environment";
 import { resolveCurrentCodexRolloutEnvironment } from "./codex-rollout-environment";
 import { ChatGptWebAdapterError } from "./adapter-error";
@@ -125,7 +126,7 @@ function authority(environment: ChatGptTurnEnvironment, updatedAt: number): Stor
   };
 }
 
-function sameAuthority(left: ChatGptTurnEnvironment, right: ChatGptTurnEnvironment, steering = false): boolean {
+function sameAuthority(left: ChatGptTurnEnvironmentClaim, right: ChatGptTurnEnvironment, steering = false): boolean {
   const samePaths = (a: string[], b: string[]): boolean => {
     const expected = new Set(b.map(pathIdentity));
     return a.length === expected.size && a.every(path => expected.has(pathIdentity(path)));
@@ -139,7 +140,8 @@ function sameAuthority(left: ChatGptTurnEnvironment, right: ChatGptTurnEnvironme
       : samePaths(left.writableRoots, right.writableRoots))
     && left.sandboxPolicy.type === right.sandboxPolicy.type
     && (left.sandboxPolicy.type === "dangerFullAccess" || (right.sandboxPolicy.type !== "dangerFullAccess"
-      && left.sandboxPolicy.networkAccess === right.sandboxPolicy.networkAccess));
+      && (left.sandboxPolicy.networkAccess === undefined
+        || left.sandboxPolicy.networkAccess === right.sandboxPolicy.networkAccess)));
 }
 
 /**
