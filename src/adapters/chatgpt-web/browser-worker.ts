@@ -1941,6 +1941,11 @@ function pruneBrowserDiagnostics(root: string): void {
   }
 }
 
+export function chatGptMarkdownConflictEvidence(error: unknown): ChatGptMarkdownConsistencyError["diagnostic"] {
+  return error instanceof Error && error.cause instanceof ChatGptMarkdownConsistencyError
+    ? error.cause.diagnostic : undefined;
+}
+
 class ChatGptBrowserDiagnostics {
   private readonly directory: string;
   private sequence = 0;
@@ -2157,6 +2162,7 @@ class ChatGptBrowserDiagnostics {
         checkpoint,
         ...(error !== undefined ? {
           error: redactChatGptUiDiagnostic(error instanceof Error ? error.message : String(error)),
+          ...(chatGptMarkdownConflictEvidence(error) ? { markdownConflict: chatGptMarkdownConflictEvidence(error) } : {}),
         } : {}),
         ...(stateResult.status === "fulfilled"
           ? { state: sanitizeChatGptBrowserDiagnosticState(stateResult.value) }
@@ -5565,6 +5571,7 @@ export class ChatGptBrowserWorker {
           errorType: "server_error",
           code: "browser_stream_inconsistent",
           retryable: false,
+          cause: error,
         });
       };
       const domHealthTracker = new ChatGptTurnDomHealthTracker();
