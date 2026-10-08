@@ -152,15 +152,15 @@ describe("native /models augmentation", () => {
       for (const suffix of ["sol-instant", "sol"] as const) {
         const six = models.find(model => model.slug === `chatgpt-web/gpt-6-${suffix}`)!;
         const commonWindow = suffix === "sol"
-          ? proAvailable ? 240_000 : 90_000 : proAvailable ? 111_193 : 41_000;
+          ? proAvailable ? 240_000 : 270_000 : proAvailable ? 111_193 : 41_000;
         const commonCompact = suffix === "sol"
-          ? proAvailable ? 220_000 : 80_000 : proAvailable ? 95_000 : 32_000;
+          ? proAvailable ? 220_000 : 240_000 : proAvailable ? 95_000 : 32_000;
         expect(six).toMatchObject({ context_window: commonWindow,
           max_context_window: commonWindow, auto_compact_token_limit: commonCompact });
         expect(resolveChatGptWebContextLimits("gpt-5.6-sol", "high", config, "6")).toMatchObject({
-          contextWindow: proAvailable ? 240_000 : 90_000, autoCompactTokenLimit: proAvailable ? 220_000 : 80_000,
+          contextWindow: proAvailable ? 240_000 : 270_000, autoCompactTokenLimit: proAvailable ? 220_000 : 240_000,
         });
-        expect(six.description).toContain("standard context");
+        expect(six.description).toContain(suffix === "sol" ? "triples the Plus window" : "standard context");
         expect(models.find(model => model.slug === `chatgpt-web/gpt-5.6-${suffix}`)).toMatchObject({
           context_window: (suffix === "sol" ? proAvailable ? 111_193 : 90_000 : commonWindow) * 3,
           auto_compact_token_limit: (suffix === "sol" ? proAvailable ? 95_000 : 80_000 : commonCompact) * 3,

@@ -7,7 +7,7 @@ export const CHATGPT_WEB_LUNA_BIGGER_CONTEXT_ERROR =
   "Bigger Context is unavailable for Luna and Think. Turn it off in launcher Settings "
   + "(or run setup with --standard-context), then restart Codex.";
 export const CHATGPT_WEB_GPT6_SOL_BIGGER_CONTEXT_ERROR =
-  "GPT-6 Sol uses standard context for this account and effort. Bigger Context supports Medium, High and Extra High on Pro accounts.";
+  "GPT-6 Sol Instant uses standard context. Bigger Context supports Medium, High and Extra High.";
 /** Internal adapter identity for a turn whose ChatGPT model is selected by the user in the launcher. */
 export const CHATGPT_WEB_ZERO_RISK_BACKEND_MODEL = "chatgpt-web-zero-risk";
 /** Internal adapter identity for the explicitly enabled, Pro-sized Zero Risk context profile. */
@@ -104,15 +104,15 @@ export interface ChatGptWebTransportLimits {
   browserComposerCharLimit?: number;
 }
 
-/** GPT-6 staged context is supported only by the account and efforts checked live. */
+/** The fork enables GPT-6 reasoning multipart transport on Plus as well as Pro. */
 export function supportsChatGptWebBiggerContext(
   backendModel: string,
   effort: ChatGptWebAdapterEffort,
-  capabilities: Pick<ChatGptWebAccountCapabilities, "proAvailable">,
+  _capabilities: Pick<ChatGptWebAccountCapabilities, "proAvailable">,
   modelFamily?: ChatGptWebModelFamily,
 ): boolean {
   return backendModel === CHATGPT_WEB_BACKEND_MODEL && (
-    modelFamily !== "6" || effort === "max" || (capabilities.proAvailable && effort !== "low")
+    modelFamily !== "6" || effort !== "low"
   );
 }
 
@@ -188,7 +188,7 @@ export function resolveChatGptWebContextLimits(
   }
   if (!capabilities.experimentalBiggerContext
     || !supportsChatGptWebBiggerContext(backendModel, effort, capabilities, modelFamily)) return limits;
-  if (modelFamily === "6" && effort !== "max") {
+  if (modelFamily === "6" && capabilities.proAvailable && effort !== "max") {
     return contextLimits(
       CHATGPT_WEB_GPT6_SOL_BIGGER_CONTEXT_WINDOW,
       CHATGPT_WEB_GPT6_SOL_BIGGER_AUTO_COMPACT_TOKEN_LIMIT,
@@ -458,7 +458,7 @@ export const CHATGPT_WEB_MODEL_ROUTES: readonly ChatGptWebAutomaticModelRoute[] 
   {
     slug: "chatgpt-web/gpt-6-sol",
     displayName: "GPT-6 (Web)",
-    description: "GPT-6 through ChatGPT with Medium, High, or account-supported Extra High. Plus uses standard context; Bigger Context supports reasoning efforts on Pro.",
+    description: "GPT-6 through ChatGPT with Medium, High, or account-supported Extra High. Bigger Context triples the Plus window and uses the measured reasoning window on Pro.",
     interactionMode: "automatic",
     backendModel: CHATGPT_WEB_BACKEND_MODEL,
     modelFamily: "6",

@@ -22,9 +22,10 @@ launcher-owned codex-chatgpt-web daemon
 ### `browser-only`
 
 - Exposes `GPT-5.6 Luna (Web)` with ordinary/Think effort on Luna-only accounts. Sol-capable accounts
-  get `GPT-5.6 Sol Instant (Web)` and `GPT-5.6 Sol (Web)` with Medium/High and available Extra High.
+  get `GPT-6 (Web)` and `GPT-5.6 Sol (Web)` with Medium/High and available Extra High.
   Pro-capable accounts also get separate `GPT-5.6 Pro (Web)` and `GPT-6 Pro (Web)` rows.
-- Instant retains its own context budget. Grouped efforts must have identical context and compaction
+- Instant stays hidden for saved tasks and retains its own context budget. Grouped efforts must
+  have identical context and compaction
   limits; catalog generation rejects a mismatch rather than reducing a budget. Pro rows use the
   native `max` effort; `ultra` is not used for new rows because Codex transforms it before transport.
 - Named Sol/Pro routes select the exact browser family and verify it again before every Send.

@@ -834,7 +834,7 @@ test("Bigger Context send activation keeps the outer stage budget instead of res
   expect(pressOptions?.signal).toBeInstanceOf(AbortSignal);
 });
 
-test("GPT-6 Sol rejects a staged prompt before opening a browser and releases its preparation", async () => {
+test("GPT-6 Instant rejects a staged prompt before opening a browser and releases its preparation", async () => {
   const root = mkdtempSync(join(tmpdir(), "gpt6-standard-context-"));
   const capabilities = { localToolsEnabled: false, solAvailable: true, extraHighAvailable: false, proAvailable: false };
   let released = false;
@@ -849,9 +849,9 @@ test("GPT-6 Sol rejects a staged prompt before opening a browser and releases it
   worker.runStage = async () => { browserStages++; throw new Error("Browser must not be opened"); };
   try {
     await expect(worker.runBrowserTurn({
-      traceId: "six_standard", modelId: CHATGPT_WEB_MODEL_ID, modelFamily: "6", reasoning: "high", capabilities,
+      traceId: "six_standard", modelId: CHATGPT_WEB_MODEL_ID, modelFamily: "6", reasoning: "low", capabilities,
       prepare: async () => prepared, onTextDelta() {}, onReasoningSummary() {},
-    })).rejects.toThrow("GPT-6 Sol uses standard context");
+    })).rejects.toThrow("GPT-6 Sol Instant uses standard context");
     expect(browserStages).toBe(0);
     expect(released).toBeTrue();
   } finally { rmSync(root, { recursive: true, force: true }); }
@@ -3483,7 +3483,7 @@ test("browser preflight separates model context from one-message transport limit
   }
 });
 
-test("GPT-6 staged input enforces its measured account and effort ceiling before submission", () => {
+test("GPT-6 staged input enforces the fork's Plus ceiling and measured Pro ceiling before submission", () => {
   const pro = { localToolsEnabled: false, solAvailable: true, extraHighAvailable: true, proAvailable: true };
   for (const effort of ["medium", "high", "xhigh"] as const) {
     expect(() => assertChatGptWebMultipartInputWithinLimits(
@@ -3496,12 +3496,18 @@ test("GPT-6 staged input enforces its measured account and effort ceiling before
       222_386, 40_000, "gpt-5.6-sol", effort, pro, 200_000, 2, undefined, "6",
     )).toThrow("222,386-token two-part ceiling");
     expect(() => assertChatGptWebMultipartInputWithinLimits(
-      100_000, 40_000, "gpt-5.6-sol", effort, { ...pro, proAvailable: false }, 200_000, 6, undefined, "6",
-    )).toThrow("GPT-6 Sol uses standard context");
+      269_999, 40_000, "gpt-5.6-sol", effort, { ...pro, proAvailable: false }, 200_000, 6, undefined, "6",
+    )).not.toThrow();
+    expect(() => assertChatGptWebMultipartInputWithinLimits(
+      270_000, 40_000, "gpt-5.6-sol", effort, { ...pro, proAvailable: false }, 200_000, 6, undefined, "6",
+    )).toThrow("270,000-token six-part ceiling");
+    expect(() => assertChatGptWebMultipartInputWithinLimits(
+      180_000, 40_000, "gpt-5.6-sol", effort, { ...pro, proAvailable: false }, 200_000, 2, undefined, "6",
+    )).toThrow("180,000-token two-part ceiling");
   }
   expect(() => assertChatGptWebMultipartInputWithinLimits(
     100_000, 40_000, "gpt-5.6-sol", "low", pro, 200_000, 6, undefined, "6",
-  )).toThrow("GPT-6 Sol uses standard context");
+  )).toThrow("GPT-6 Sol Instant uses standard context");
   expect(() => assertChatGptWebMultipartInputWithinLimits(
     333_578, 60_000, "gpt-5.6-sol", "high", pro, 250_000, 6, undefined, "5.6",
   )).not.toThrow();
