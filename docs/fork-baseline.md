@@ -60,3 +60,20 @@ available. No old fork application behavior has been reintroduced.
 The Web-to-native model switch must be checked after installing the rebuilt
 launcher in a fresh task. Source and CI results do not establish that the previous
 encrypted-compaction failure is resolved in an existing live conversation.
+
+## Exact browser submission text
+
+ChatGPT's connector composer serializes user text as Markdown. That conversion
+can escape JSON quotes, backslashes and transport fences after the bridge has
+verified the composer text, invalidating staged payload hashes and increasing
+the submitted token count. The fork restores the verified canonical text in the
+browser-issued conversation request for the current Send. The guard retains the
+connector prefix, metadata and attachments, requires the current transaction or
+turn capability before correcting Markdown changes, and aborts unclassified or
+unbound mutations. Tool-free compaction uses the owned checkpoint contract
+instead of introducing a tool capability. The request route is removed when
+submission settles.
+
+A live browser fixture reproduced the corruption and confirmed that the corrected
+request is stored unchanged with the connector selected. This establishes text
+integrity for that fixture; it does not establish GPT-6 Plus retention at 240k.
