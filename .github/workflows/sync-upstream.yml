@@ -63,9 +63,7 @@ jobs:
           # Workflow policy is owned by this fork, including the validation gates below.
           git restore --source="$original_head" --staged --worktree -- .github
           git commit -m "Merge upstream $upstream_sha"
-          echo "branch=$sync_branch" >> "$GITHUB_OUTPUT"
-          echo "sha=$upstream_sha" >> "$GITHUB_OUTPUT"
-          echo "changed=true" >> "$GITHUB_OUTPUT"
+          printf 'branch=%s\nsha=%s\nchanged=true\n' "$sync_branch" "$upstream_sha" >> "$GITHUB_OUTPUT"
       - run: bun install --frozen-lockfile
         if: steps.prepare.outputs.changed == 'true'
       - run: bun install --frozen-lockfile
@@ -83,6 +81,6 @@ jobs:
         run: |
           set -euo pipefail
           git push origin "HEAD:refs/heads/$SYNC_BRANCH"
-          printf 'Integrates upstream commit `%s` while preserving fork workflows.\n\nValidation: frozen dependency installs and `bun run verify` passed before this branch was pushed. Platform CI is dispatched explicitly because GITHUB_TOKEN-created pushes and PRs do not trigger it automatically.\n' "$UPSTREAM_SHA" > "$RUNNER_TEMP/upstream-pr.md"
+          printf 'Integrates upstream commit %s while preserving fork workflows.\n\nValidation: frozen dependency installs and bun run verify passed before this branch was pushed. Platform CI is dispatched explicitly because GITHUB_TOKEN-created pushes and PRs do not trigger it automatically.\n' "$UPSTREAM_SHA" > "$RUNNER_TEMP/upstream-pr.md"
           gh pr create --base main --head "$SYNC_BRANCH" --title "Sync upstream ${UPSTREAM_SHA:0:12}" --body-file "$RUNNER_TEMP/upstream-pr.md"
           gh workflow run ci.yml --ref "$SYNC_BRANCH"
