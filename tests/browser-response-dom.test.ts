@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { createContext, runInContext } from "node:vm";
 import type { Locator } from "playwright-core";
-import { ChatGptBrowserWorker, ChatGptCompletionTracker, ChatGptVisibleTraceTracker, CHATGPT_COMPLETION_SETTLE_MS, type ChatGptVisibleTraceBlock } from "../src/adapters/chatgpt-web/browser-worker";
+import { ChatGptBrowserWorker, ChatGptCompletionTracker, ChatGptVisibleTraceTracker, CHATGPT_COMPLETION_SETTLE_MS } from "../src/adapters/chatgpt-web/browser-worker";
 import { ChatGptMarkdownBuffer, type ChatGptMarkdownSegment } from "../src/adapters/chatgpt-web/markdown";
 
 const smokeHtml = readFileSync(new URL("./fixtures/chatgpt-dil-smoke.html", import.meta.url), "utf8");
@@ -18,7 +18,7 @@ type Snapshot = {
   fullHtml: string;
   markdownSegments: ChatGptMarkdownSegment[];
   completionActionVisible: boolean;
-  traceBlocks: ChatGptVisibleTraceBlock[];
+  traceBlocks: { kind: "answer" | "commentary" | "status"; text: string }[];
 };
 
 // Execute the production page callback, with only missing Domino browser APIs supplied.
@@ -217,84 +217,12 @@ test("captured power UI excludes the user footer during streaming and completes 
   expect(markdown).toEndWith("STREAM\\_END\\_927");
   const translated = await snapshot(powerCompleteHtml.replaceAll('aria-label="Copy"', 'aria-label="복사"'));
   expect(translated.completionActionVisible).toBeTrue();
-  const noAssistant = await snapshot(powerCompleteHtml
-    .replaceAll('data-conversation-role="assistant"', 'data-conversation-role="user"')
-    .replace(' data-chatgpt-agent-turn-start=""', ''));
+  const noAssistant = await snapshot(powerCompleteHtml.replaceAll('data-conversation-role="assistant"', 'data-conversation-role="user"'));
   expect(noAssistant.visibleText).toBe("");
   expect(noAssistant.completionActionVisible).toBeFalse();
   const userMarkdown = await snapshot(powerCompleteHtml.replace('data-user-message-bubble="true">',
     'data-user-message-bubble="true"><div class="markdown">USER CONTENT</div>'));
   expect(userMarkdown.visibleText).toBe(complete.visibleText);
-});
-
-test("power UI exposes live commentary after the agent-turn sentinel before the final assistant heading", async () => {
-  const response = await snapshot([
-    '<div id="turn" data-turn-key="live">',
-    '<div data-content-search-turn-key="fallback-turn-0">',
-    '<div data-content-search-unit-key="fallback-turn-0:0:user"><div data-user-message-bubble="true"><div class="markdown">USER CONTENT</div></div></div>',
-    '<span data-chatgpt-agent-turn-start></span>',
-    '<div data-content-search-unit-key="fallback-turn-0:1:assistant"><div data-streaming-response-status><div class="markdown">Checking the repository now.</div></div></div>',
-    '</div></div>',
-  ].join(""));
-  expect(response.visibleText).toBe("");
-  expect(response.traceBlocks.map(({ kind, text }) => ({ kind, text }))).toContainEqual({
-    kind: "commentary",
-    text: "Checking the repository now.",
-  });
-  expect(response.traceBlocks.some(({ text }) => text.includes("USER CONTENT"))).toBeFalse();
-});
-
-test("agent commentary without status containers reaches Codex before the final answer heading", async () => {
-  const prefix = '<div id="turn" data-turn-key="live"><div data-content-search-turn-key="fallback-turn-0">'
-    + '<div data-content-search-unit-key="fallback-turn-0:0:user"><div data-user-message-bubble="true">USER CONTENT</div></div>'
-    + '<span data-chatgpt-agent-turn-start></span>';
-  const live = await snapshot(prefix
-    + '<div data-content-search-unit-key="fallback-turn-0:1:assistant">'
-    + '<div class="markdown"><p>Inspected the live state.</p></div>'
-    + '</div></div></div>');
-  expect(live.visibleText).toBe("");
-  expect(live.markdownSegments).toEqual([]);
-  expect(live.traceBlocks).toContainEqual(expect.objectContaining({
-    kind: "commentary", text: "Inspected the live state.",
-  }));
-  const trace = new ChatGptVisibleTraceTracker();
-  expect(trace.observe(live.traceBlocks, false, 0)).toEqual([]);
-  expect(trace.observe(live.traceBlocks, false, 300)).toContainEqual({
-    kind: "commentary", text: "Inspected the live state.",
-  });
-
-  const completed = await snapshot(prefix
-    + '<div data-content-search-unit-key="fallback-turn-0:1:assistant">'
-    + '<div class="markdown"><p>Inspected the live state.</p></div>'
-    + '<h4 data-conversation-role="assistant">ChatGPT said:</h4>'
-    + '<div data-markdown-text-style="assistant-message"><p>Here is the complete answer.</p></div>'
-    + '<button data-testid="copy-turn-action-button">Copy</button>'
-    + '</div></div></div>');
-  expect(completed.visibleText).toBe("Here is the complete answer.");
-  expect(completed.traceBlocks).toContainEqual(expect.objectContaining({
-    kind: "commentary", text: "Inspected the live state.",
-  }));
-  const answer = new ChatGptMarkdownBuffer();
-  answer.observe(completed.markdownSegments, 0);
-  expect(answer.finish().markdown).toBe("Here is the complete answer.");
-});
-
-test("unranged modern answer blocks stay buffered through a later React text rewrite", async () => {
-  const page = (first: string) => '<div id="turn" data-turn-key="live">'
-    + '<span data-chatgpt-agent-turn-start></span>'
-    + '<div data-content-search-unit-key="fallback-turn-0:1:assistant">'
-    + '<h4 data-conversation-role="assistant">ChatGPT said:</h4>'
-    + '<div data-markdown-text-style="assistant-message">'
-    + `<p>${first}</p><p>Second block.</p>`
-    + '</div></div></div>';
-  const initial = await snapshot(page("A".repeat(48)));
-  expect(initial.markdownSegments.map(segment => segment.streamable)).toEqual([false, false]);
-  const buffer = new ChatGptMarkdownBuffer(markdown => markdown, 0);
-  expect(buffer.observe(initial.markdownSegments, 0)).toBe("");
-  const revised = await snapshot(page("A".repeat(260)));
-  expect(buffer.observe(revised.markdownSegments, 1_000)).toBe("");
-  expect(buffer.currentSnapshotIsConsistent()).toBeTrue();
-  expect(buffer.finish().markdown).toBe(`${"A".repeat(260)}\n\nSecond block.`);
 });
 
 test("captured power response keeps its Markdown ledger through final rendering", async () => {

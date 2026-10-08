@@ -290,7 +290,6 @@ export class LauncherBrowserHelperClient {
             ...(turn.retainConversation ? { retainConversation: true } : {}),
             ...(turn.requireRetainedConversation ? { requireRetainedConversation: true } : {}),
             ...(turn.conversationKey ? { conversationKey: turn.conversationKey } : {}),
-            ...(turn.nativeTurnLineage ? { nativeTurnLineage: turn.nativeTurnLineage } : {}),
             ...(turn.compaction ? { compaction: true } : {}),
             ...(turn.captureLunaCheckpoint ? { captureLunaCheckpoint: true } : {}),
             ...(turn.externalProgress ? { externalProgress: true } : {}),

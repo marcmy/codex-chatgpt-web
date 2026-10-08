@@ -475,8 +475,6 @@ function exactManagedWorkspaceWriteProfile(
   const uniqueDirectWrites = [...new Map(directWrites.map(path => (
     [pathIdentity(path), path] as const
   ))).values()];
-  // Native Codex can emit the same effective writable root through multiple managed-policy
-  // sources. Identical duplicates do not widen authority, so validate the deduplicated set.
   const expectedIdentities = new Set(uniqueExpectedWritableRoots.map(pathIdentity));
   if (uniqueDirectWrites.some(path => !expectedIdentities.has(pathIdentity(path)))) return undefined;
   if (projectRootsWrite === 0 && uniqueDirectWrites.length !== uniqueExpectedWritableRoots.length) return undefined;

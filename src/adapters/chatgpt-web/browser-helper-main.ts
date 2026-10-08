@@ -33,7 +33,6 @@ interface RunMessage {
     retainConversation?: boolean;
     requireRetainedConversation?: boolean;
     conversationKey?: string;
-    nativeTurnLineage?: BrowserTurn["nativeTurnLineage"];
     compaction?: boolean;
     captureLunaCheckpoint?: boolean;
     externalProgress?: boolean;
@@ -178,11 +177,6 @@ async function run(message: RunMessage): Promise<void> {
   if (message.turn.conversationKey !== undefined && !/^[a-f0-9]{64}$/.test(message.turn.conversationKey)) {
     throw new Error("Browser helper conversation key is invalid");
   }
-  if (message.turn.nativeTurnLineage !== undefined && (
-    typeof message.turn.nativeTurnLineage.turnId !== "string"
-    || typeof message.turn.nativeTurnLineage.userItemId !== "string"
-    || !/^[a-f0-9]{64}$/.test(message.turn.nativeTurnLineage.historyPrefix)
-  )) throw new Error("Browser helper native turn lineage is invalid");
   if (message.turn.compaction !== undefined && typeof message.turn.compaction !== "boolean") {
     throw new Error("Browser helper compaction flag is invalid");
   }
@@ -234,7 +228,6 @@ async function run(message: RunMessage): Promise<void> {
     ...(message.turn.retainConversation ? { retainConversation: true } : {}),
     ...(message.turn.requireRetainedConversation ? { requireRetainedConversation: true } : {}),
     ...(message.turn.conversationKey ? { conversationKey: message.turn.conversationKey } : {}),
-    ...(message.turn.nativeTurnLineage ? { nativeTurnLineage: message.turn.nativeTurnLineage } : {}),
     abortSignal: abortController.signal,
     ...(message.turn.compaction ? { compaction: true } : {}),
     ...(progress ? {
@@ -315,12 +308,11 @@ async function run(message: RunMessage): Promise<void> {
       }),
     } : {}),
   };
-  let terminal: Record<string, unknown> | undefined;
   try {
     const text = await ChatGptBrowserWorker.forProvider(provider).run(turn);
-    terminal = { type: "result", id: message.id, text };
+    writeProtocol({ type: "result", id: message.id, text });
   } catch (error) {
-    terminal = {
+    writeProtocol({
       type: "error",
       id: message.id,
       name: error instanceof Error ? error.name : "Error",
@@ -331,12 +323,8 @@ async function run(message: RunMessage): Promise<void> {
         code: error.code,
         retryable: error.retryable,
       } : {}),
-    };
+    });
   } finally {
-    // Release helper-side ownership before exposing the terminal frame to the daemon. The daemon
-    // may receive that frame and immediately accept an exact Codex reconnect with the same trace
-    // id; if the ownership map is cleared afterward, that legitimate replay races this finally
-    // block and is rejected as "Browser helper turn already exists".
     preparedSelections.get(message.id)?.cancel();
     preparedSelections.delete(message.id);
     const sendWaiter = sendActivationWaiters.get(message.id);
@@ -351,7 +339,6 @@ async function run(message: RunMessage): Promise<void> {
     abortControllers.delete(message.id);
     turnProgress.delete(message.id);
   }
-  if (terminal) writeProtocol(terminal);
 }
 
 async function verify(message: VerifyMessage): Promise<void> {

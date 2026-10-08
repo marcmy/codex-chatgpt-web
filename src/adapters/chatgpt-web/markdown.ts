@@ -6,7 +6,6 @@ const turndown = new TurndownService({
   headingStyle: "atx",
   bulletListMarker: "-",
   codeBlockStyle: "fenced",
-  preformattedCode: true, // Keep newlines in ChatGPT's <div><code> panes until the rule below runs.
   fence: "```",
   emDelimiter: "*",
   strongDelimiter: "**",
@@ -32,13 +31,6 @@ turndown.addRule("preserveCodexPlanBlockTags", {
     return `\n\n${paragraph}\n\n`;
   },
 });
-turndown.addRule("normalizeWindowsFileLinks", {
-  filter: node => absoluteWindowsLinkTarget(node) !== undefined,
-  replacement: (content, node) => {
-    const target = absoluteWindowsLinkTarget(node)!;
-    return `[${content}](<${target}>)`;
-  },
-});
 turndown.addRule("linkInlineFilePaths", {
   filter: node => inlineFilePath(node) !== undefined,
   replacement: (_content, node) => {
@@ -46,33 +38,6 @@ turndown.addRule("linkInlineFilePaths", {
     const target = path.replaceAll("\\", "/");
     // Code text becomes a plain link label, where backslashes and emphasis must be escaped.
     return `[${turndown.escape(path)}](<${target}>)`;
-  },
-});
-turndown.addRule("modernChatGptCodeBlock", {
-  // ChatGPT's current code pane can render <code> directly inside a <div>, without <pre>.
-  // Turndown otherwise collapses its newlines into inline code and may link a path inside it.
-  filter: node => node.nodeName === "DIV"
-    && node.getAttribute("data-markdown-copy") === "code-block"
-    && node.querySelector("code") !== null,
-  replacement: (_content, node) => {
-    const panel = node as HTMLElement;
-    const code = panel.querySelector("pre code, code")!;
-    const source = (code.textContent ?? "").replace(/\r\n?/g, "\n").replace(/\n$/, "");
-    const label = Array.from(panel.firstElementChild?.children ?? [])
-      .find(child => child.tagName === "DIV" && child.textContent?.trim())
-      ?.textContent?.trim() ?? "";
-    const classLanguage = Array.from(code.classList)
-      .find(value => value.startsWith("language-"))
-      ?.slice("language-".length) ?? "";
-    const languageCandidate = label || classLanguage;
-    const language = /^[a-z][a-z\d+#-]{0,31}$/i.test(languageCandidate) ? languageCandidate : "";
-    let longestTicks = 0;
-    for (const line of source.split("\n")) {
-      const run = line.match(/^ {0,3}(`{3,})/)?.[1];
-      if (run) longestTicks = Math.max(longestTicks, run.length);
-    }
-    const fence = "`".repeat(Math.max(3, longestTicks + 1));
-    return `\n\n${fence}${language}\n${source}\n${fence}\n\n`;
   },
 });
 turndown.addRule("compactListItem", {
@@ -119,13 +84,6 @@ function preserveKatexSource(html: string): string | HTMLElement {
   return root;
 }
 
-function absoluteWindowsLinkTarget(node: Node): string | undefined {
-  if (node.nodeName !== "A") return undefined;
-  const href = (node as Element).getAttribute("href");
-  if (!href || !/^[a-z]:(?:[\\/]|%5c)/i.test(href)) return undefined;
-  return href.replace(/%5c/gi, "/").replaceAll("\\", "/");
-}
-
 function inlineFilePath(node: Node): string | undefined {
   if (node.nodeName !== "CODE") return undefined;
   for (let ancestor = node.parentNode; ancestor; ancestor = ancestor.parentNode) {
@@ -133,12 +91,7 @@ function inlineFilePath(node: Node): string | undefined {
   }
 
   const path = node.textContent ?? "";
-  if (path !== path.trim() || /[\x00-\x1f`<>()[\]]/.test(path)) return undefined;
-  // Relative code containing spaces is often a command, not a file. An absolute Windows
-  // path has enough structure to allow spaces in directory and file names.
-  if (path.includes(" ") && !/^[a-z]:[\\/]/i.test(path) && !/^\\\\[^\\]+\\[^\\]+\\/.test(path)) {
-    return undefined;
-  }
+  if (path !== path.trim() || /[\s`<>()[\]]/.test(path)) return undefined;
   if (/^[a-z][a-z\d+.-]*:\/\//i.test(path)) return undefined;
 
   const withoutLocation = path.replace(/:\d+(?::\d+)?$/, "");

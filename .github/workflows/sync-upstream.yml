@@ -5,13 +5,13 @@ on:
   schedule:
     - cron: "23 */6 * * *"
   push:
-    branches:
-      - main
-    paths:
-      - .github/workflows/sync-upstream.yml
+    branches: [main]
+    paths: [.github/workflows/sync-upstream.yml]
 
 permissions:
   contents: write
+  pull-requests: write
+  actions: write
 
 concurrency:
   group: sync-upstream
@@ -20,106 +20,69 @@ concurrency:
 jobs:
   sync:
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
-
+    timeout-minutes: 30
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
     steps:
       - name: Check out fork branch
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: main
           fetch-depth: 0
-          token: ${{ github.token }}
-          persist-credentials: true
-
-      - name: Merge upstream conservatively
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.0
+      - name: Prepare upstream integration
+        id: prepare
         shell: bash
         run: |
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git config merge.conflictStyle merge
           git remote add upstream https://github.com/miuuyy/codex-chatgpt-web.git
           git fetch --prune --no-tags upstream main
-
-          original_head="$(git rev-parse HEAD)"
-          upstream_sha="$(git rev-parse upstream/main)"
-
           if git merge-base --is-ancestor upstream/main HEAD; then
             echo "Fork already contains current upstream main."
             exit 0
           fi
-
-          merge_status=0
-          git merge --no-commit --no-ff upstream/main || merge_status=$?
-
-          # Keep the fork's workflow layer unchanged.
-          git rm -r -f --ignore-unmatch .github/workflows
-          if git cat-file -e "$original_head:.github/workflows" 2>/dev/null; then
-            git checkout "$original_head" -- .github/workflows
+          original_head="$(git rev-parse HEAD)"
+          upstream_sha="$(git rev-parse upstream/main)"
+          sync_branch="codex/sync-upstream-${upstream_sha:0:12}-${original_head:0:12}"
+          existing_pr="$(gh pr list --head "$sync_branch" --state open --json number --jq '.[0].number // empty')"
+          if [[ -n "$existing_pr" ]]; then
+            echo "Upstream integration already has PR #$existing_pr."
+            exit 0
           fi
-
-          # Keep Git's non-conflicting merge result. Inside any remaining text
-          # conflict hunk, prefer the fork side only. For binary or delete/modify
-          # conflicts, conservatively preserve the fork side.
-          while IFS= read -r -d '' path; do
-            ours=0
-            theirs=0
-            if git cat-file -e ":2:$path" 2>/dev/null; then
-              ours=1
-            fi
-            if git cat-file -e ":3:$path" 2>/dev/null; then
-              theirs=1
-            fi
-
-            if [[ "$ours" -eq 1 && "$theirs" -eq 1 ]]; then
-              is_binary=0
-              if git show ":2:$path" | python3 -c 'import sys; raise SystemExit(0 if b"\\0" in sys.stdin.buffer.read() else 1)'; then
-                is_binary=1
-              fi
-              if [[ "$is_binary" -eq 0 ]] && git show ":3:$path" | python3 -c 'import sys; raise SystemExit(0 if b"\\0" in sys.stdin.buffer.read() else 1)'; then
-                is_binary=1
-              fi
-
-              if [[ "$is_binary" -eq 1 ]]; then
-                echo "Binary conflict; preserving fork file: $path"
-                git checkout --ours -- "$path"
-                git add -- "$path"
-                continue
-              fi
-
-              git checkout --conflict=merge -- "$path"
-              tmp="$(mktemp)"
-              awk '
-                /^<<<<<<< / { in_conflict=1; keep=1; found=1; next }
-                in_conflict && /^=======$/ { keep=0; next }
-                in_conflict && /^>>>>>>> / { in_conflict=0; keep=1; next }
-                !in_conflict || keep { print }
-                END { if (!found) exit 2 }
-              ' "$path" > "$tmp"
-              mv "$tmp" "$path"
-              git add -- "$path"
-            elif [[ "$ours" -eq 1 ]]; then
-              echo "Delete/modify conflict; preserving fork file: $path"
-              git checkout --ours -- "$path"
-              git add -- "$path"
-            else
-              echo "Fork deleted conflicted path; preserving fork deletion: $path"
-              git rm -f --ignore-unmatch -- "$path"
-            fi
-          done < <(git diff --name-only --diff-filter=U -z)
-
-          unresolved="$(git diff --name-only --diff-filter=U)"
-          if [[ -n "$unresolved" ]]; then
-            echo "::error::Unresolved merge conflicts remain:"
-            printf '%s\n' "$unresolved"
+          git switch -c "$sync_branch"
+          # A conflict needs deliberate integration. Never choose a side automatically.
+          if ! git merge --no-commit --no-ff upstream/main; then
+            echo "::error::Upstream conflicts with the fork. Resolve it in a reviewed PR; main has not changed."
             exit 1
           fi
-
-          if [[ "$merge_status" -ne 0 ]] && ! git rev-parse -q --verify MERGE_HEAD >/dev/null; then
-            echo "::error::git merge failed without a resolvable merge state."
-            exit "$merge_status"
-          fi
-
-          git commit -m "Merge upstream miuuyy/codex-chatgpt-web main"
-          git push origin HEAD:refs/heads/main
-          echo "Merged upstream $upstream_sha."
+          # Workflow policy is owned by this fork, including the validation gates below.
+          git restore --source="$original_head" --staged --worktree -- .github
+          git commit -m "Merge upstream $upstream_sha"
+          echo "branch=$sync_branch" >> "$GITHUB_OUTPUT"
+          echo "sha=$upstream_sha" >> "$GITHUB_OUTPUT"
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+      - run: bun install --frozen-lockfile
+        if: steps.prepare.outputs.changed == 'true'
+      - run: bun install --frozen-lockfile
+        if: steps.prepare.outputs.changed == 'true'
+        working-directory: launcher
+      - name: Validate merged code before publishing
+        if: steps.prepare.outputs.changed == 'true'
+        run: bun run verify
+      - name: Open integration PR and run platform CI
+        if: steps.prepare.outputs.changed == 'true'
+        env:
+          SYNC_BRANCH: ${{ steps.prepare.outputs.branch }}
+          UPSTREAM_SHA: ${{ steps.prepare.outputs.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git push origin "HEAD:refs/heads/$SYNC_BRANCH"
+          printf 'Integrates upstream commit `%s` while preserving fork workflows.\n\nValidation: frozen dependency installs and `bun run verify` passed before this branch was pushed. Platform CI is dispatched explicitly because GITHUB_TOKEN-created pushes and PRs do not trigger it automatically.\n' "$UPSTREAM_SHA" > "$RUNNER_TEMP/upstream-pr.md"
+          gh pr create --base main --head "$SYNC_BRANCH" --title "Sync upstream ${UPSTREAM_SHA:0:12}" --body-file "$RUNNER_TEMP/upstream-pr.md"
+          gh workflow run ci.yml --ref "$SYNC_BRANCH"

@@ -22,13 +22,6 @@ export class LauncherRetainedConversationUnavailableError extends Error {
   }
 }
 
-export class LauncherAuthenticationRequiredError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "LauncherAuthenticationRequiredError";
-  }
-}
-
 export class LauncherManualTurnTimedOutError extends Error {
   constructor(message: string) {
     super(message);
@@ -394,7 +387,6 @@ export type LauncherTurnActivity =
       conversationKey?: string;
       connectorIdentity?: string;
       requireRetainedConversation?: boolean;
-      nativeTurnLineage?: { turnId: string; userItemId: string; historyPrefix: string };
     }
   | {
       phase: "heartbeat";
@@ -415,9 +407,6 @@ export type LauncherTurnActivity =
       message?: string;
       retain?: boolean;
       connectorBound?: boolean;
-      retryRetainedEdit?: boolean;
-      nativeTurnLineage?: { turnId: string; userItemId: string; historyPrefix: string };
-      firstWebMessage?: { identity: string; digest: string; contentSearchTurnKey?: string };
     };
 
 // Startup must outlast the launcher's ten-second idle bootstrap. This is not a model-turn budget.
@@ -664,7 +653,6 @@ export async function notifyLauncherTurn(
   cancelledByUser?: boolean;
   authenticationRequired?: boolean;
   trackUsage?: boolean;
-  editTarget?: { identity: string; digest: string; contentSearchTurnKey?: string };
 }> {
   const descriptor = readLauncherBrowserHostDescriptor(descriptorPath);
   const controller = new AbortController();
@@ -691,11 +679,6 @@ export async function notifyLauncherTurn(
           typeof body.error === "string" ? body.error : "The retained ChatGPT conversation is no longer available",
         );
       }
-      if (response.status === 401 && body.code === "authentication_required") {
-        throw new LauncherAuthenticationRequiredError(
-          typeof body.error === "string" ? body.error : "The ChatGPT session requires a fresh sign-in",
-        );
-      }
       const detail = typeof body.error === "string" ? body.error : "";
       throw new Error(`HTTP ${response.status}${detail ? `: ${detail}` : ""}`);
     }
@@ -710,36 +693,12 @@ export async function notifyLauncherTurn(
       if (typeof body.connectorBound !== "boolean") {
         throw new Error("Launcher browser control channel returned an invalid connector state");
       }
-      const editTarget = body.editTarget;
-      if (editTarget !== undefined && (!body.reused
-        || !activity.conversationKey || !activity.nativeTurnLineage
-        || !editTarget || typeof editTarget !== "object" || Array.isArray(editTarget)
-        || typeof (editTarget as Record<string, unknown>).identity !== "string"
-        || !/^group:user:[A-Za-z0-9:._-]{1,128}$/.test((editTarget as Record<string, unknown>).identity as string)
-        || typeof (editTarget as Record<string, unknown>).digest !== "string"
-        || !/^[a-f0-9]{64}$/.test((editTarget as Record<string, unknown>).digest as string)
-        || ((editTarget as Record<string, unknown>).contentSearchTurnKey !== undefined
-          && (typeof (editTarget as Record<string, unknown>).contentSearchTurnKey !== "string"
-            || !/^[A-Za-z0-9:._-]{1,256}$/.test((editTarget as Record<string, unknown>).contentSearchTurnKey as string))))) {
-        throw new Error("Launcher browser control channel returned an invalid edit target");
-      }
       return {
         surfaceId: body.surfaceId,
         reused: body.reused,
         connectorBound: body.connectorBound,
         trackUsage: body.trackUsage === true,
-        ...(editTarget ? { editTarget: editTarget as {
-          identity: string;
-          digest: string;
-          contentSearchTurnKey?: string;
-        } } : {}),
       };
-    }
-    if (activity.phase === "heartbeat") {
-      if (body.authenticationRequired !== undefined && typeof body.authenticationRequired !== "boolean") {
-        throw new Error("Launcher browser control channel returned an invalid authentication state");
-      }
-      return body.authenticationRequired === true ? { authenticationRequired: true } : {};
     }
     if (activity.phase === "end") {
       if (typeof body.cancelledByUser !== "boolean") {
@@ -758,8 +717,7 @@ export async function notifyLauncherTurn(
     if (signal?.aborted) throw new DOMException("Launcher browser acquisition cancelled", "AbortError");
     if (controller.signal.aborted) throw new Error(`Launcher browser control ${activity.phase} timed out after ${timeoutMs}ms`);
     if (error instanceof LauncherBrowserTurnCancelledError
-      || error instanceof LauncherRetainedConversationUnavailableError
-      || error instanceof LauncherAuthenticationRequiredError) throw error;
+      || error instanceof LauncherRetainedConversationUnavailableError) throw error;
     throw new Error(`Launcher browser control channel failed: ${error instanceof Error ? error.message : String(error)}`);
   } finally {
     clearTimeout(timer);

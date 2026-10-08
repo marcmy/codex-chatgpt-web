@@ -77,8 +77,7 @@ Setup options:
   --restart-service            Explicitly restart this project's daemon after an update
   --login                      Refresh the stored ChatGPT login even if one exists
   --auto-approve-tool-calls    Opt in to per-call browser clicks on "Allow once" prompts
-  --bigger-context             Enable experimental 3× logical context with adaptive 1/2/6-message transport
-  --even-bigger-context        Enable super-experimental 6× logical context (up to 8 messages)
+  --bigger-context             Enable experimental adaptive 1/2/6-message context
   --fresh-conversation         Start each automatic turn in a fresh browser chat
   --retained-conversation      Reuse the browser chat between turns (default)
   --saved-chats                Keep task conversations in ChatGPT history
@@ -320,15 +319,11 @@ async function setupCommand(args: string[]): Promise<void> {
   }
   if (freshConversation || retainedConversation) options.experimentalFreshConversationPerTurn = freshConversation;
   const biggerContext = takeFlag(args, "--bigger-context");
-  const evenBiggerContext = takeFlag(args, "--even-bigger-context");
   const standardContext = takeFlag(args, "--standard-context");
-  if ([biggerContext, evenBiggerContext, standardContext].filter(Boolean).length > 1) {
-    throw new Error("Choose at most one context mode: --bigger-context, --even-bigger-context, or --standard-context");
+  if (biggerContext && standardContext) {
+    throw new Error("Choose at most one context mode: --bigger-context or --standard-context");
   }
-  if (biggerContext || evenBiggerContext || standardContext) {
-    options.experimentalBiggerContext = biggerContext || evenBiggerContext;
-    options.experimentalEvenBiggerContext = evenBiggerContext;
-  }
+  if (biggerContext || standardContext) options.experimentalBiggerContext = biggerContext;
   if (skillAttachments || inlineSkills) options.experimentalSkillAttachments = skillAttachments;
   const zeroRiskPro = takeFlag(args, "--zero-risk-pro");
   const zeroRiskDefault = takeFlag(args, "--zero-risk-default");

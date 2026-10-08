@@ -80,7 +80,6 @@ export const CHATGPT_WEB_PRO_MODEL_COMPOSER_CHAR_LIMIT = 1_635_000;
  */
 export const CHATGPT_WEB_LUNA_CONTEXT_WINDOW = 1_050_000;
 export const CHATGPT_WEB_BIGGER_CONTEXT_MULTIPLIER = 3;
-export const CHATGPT_WEB_EVEN_BIGGER_CONTEXT_MULTIPLIER = 6;
 
 export interface ChatGptWebContextLimits {
   contextWindow: number;
@@ -162,16 +161,10 @@ export function resolveChatGptWebContextLimits(
   } else {
     throw new Error(`ChatGPT Plus context limit is not defined for unavailable effort: ${effort}`);
   }
-  if (capabilities.experimentalEvenBiggerContext && !capabilities.experimentalBiggerContext) {
-    throw new Error("Even Bigger Context requires Bigger Context");
-  }
   if (!capabilities.experimentalBiggerContext) return limits;
-  const multiplier = capabilities.experimentalEvenBiggerContext
-    ? CHATGPT_WEB_EVEN_BIGGER_CONTEXT_MULTIPLIER
-    : CHATGPT_WEB_BIGGER_CONTEXT_MULTIPLIER;
   return contextLimits(
-    limits.contextWindow * multiplier,
-    limits.autoCompactTokenLimit * multiplier,
+    limits.contextWindow * CHATGPT_WEB_BIGGER_CONTEXT_MULTIPLIER,
+    limits.autoCompactTokenLimit * CHATGPT_WEB_BIGGER_CONTEXT_MULTIPLIER,
   );
 }
 
@@ -222,7 +215,7 @@ export function resolveChatGptWebMessageTokenBudget(
   imageTokens = 0,
 ): number {
   const { contextWindow } = resolveChatGptWebContextLimits(
-    backendModel, effort, { ...capabilities, experimentalBiggerContext: false, experimentalEvenBiggerContext: false },
+    backendModel, effort, { ...capabilities, experimentalBiggerContext: false },
   );
   const { browserMessageTokenLimit } = resolveChatGptWebTransportLimits(backendModel, effort, capabilities);
   return Math.max(0, Math.min(
@@ -284,7 +277,6 @@ export interface ChatGptWebAccountCapabilities {
   extraHighAvailable?: boolean;
   proAvailable: boolean;
   experimentalBiggerContext?: boolean;
-  experimentalEvenBiggerContext?: boolean;
   browserInteractionMode?: "automatic" | "manual";
   zeroRiskProEnabled?: boolean;
 }
@@ -521,9 +513,6 @@ export function requireChatGptWebModelRoute(
   capabilities: ChatGptWebAccountCapabilities,
   reasoning?: string,
 ): ChatGptWebModelRoute {
-  if (capabilities.experimentalEvenBiggerContext && !capabilities.experimentalBiggerContext) {
-    throw new Error("Even Bigger Context requires Bigger Context");
-  }
   if (capabilities.browserInteractionMode === "manual" && capabilities.experimentalBiggerContext) {
     throw new Error("Zero Risk does not support Bigger Context");
   }

@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { SUMMARY_PREFIX } from "../../responses/compaction";
 import type { CodexParsedRequest } from "../../types";
-import { chatGptTurnUserRevisionHistory, extractChatGptTurnIdentity } from "./environment";
+import { extractChatGptTurnIdentity } from "./environment";
 
 function messageText(item: Record<string, unknown>): string | undefined {
   const content = item.content;
@@ -55,27 +55,5 @@ export function retainedConversationResumeRequest(
       ...parsed.context,
       messages: parsed.context.messages.slice(lastAssistant + 1),
     },
-  };
-}
-
-/** The native user-item lineage distinguishes a new turn from an edit of the last turn. */
-export function retainedConversationTurnLineage(parsed: CodexParsedRequest): {
-  turnId: string;
-  userItemId: string;
-  historyPrefix: string;
-} | undefined {
-  const turnId = extractChatGptTurnIdentity(parsed).turnId;
-  if (!turnId) return undefined;
-  const revisions = chatGptTurnUserRevisionHistory(parsed);
-  const currentIndex = revisions.findIndex(revision => revision.turnId === turnId && revision.itemId);
-  if (currentIndex < 0) return undefined;
-  const prior = revisions.slice(0, currentIndex);
-  if (prior.some(revision => !revision.itemId || !revision.turnId)) return undefined;
-  return {
-    turnId,
-    userItemId: revisions[currentIndex]!.itemId!,
-    historyPrefix: createHash("sha256")
-      .update(JSON.stringify(prior.map(revision => [revision.turnId, revision.itemId])))
-      .digest("hex"),
   };
 }

@@ -22,3 +22,4 @@ launcher/.launcher-test-tmp
 .verify-artifacts/
 .verify-bun/
 .codex-remote-attachments/
+.worktrees/

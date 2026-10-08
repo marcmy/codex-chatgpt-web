@@ -95,10 +95,6 @@ test("turns observed inline file path formats into Markdown links", () => {
       target: "C:/Users/Dev/Documents/Codex/path-format-probe/zeta-result.pdf",
     },
     {
-      path: String.raw`C:\Users\Dev\Program Files\My Project\release build.exe`,
-      target: "C:/Users/Dev/Program Files/My Project/release build.exe",
-    },
-    {
       path: String.raw`C:\Codex_Project_Unity\_Editor\file.cs`,
       target: "C:/Codex_Project_Unity/_Editor/file.cs",
     },
@@ -124,7 +120,7 @@ test("turns observed inline file path formats into Markdown links", () => {
     const markdown = chatGptHtmlToMarkdown(`<p>Created <code>${path}</code>.</p>`);
     expect(markdown).toContain(`](<${target}>)`);
     expect(Bun.markdown.html(markdown))
-      .toBe(`<p>Created <a href="${target.replaceAll(" ", "%20")}">${path}</a>.</p>\n`);
+      .toBe(`<p>Created <a href="${target}">${path}</a>.</p>\n`);
   }
 });
 
@@ -151,71 +147,6 @@ test("does not nest a generated file link inside an existing link", () => {
   expect(chatGptHtmlToMarkdown(
     '<p>Open <a href="https://example.com/source"><code>src/example.ts</code></a>.</p>',
   )).toBe("Open [`src/example.ts`](https://example.com/source).");
-});
-
-test("normalizes an existing Markdown link to an absolute Windows file", () => {
-  const windowsPath = "C:\\Users\\Dev\\Documents\\Codex\\sample-project\\_test-bundles\\release\\INSTALL_TEST.cmd";
-  const normalizedPath = windowsPath.replaceAll("\\", "/");
-  const markdown = chatGptHtmlToMarkdown(
-    `<p>Open <a href="${windowsPath}">INSTALL_TEST.cmd</a>.</p>`,
-  );
-  expect(markdown).toBe(`Open [INSTALL\\_TEST.cmd](<${normalizedPath}>).`);
-  expect(Bun.markdown.html(markdown)).toContain(`href="${normalizedPath}"`);
-});
-
-test("does not copy an HTML title into a normalized Windows file link", () => {
-  const markdown = chatGptHtmlToMarkdown(
-    '<a href="C:\\Users\\Dev\\file.txt" title="unsafe\\&quot; tail">file.txt</a>',
-  );
-  expect(markdown).toBe("[file.txt](<C:/Users/Dev/file.txt>)");
-});
-
-test("normalizes the percent-encoded Windows separators emitted by Markdown rendering", () => {
-  const source = "[file.txt](<C:\\Users\\Dev\\Documents\\file.txt>)";
-  expect(chatGptHtmlToMarkdown(Bun.markdown.html(source)))
-    .toBe("[file.txt](<C:/Users/Dev/Documents/file.txt>)");
-});
-
-test("preserves modern ChatGPT plain-text panes as fenced code, including Windows paths and blank lines", () => {
-  const first = String.raw`C:\Program Files\SVP 4\mpv64\python.exe`;
-  const second = String.raw`C:\Users\marcm\AppData\Local\Python\pythoncore-3.13-64\python.exe`;
-  const source = `${first}\nPython 3.12.9\n\n${second}\nPython 3.13.14`;
-  const html = [
-    "<p>I verified both executables locally:</p>",
-    '<div class="CodeBlock"><div data-markdown-copy="code-block">',
-    '<div class="StickyActionBar"><svg></svg><div>Plain text</div><button>Copy</button></div>',
-    `<div class="chatgpt-code-scrollport"><code class="whitespace-pre block"><span>${source}</span></code></div>`,
-    "</div></div>",
-  ].join("");
-
-  expect(chatGptHtmlToMarkdown(html)).toBe([
-    "I verified both executables locally:",
-    "",
-    "```",
-    source,
-    "```",
-  ].join("\n"));
-});
-
-test("keeps a one-line code-pane directory as code and retains a PowerShell pane's language", () => {
-  const directory = String.raw`C:\Users\marcm\AppData\Local\Python\pythoncore-3.13-64`;
-  const plain = `<div data-markdown-copy="code-block"><div><div>Plain text</div></div><div><code>${directory}</code></div></div>`;
-  const powershell = '<div data-markdown-copy="code-block"><div><div>powershell</div></div><div><pre><code>python --version</code></pre></div></div>';
-
-  expect(chatGptHtmlToMarkdown(`${plain}${powershell}`)).toBe([
-    "```",
-    directory,
-    "```",
-    "",
-    "```powershell",
-    "python --version",
-    "```",
-  ].join("\n"));
-});
-
-test("modern code panes lengthen fences around backticks in their source", () => {
-  const html = '<div data-markdown-copy="code-block"><div><div>Plain text</div></div><div><code>```not a fence\nnext line</code></div></div>';
-  expect(chatGptHtmlToMarkdown(html)).toBe("````\n```not a fence\nnext line\n````");
 });
 
 test("converts Obsidian aliases and headings but preserves code examples and embeds", () => {
