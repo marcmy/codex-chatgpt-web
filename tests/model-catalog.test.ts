@@ -14,6 +14,14 @@ import {
 } from "../src/chatgpt-web-models";
 import { augmentNativeModelCatalog, buildChatGptWebModel } from "../src/model-catalog";
 
+function nativeRows(models: Array<Record<string, unknown>>) {
+  return models.filter(model => !String(model.slug).startsWith("chatgpt-web/"));
+}
+function webRows(models: Array<Record<string, unknown>>) {
+  const order = [...CHATGPT_WEB_MODEL_ROUTES, ...CHATGPT_WEB_LEGACY_MODEL_ROUTES].map(route => route.slug);
+  return models.filter(model => String(model.slug).startsWith("chatgpt-web/"))
+    .toSorted((a, b) => order.indexOf(String(a.slug)) - order.indexOf(String(b.slug)));
+}
 function source(): Record<string, unknown> {
   return {
     models: [
@@ -49,6 +57,29 @@ function source(): Record<string, unknown> {
 }
 
 describe("native /models augmentation", () => {
+  test("interleaves the requested nine rows, preserves native contracts and hides separate Instant choices", () => {
+    const template = (source().models as Array<Record<string, unknown>>)[1]!;
+    const slugs = ["gpt-6.1-sol", "gpt-6-astra", "gpt-6-sol", "gpt-6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"];
+    const native = slugs.map((slug, index) => ({ ...structuredClone(template), slug, priority: index + 1 }));
+    const snapshot = structuredClone(native);
+    const models = augmentNativeModelCatalog({ models: native }, { ...defaultConfig("full"), subagentProtocol: "native" }).models as Array<Record<string, unknown>>;
+    const visible = models.filter(model => model.visibility === "list").toSorted((a, b) => Number(a.priority) - Number(b.priority));
+    expect(visible.map(model => model.slug)).toEqual([
+      "gpt-6.1-sol", "chatgpt-web/gpt-6-sol", "gpt-6-astra", "gpt-6-sol", "gpt-6-luna",
+      "chatgpt-web/gpt-5.6-sol", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna",
+    ]);
+    expect(visible[1]!.display_name).toBe("GPT-6 (Web)");
+    expect(nativeRows(models)).toEqual(snapshot);
+    expect(native).toEqual(snapshot);
+    for (const family of ["6", "5.6"]) {
+      expect(models.find(model => model.slug === `chatgpt-web/gpt-${family}-sol-instant`)?.visibility).toBe("hide");
+      expect(models.find(model => model.slug === `chatgpt-web/gpt-${family}-sol`)).toMatchObject({
+        context_window: 41_000, auto_compact_token_limit: 32_000,
+        supported_reasoning_levels: [{ effort: "low", description: expect.stringContaining("Instant") }, { effort: "medium" }, { effort: "high" }],
+      });
+    }
+  });
+
   test("preserves native models, groups supported efforts, and retains hidden legacy metadata", () => {
     const native = source();
     const nativeSnapshot = structuredClone(native);
@@ -61,17 +92,17 @@ describe("native /models augmentation", () => {
     const originalModels = nativeSnapshot.models as Array<Record<string, unknown>>;
 
     expect(native).toEqual(nativeSnapshot);
-    expect(models.slice(0, 3)).toEqual(originalModels);
-    const web = models.slice(3).filter(model => model.visibility === "list");
-    const legacy = models.slice(3).filter(model => model.visibility === "hide");
-    expect(legacy.map(model => model.slug)).toEqual(CHATGPT_WEB_LEGACY_MODEL_ROUTES.map(route => route.slug));
+    expect(nativeRows(models)).toEqual(originalModels);
+    const web = webRows(models).filter(model => model.visibility === "list");
+    const legacy = webRows(models).filter(model => model.visibility === "hide");
+    expect(legacy.map(model => model.slug)).toEqual(["chatgpt-web/gpt-6-sol-instant", "chatgpt-web/gpt-5.6-sol-instant", ...CHATGPT_WEB_LEGACY_MODEL_ROUTES.map(route => route.slug)]);
     expect(legacy.map(model => [model.context_window, model.auto_compact_token_limit])).toEqual([
-      [111_193, 95_000], [111_193, 95_000], [111_193, 95_000], [111_193, 95_000], [112_193, 95_000],
+      [111_193, 95_000], [111_193, 95_000], [111_193, 95_000], [111_193, 95_000], [111_193, 95_000], [111_193, 95_000], [112_193, 95_000],
     ]);
-    expect(web.map(model => model.slug)).toEqual(CHATGPT_WEB_MODEL_ROUTES.map(route => route.slug));
-    expect(web.map(model => model.display_name)).toEqual(CHATGPT_WEB_MODEL_ROUTES.map(route => route.displayName));
+    expect(web.map(model => model.slug)).toEqual(CHATGPT_WEB_MODEL_ROUTES.filter(route => !route.legacy).map(route => route.slug));
+    expect(web.map(model => model.display_name)).toEqual(CHATGPT_WEB_MODEL_ROUTES.filter(route => !route.legacy).map(route => route.displayName));
     for (const [index, model] of web.entries()) {
-      const route = CHATGPT_WEB_MODEL_ROUTES[index]!;
+      const route = CHATGPT_WEB_MODEL_ROUTES.find(route => route.slug === model.slug)!;
       const limits = resolveChatGptWebContextLimits(route.backendModel, route.adapterEffort, config);
       expect(model).toMatchObject({
         slug: route.slug,
@@ -94,9 +125,9 @@ describe("native /models augmentation", () => {
         .toEqual([...chatGptWebRouteEfforts(route, config)]);
     }
     expect((web[1]!.supported_reasoning_levels as Array<{ effort: string }>).map(level => level.effort))
-      .toEqual(["medium", "high", "xhigh"]);
+      .toEqual(["low", "medium", "high", "xhigh"]);
     expect(() => buildChatGptWebModel(originalModels[1], {
-      ...CHATGPT_WEB_MODEL_ROUTES[1]!, supportedCodexEfforts: ["low", "medium"],
+      ...CHATGPT_WEB_MODEL_ROUTES[1]!, useMinimumContextBudget: false, supportedCodexEfforts: ["low", "medium"],
     }, { ...config, proAvailable: false })).toThrow("Cannot group different context budgets");
   });
 
@@ -118,17 +149,18 @@ describe("native /models augmentation", () => {
         experimentalBiggerContext: true,
       };
       const models = augmentNativeModelCatalog(source(), config).models as Array<Record<string, unknown>>;
-      for (const [suffix, window, compact] of [
-        ["sol-instant", proAvailable ? 111_193 : 41_000, proAvailable ? 95_000 : 32_000],
-        ["sol", proAvailable ? 111_193 : 90_000, proAvailable ? 95_000 : 80_000],
-      ] as const) {
+      for (const suffix of ["sol-instant", "sol"] as const) {
         const six = models.find(model => model.slug === `chatgpt-web/gpt-6-${suffix}`)!;
-        const expanded = proAvailable && suffix === "sol";
-        expect(six).toMatchObject({ context_window: expanded ? 240_000 : window,
-          max_context_window: expanded ? 240_000 : window, auto_compact_token_limit: expanded ? 220_000 : compact });
+        const commonWindow = proAvailable ? 111_193 : 41_000;
+        const commonCompact = proAvailable ? 95_000 : 32_000;
+        expect(six).toMatchObject({ context_window: commonWindow,
+          max_context_window: commonWindow, auto_compact_token_limit: commonCompact });
+        expect(resolveChatGptWebContextLimits("gpt-5.6-sol", "high", config, "6")).toMatchObject({
+          contextWindow: proAvailable ? 240_000 : 90_000, autoCompactTokenLimit: proAvailable ? 220_000 : 80_000,
+        });
         expect(six.description).toContain("standard context");
         expect(models.find(model => model.slug === `chatgpt-web/gpt-5.6-${suffix}`)).toMatchObject({
-          context_window: window * 3, auto_compact_token_limit: compact * 3,
+          context_window: commonWindow * 3, auto_compact_token_limit: commonCompact * 3,
         });
       }
       if (proAvailable) {
@@ -161,9 +193,9 @@ describe("native /models augmentation", () => {
       .map(model => model.slug);
 
     expect(spawnOverrides).toEqual([
+      "chatgpt-web/gpt-5.6-sol",
       "gpt-5.6-sol",
       "chatgpt-web/gpt-6-sol",
-      "chatgpt-web/gpt-5.6-sol",
       "chatgpt-web/gpt-5.6-pro",
       "chatgpt-web/gpt-6-pro",
     ]);
@@ -190,8 +222,8 @@ describe("native /models augmentation", () => {
     config.proAvailable = true;
 
     const models = augmentNativeModelCatalog(native, config).models as Array<Record<string, unknown>>;
-    expect(models.slice(0, nativeModels.length)).toEqual(nativeModels);
-    expect(models.slice(nativeModels.length).every(model => model.multi_agent_version === "v2")).toBe(true);
+    expect(nativeRows(models)).toEqual(nativeModels);
+    expect(webRows(models).every(model => model.multi_agent_version === "v2")).toBe(true);
     const spawnOverrides = models
       .filter(model => model.supported_in_api === true && model.visibility === "list")
       .filter(model => model.multi_agent_version === "v2")
@@ -216,8 +248,8 @@ describe("native /models augmentation", () => {
     const models = second.models as Array<Record<string, unknown>>;
     const web = models.filter(model => String(model.slug).startsWith("chatgpt-web/"));
     expect(web.map(model => model.slug)).toEqual([
-      "chatgpt-web/gpt-6-sol-instant", "chatgpt-web/gpt-6-sol",
-      "chatgpt-web/gpt-5.6-sol-instant", "chatgpt-web/gpt-5.6-sol",
+      "chatgpt-web/gpt-5.6-sol", "chatgpt-web/gpt-6-sol-instant",
+      "chatgpt-web/gpt-6-sol", "chatgpt-web/gpt-5.6-sol-instant",
       "chatgpt-web/light", "chatgpt-web/medium", "chatgpt-web/high", "chatgpt-web/extra-high",
     ]);
     expect(web.every(model => model.tool_mode === null)).toBe(true);
@@ -229,9 +261,9 @@ describe("native /models augmentation", () => {
       autoCompactTokenLimit: model.auto_compact_token_limit,
     }))).toEqual([
       { contextWindow: 41_000, effectiveContextWindowPercent: 78, autoCompactTokenLimit: 32_000 },
-      { contextWindow: 90_000, effectiveContextWindowPercent: 89, autoCompactTokenLimit: 80_000 },
       { contextWindow: 41_000, effectiveContextWindowPercent: 78, autoCompactTokenLimit: 32_000 },
-      { contextWindow: 90_000, effectiveContextWindowPercent: 89, autoCompactTokenLimit: 80_000 },
+      { contextWindow: 41_000, effectiveContextWindowPercent: 78, autoCompactTokenLimit: 32_000 },
+      { contextWindow: 41_000, effectiveContextWindowPercent: 78, autoCompactTokenLimit: 32_000 },
       { contextWindow: 41_000, effectiveContextWindowPercent: 78, autoCompactTokenLimit: 32_000 },
       { contextWindow: 90_000, effectiveContextWindowPercent: 89, autoCompactTokenLimit: 80_000 },
       { contextWindow: 90_000, effectiveContextWindowPercent: 89, autoCompactTokenLimit: 80_000 },
@@ -305,19 +337,20 @@ describe("native /models augmentation", () => {
     const originalModels = nativeSnapshot.models as Array<Record<string, unknown>>;
 
     expect(native).toEqual(nativeSnapshot);
-    expect(models.slice(0, 3)).toEqual([
+    expect(nativeRows(models)).toEqual([
       { ...originalModels[0], max_context_window: 371_851 },
       { ...originalModels[1], max_context_window: 371_851 },
       { ...originalModels[2], max_context_window: 371_851 },
     ]);
-    expect(models[1]!.context_window).toBe(300_000);
-    expect(models[1]!.auto_compact_token_limit).toBe(270_000);
-    for (const [index, model] of models.slice(3).entries()) {
-      const route = availableChatGptWebModelRoutes(config, true)[index]!;
+    expect(nativeRows(models)[1]!.context_window).toBe(300_000);
+    expect(nativeRows(models)[1]!.auto_compact_token_limit).toBe(270_000);
+    for (const [index, model] of webRows(models).entries()) {
+      const route = availableChatGptWebModelRoutes(config, true).find(route => route.slug === model.slug)!;
       const limits = resolveChatGptWebContextLimits(
         route.backendModel,
-        route.adapterEffort,
+        route.useMinimumContextBudget ? "low" : route.adapterEffort,
         config,
+        route.interactionMode === "automatic" ? route.modelFamily : undefined,
       );
       expect(model.context_window).toBe(limits.contextWindow);
       expect(model.max_context_window).toBe(limits.contextWindow);
@@ -334,7 +367,7 @@ describe("native /models augmentation", () => {
       contextWindow: 371_851,
     });
 
-    const overridden = (result.models as Array<Record<string, unknown>>)[1]!;
+    const overridden = nativeRows(result.models as Array<Record<string, unknown>>)[1]!;
     expect(overridden.context_window).toBe(300_000);
     expect(overridden.max_context_window).toBe(1_000_000);
     expect(overridden.auto_compact_token_limit).toBe(270_000);
@@ -373,7 +406,7 @@ describe("native /models augmentation", () => {
 
     expect(web).toHaveLength(7);
     expect(web.every(model => model.supported_in_api === true)).toBe(true);
-    expect((result.models as Array<Record<string, unknown>>).slice(0, models.length))
+    expect(nativeRows(result.models as Array<Record<string, unknown>>))
       .toEqual(models);
   });
 

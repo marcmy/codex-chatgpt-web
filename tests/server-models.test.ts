@@ -71,11 +71,11 @@ test("proxies official /models auth and query, then appends grouped and legacy W
     }>;
   };
   expect(body.models.map(model => model.slug)).toEqual([
+    "chatgpt-web/gpt-5.6-sol",
     "gpt-5.6-sol",
     "chatgpt-web/gpt-6-sol-instant",
     "chatgpt-web/gpt-6-sol",
     "chatgpt-web/gpt-5.6-sol-instant",
-    "chatgpt-web/gpt-5.6-sol",
     "chatgpt-web/gpt-5.6-pro",
     "chatgpt-web/gpt-6-pro",
     "chatgpt-web/light",
@@ -84,12 +84,12 @@ test("proxies official /models auth and query, then appends grouped and legacy W
     "chatgpt-web/extra-high",
     "chatgpt-web/pro",
   ]);
-  expect(body.models[0]!.context_window).toBe(300_000);
-  expect(body.models[0]!.max_context_window).toBe(371_851);
-  expect(body.models[0]!.auto_compact_token_limit).toBe(270_000);
-  expect(body.models[0]!.multi_agent_version).toBe("v2");
-  for (const [index, model] of body.models.slice(1).entries()) {
-    const route = availableChatGptWebModelRoutes(config, true)[index]!;
+  expect(body.models.find(model => model.slug === "gpt-5.6-sol")!.context_window).toBe(300_000);
+  expect(body.models.find(model => model.slug === "gpt-5.6-sol")!.max_context_window).toBe(371_851);
+  expect(body.models.find(model => model.slug === "gpt-5.6-sol")!.auto_compact_token_limit).toBe(270_000);
+  expect(body.models.find(model => model.slug === "gpt-5.6-sol")!.multi_agent_version).toBe("v2");
+  for (const [index, model] of body.models.filter(model => model.slug.startsWith("chatgpt-web/")).entries()) {
+    const route = availableChatGptWebModelRoutes(config, true).find(route => route.slug === model.slug)!;
     const limits = resolveChatGptWebContextLimits(route.backendModel, route.adapterEffort, config);
     expect(model.context_window).toBe(limits.contextWindow);
     expect(model.max_context_window).toBe(limits.contextWindow);
