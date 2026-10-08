@@ -21,6 +21,9 @@ test.skipIf(!process.env.LAUNCHER_TEST_ELECTRON)("finishing another Electron tab
     const page = app.context().pages().find(page => page.url().endsWith("#first"))!;
     expect(page).toBeDefined();
     const dimensions = () => page.evaluate(() => [innerWidth, innerHeight]);
+    // Flush the initial renderer resize before testing later background/foreground transitions.
+    await app.evaluate(() => (globalThis as any).viewportFixture.selectTab("first"));
+    await page.waitForTimeout(200);
     // Include the launcher's user zoom: native and emulated dimensions must agree in CSS pixels.
     for (const zoom of [1, 1.25]) {
       await app.evaluate((_, zoom) => {
@@ -31,7 +34,10 @@ test.skipIf(!process.env.LAUNCHER_TEST_ELECTRON)("finishing another Electron tab
       }, zoom);
       await page.waitForTimeout(200);
       const before = await dimensions();
-      await page.getByRole("button", { name: "Models", exact: true }).click();
+      // The inactive view is offscreen: native pointer input cannot reach it.
+      // Open its synthetic menu directly, then exercise the real Electron viewport transitions.
+      await page.getByRole("button", { name: "Models", exact: true }).dispatchEvent("click");
+      expect(await page.getByRole("menu").isVisible()).toBe(true);
       await app.evaluate(() => {
         const host = (globalThis as any).viewportFixture;
         const second = host.turnTabs.get("second");
@@ -43,7 +49,7 @@ test.skipIf(!process.env.LAUNCHER_TEST_ELECTRON)("finishing another Electron tab
       await page.waitForTimeout(200);
       expect(await dimensions()).toEqual(before);
       expect(await page.getByRole("menu").isVisible()).toBe(true);
-      await page.getByRole("menuitemradio", { name: "GPT-5.6 Sol" }).click({ timeout: 1_000 });
+      await page.getByRole("menuitemradio", { name: "GPT-5.6 Sol" }).dispatchEvent("click");
       expect(await page.getByRole("menuitemradio").getAttribute("aria-checked")).toBe("true");
       for (const show of [false, true]) {
         await app.evaluate((_, show) => {
