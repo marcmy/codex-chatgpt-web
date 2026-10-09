@@ -8,6 +8,10 @@ updates:
     cooldown:
       default-days: 7
     open-pull-requests-limit: 5
+    # @types/bun is pinned deliberately to packageManager/engines.bun.
+    # Only update it as part of a coordinated Bun runtime upgrade.
+    ignore:
+      - dependency-name: "@types/bun"
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
