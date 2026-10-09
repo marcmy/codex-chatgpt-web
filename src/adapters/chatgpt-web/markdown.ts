@@ -1,6 +1,7 @@
 import TurndownService from "turndown";
 import { gfm } from "turndown-plugin-gfm";
 import { createDocument } from "@mixmark-io/domino";
+import { createHash } from "node:crypto";
 
 const turndown = new TurndownService({
   headingStyle: "atx",
@@ -212,7 +213,7 @@ interface CommittedChatGptMarkdownSegment {
 
 export class ChatGptMarkdownConsistencyError extends Error {
   constructor(message: string, readonly diagnostic?: {
-    reason: "text_changed" | "link_target_changed" | "block_order_changed" | "source_range_overlap";
+    reason: "text_changed" | "link_target_changed" | "block_order_changed" | "source_range_overlap" | "unaligned_block";
     observedStart?: number;
     observedEnd?: number;
     committedStart?: number;
@@ -223,6 +224,10 @@ export class ChatGptMarkdownConsistencyError extends Error {
     committedTag?: string;
     observedIndex: number;
     committedIndex: number;
+    committedCount?: number;
+    pendingCount?: number;
+    observedCount?: number;
+    blocks?: { collection: "committed" | "pending" | "observed"; index: number; keyHash: string; textHash: string; textChars: number; tag?: string; sourceStart?: number; sourceEnd?: number }[];
   }) {
     super(message);
     this.name = "ChatGptMarkdownConsistencyError";
@@ -394,6 +399,31 @@ export class ChatGptMarkdownBuffer {
       if (!followsVisibleCommittedTail && !sawPending && !this.matchesLatestPending(segment)) {
         return new ChatGptMarkdownConsistencyError(
           "ChatGPT final DOM could not be aligned with text already streamed to Codex",
+          {
+            reason: "unaligned_block",
+            observedIndex,
+            committedIndex: highestCommittedIndex,
+            observedTextChars: segment.text.length,
+            committedTextChars: this.committed.at(-1)?.text.length ?? 0,
+            observedTag: segment.tag,
+            observedStart: segment.sourceStart,
+            observedEnd: segment.sourceEnd,
+            committedCount: this.committed.length,
+            pendingCount: this.latest.length,
+            observedCount: segments.length,
+            blocks: ([
+              ["committed", this.committed], ["pending", this.latest], ["observed", segments],
+            ] as const).flatMap(([collection, blocks]) => {
+              const start = collection === "observed" ? Math.max(0, observedIndex - 3) : Math.max(0, blocks.length - 6);
+              return blocks.slice(start, start + 6).map((block, index) => ({
+                collection, index: start + index,
+                keyHash: createHash("sha256").update(block.key).digest("hex"),
+                textHash: createHash("sha256").update(block.text).digest("hex"),
+                textChars: block.text.length,
+                tag: block.tag?.slice(0, 24), sourceStart: block.sourceStart, sourceEnd: block.sourceEnd,
+              }));
+            }),
+          },
         );
       }
       sawPending = true;
