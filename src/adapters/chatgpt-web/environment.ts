@@ -17,14 +17,6 @@ export interface ChatGptTurnEnvironment {
   tools: CodexTool[];
 }
 
-/** A native environment snapshot may omit network policy; only the rollout can supply it. */
-export interface ChatGptTurnEnvironmentClaim extends Omit<ChatGptTurnEnvironment, "sandboxPolicy"> {
-  sandboxPolicy:
-    | { type: "dangerFullAccess" }
-    | { type: "readOnly"; networkAccess?: boolean }
-    | { type: "workspaceWrite"; writableRoots: string[]; networkAccess?: boolean };
-}
-
 export interface ChatGptTurnIdentity {
   threadId?: string;
   turnId?: string;
@@ -328,8 +320,24 @@ export function isChatGptCompactionContinuation(parsed: CodexParsedRequest): boo
     && isAcceptedCompactionContinuation(parsed, identity, revision);
 }
 
+export interface ChatGptEnvironmentClaim {
+  environment: ChatGptTurnEnvironment;
+  /**
+   * Codex's permission-profile envelope states filesystem access only; the network policy lives
+   * in the native turn context. Only the legacy sandbox_mode envelope carried a network statement.
+   */
+  statesNetworkAccess: boolean;
+}
+
+function environmentClaim(parsed: CodexParsedRequest, text: string): ChatGptEnvironmentClaim {
+  return {
+    environment: parseChatGptEnvironmentText(parsed, text),
+    statesNetworkAccess: /<network_access\b/i.test(text) || /network access is /i.test(text),
+  };
+}
+
 /** Parse a claim only: the caller must compare it with this turn's native rollout authority. */
-export function extractChatGptContinuationEnvironmentClaim(parsed: CodexParsedRequest): ChatGptTurnEnvironmentClaim {
+export function extractChatGptContinuationEnvironmentClaim(parsed: CodexParsedRequest): ChatGptEnvironmentClaim {
   const turnId = extractChatGptTurnIdentity(parsed).turnId;
   const body = record(parsed._rawBody);
   const updates = (Array.isArray(body?.input) ? body.input : []).flatMap(value => {
@@ -347,18 +355,7 @@ export function extractChatGptContinuationEnvironmentClaim(parsed: CodexParsedRe
     });
   });
   if (updates.length !== 1) throw new Error("Compaction continuation requires one current native environment claim");
-  return parseChatGptEnvironmentClaim(parsed, updates[0]!);
-}
-
-function parseChatGptEnvironmentClaim(parsed: CodexParsedRequest, text: string): ChatGptTurnEnvironmentClaim {
-  const environment = parseChatGptEnvironmentText(parsed, text);
-  if (environment.sandboxPolicy.type !== "dangerFullAccess"
-    && !/<network_access\b|network access is (?:enabled|disabled|restricted)\b/i.test(text)) {
-    // Current desktop filesystem snapshots do not assert that network access is disabled.
-    // This remains a claim: the thread store must authenticate the current native rollout.
-    return { ...environment, sandboxPolicy: { ...environment.sandboxPolicy, networkAccess: undefined } };
-  }
-  return environment;
+  return environmentClaim(parsed, updates[0]!);
 }
 
 /**
@@ -366,7 +363,7 @@ function parseChatGptEnvironmentClaim(parsed: CodexParsedRequest, text: string):
  * Git workspace metadata need not list every native filesystem root. Return that earlier claim
  * only for a same-turn pair; the store must compare it with the current canonical rollout.
  */
-export function extractChatGptSteeringEnvironmentClaim(parsed: CodexParsedRequest): ChatGptTurnEnvironmentClaim | undefined {
+export function extractChatGptSteeringEnvironmentClaim(parsed: CodexParsedRequest): ChatGptEnvironmentClaim | undefined {
   const turnId = extractChatGptTurnIdentity(parsed).turnId;
   if (!turnId) return undefined;
   const body = record(parsed._rawBody);
@@ -395,7 +392,7 @@ export function extractChatGptSteeringEnvironmentClaim(parsed: CodexParsedReques
     const instruction = record(input[index]);
     if (typeof instruction?.id !== "string" || !instruction.id) continue;
     const text = environmentBeforeUser(input, index, turnId, metadata);
-    if (text) return parseChatGptEnvironmentClaim(parsed, text);
+    if (text) return environmentClaim(parsed, text);
   }
   return undefined;
 }
@@ -851,6 +848,10 @@ function matchesPath(root: string, path: string): boolean {
 
 export function extractChatGptTurnEnvironment(parsed: CodexParsedRequest): ChatGptTurnEnvironment {
   return parseChatGptEnvironmentText(parsed, trustedEnvironmentText(parsed));
+}
+
+export function extractChatGptTurnEnvironmentClaim(parsed: CodexParsedRequest): ChatGptEnvironmentClaim {
+  return environmentClaim(parsed, trustedEnvironmentText(parsed));
 }
 
 function parseChatGptEnvironmentText(parsed: CodexParsedRequest, text: string): ChatGptTurnEnvironment {

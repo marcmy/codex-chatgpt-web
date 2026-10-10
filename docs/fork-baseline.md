@@ -77,3 +77,25 @@ submission settles.
 A live browser fixture reproduced the corruption and confirmed that the corrected
 request is stored unchanged with the connector selected. This establishes text
 integrity for that fixture; it does not establish GPT-6 Plus retention at 240k.
+
+## Upstream 6.1.7 sync
+
+Fork 6.1.10 merges upstream tag `v6.1.7` at
+`f9ad4ae83a579287105ad822dd0c3e0029b04ef6`. It includes the final Markdown
+alignment fixes, consistent answer-content observation, failed-tab retention,
+launcher recovery changes and experimental Luna/Think Bigger Context support.
+
+The grouped reasoning rows and GPT-6 Plus override remain: both GPT-6 and GPT-5.6
+use a 270,000-token window with compaction at 240,000 on Plus. GPT-6 on Pro retains
+upstream's 240,000 / 220,000 limits. Settings and recommendation text describe
+these fork budgets in all five launcher languages.
+
+Upstream now represents omitted network policy explicitly and resolves it from
+the current native rollout on the initial request as well as continuation and
+steering. That implementation replaces the overlapping fork implementation;
+the fork regression tests for omitted policy and conflicting grants remain.
+
+The final DOM alignment fixes address reconciliation after browser completion.
+They do not establish a fix for the late ChatGPT terminal stream events reported
+in upstream issue #791. Browser completion delay and retention at the larger Plus
+window remain live checks.
