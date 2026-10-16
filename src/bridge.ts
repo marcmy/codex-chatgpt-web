@@ -1077,19 +1077,30 @@ export function buildResponseJSON(
 }
 
 export function formatErrorResponse(status: number, type: string, message: string): Response {
-  // Classify using the original diagnostic text, but never return an internal exception
-  // message (which may contain stack traces, paths, URLs or credentials) for a 5xx.
-  // The internal failure details remain available in local diagnostics.
-  const error = classifyError(status, type, message);
+  // Error classification needs the original diagnostic, but HTTP clients must receive only
+  // purpose-built messages: thrown exception text can contain credentials and stack frames.
+  const classified = classifyError(status, type, message);
+  let publicMessage = "Request failed";
   if (status >= 500) {
-    error.message = error.code === "server_is_overloaded"
-      ? "The server is temporarily unavailable"
-      : "An upstream request failed";
-  } else if (/[\r\n]/.test(error.message)) {
-    // For client errors retain only the summary, not trailing stack frames.
-    error.message = error.message.split(/\r?\n/, 1)[0]?.trim() || "Request failed";
+    publicMessage = status === 503 && message.includes("draining for a requested service operation")
+      ? "codex-chatgpt-web is draining for a requested service operation"
+      : classified.code === "server_is_overloaded"
+        ? "The server is temporarily unavailable"
+        : "An upstream request failed";
+  } else if (message.includes("model is not enabled")) {
+    publicMessage = "The requested model is not enabled";
+  } else if (message.includes("Extra High is not available for this account")) {
+    publicMessage = "Extra High is not available for this account";
+  } else if (message.includes("Pro is not available for this account")) {
+    publicMessage = "Pro is not available for this account";
+  } else if (status === 409 && message.includes("rolling checkpoint")) {
+    publicMessage = "ChatGPT Web Luna uses a rolling checkpoint; separate Codex compaction is disabled for this route";
+  } else if (status === 409 && message.includes("partial Codex context")) {
+    publicMessage = "Local continuation context is unavailable; refusing to run with partial Codex context";
   }
-  return new Response(JSON.stringify({ error }), {
+  return new Response(JSON.stringify({
+    error: { message: publicMessage, type: classified.type, code: classified.code },
+  }), {
     status, headers: { "Content-Type": "application/json" },
   });
 }
