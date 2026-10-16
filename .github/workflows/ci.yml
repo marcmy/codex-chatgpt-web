@@ -53,6 +53,15 @@ jobs:
         run: bun run launcher/scripts/prepare-linux-appimage-tools.cjs
       - run: bun run verify
       - run: bun run app:package
+      - name: Upload Windows CI build artifacts
+        uses: actions/upload-artifact@v6
+        with:
+          name: ci-${{ matrix.os }}
+          path: |
+            launcher/artifacts/*.zip
+            launcher/artifacts/*.exe
+          if-no-files-found: error
+          retention-days: 7
       - name: Verify Linux AppImage ABI on current Arch
         if: runner.os == 'Linux'
         run: |
@@ -64,18 +73,6 @@ jobs:
         if: runner.os == 'Linux'
         run: command -v xvfb-run || (sudo apt-get update && sudo apt-get install -y xvfb)
       - run: bun run app:smoke
-      - name: Upload CI build artifacts
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: ci-${{ matrix.os }}
-          path: |
-            launcher/artifacts/*.dmg
-            launcher/artifacts/*.zip
-            launcher/artifacts/*.exe
-            launcher/artifacts/*.AppImage
-          if-no-files-found: warn
-          retention-days: 7
 
   actionlint:
     runs-on: windows-latest
