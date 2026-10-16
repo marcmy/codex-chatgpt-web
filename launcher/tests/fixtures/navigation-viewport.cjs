@@ -18,7 +18,7 @@ app.whenReady().then(async () => {
         style="width:300px;height:80px">Synthetic prompt</div>
       <button type="button" aria-haspopup="menu" aria-controls="models" aria-expanded="false"
         style="position:fixed;right:40px;bottom:40px">Models</button></form>
-      <div id="models" role="menu" hidden>Model choices</div><img src="/delayed${request.url}">
+      <div id="models" role="menu" hidden>Model choices</div><img src="/delayed">
       <script>
         window.clicks=0;
         document.querySelector('button').onclick=()=>{
