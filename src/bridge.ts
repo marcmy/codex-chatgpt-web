@@ -1077,7 +1077,19 @@ export function buildResponseJSON(
 }
 
 export function formatErrorResponse(status: number, type: string, message: string): Response {
-  return new Response(JSON.stringify({ error: classifyError(status, type, message) }), {
+  // Classify using the original diagnostic text, but never return an internal exception
+  // message (which may contain stack traces, paths, URLs or credentials) for a 5xx.
+  // The internal failure details remain available in local diagnostics.
+  const error = classifyError(status, type, message);
+  if (status >= 500) {
+    error.message = error.code === "server_is_overloaded"
+      ? "The server is temporarily unavailable"
+      : "An upstream request failed";
+  } else if (/[\r\n]/.test(error.message)) {
+    // For client errors retain only the summary, not trailing stack frames.
+    error.message = error.message.split(/\r?\n/, 1)[0]?.trim() || "Request failed";
+  }
+  return new Response(JSON.stringify({ error }), {
     status, headers: { "Content-Type": "application/json" },
   });
 }
