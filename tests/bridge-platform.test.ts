@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { bridgeToResponsesSSE } from "../src/bridge";
+import { bridgeToResponsesSSE, formatErrorResponse } from "../src/bridge";
 import type { AdapterEvent } from "../src/types";
 
 async function* completedEvents(chunks = 1): AsyncGenerator<AdapterEvent> {
@@ -55,4 +55,27 @@ test("Darwin SSE remains decodable through Bun.serve under sustained chunking", 
   } finally {
     await server.stop(true);
   }
+});
+
+test("HTTP errors preserve Codex classification without exposing internal stack traces", async () => {
+  const stack = [
+    "Error: connection reset while reading D:\\\\private\\\\secrets.json",
+    "    at loadConfig (D:\\\\internal\\\\server.ts:42:9)",
+    "    at async processRequest (node:internal/process/task_queues:95:5)",
+  ].join("\\n");
+  for (const status of [500, 502, 503]) {
+    const response = formatErrorResponse(status, "upstream_error", stack);
+    const body = await response.json() as { error: { message: string; code: string | null } };
+    expect(response.status).toBe(status);
+    expect(body.error.message).toBe("An upstream request failed");
+    expect(JSON.stringify(body)).not.toContain("private");
+    expect(JSON.stringify(body)).not.toContain("server.ts");
+    expect(JSON.stringify(body)).not.toContain("node:internal");
+  }
+  const overloaded = await formatErrorResponse(503, "upstream_error", "upstream overloaded: \\n    at secret.js:42").json() as { error: { message: string; code: string | null } };
+  expect(overloaded.error.code).toBe("server_is_overloaded");
+  expect(overloaded.error.message).toBe("The server is temporarily unavailable");
+
+  const invalid = await formatErrorResponse(400, "invalid_request_error", "Missing required model\\n    at parseRequest (/secret/server.ts:32)").json() as { error: { message: string } };
+  expect(invalid.error.message).toBe("Missing required model");
 });
