@@ -77,5 +77,6 @@ test("HTTP errors preserve Codex classification without exposing internal stack 
   expect(overloaded.error.message).toBe("The server is temporarily unavailable");
 
   const invalid = await formatErrorResponse(400, "invalid_request_error", "Missing required model\n    at parseRequest (/secret/server.ts:32)").json() as { error: { message: string } };
-  expect(invalid.error.message).toBe("Request failed");\n  expect(JSON.stringify(invalid)).not.toContain("/secret/server.ts");
+  expect(invalid.error.message).toBe("Request failed");
+  expect(JSON.stringify(invalid)).not.toContain("/secret/server.ts");
 });
