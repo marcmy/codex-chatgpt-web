@@ -3,7 +3,7 @@ import { Database } from "bun:sqlite";
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join, resolve, toNamespacedPath } from "node:path";
-import { chatGptTurnUserRevisionHistory, extractChatGptCompactionSourceRevision, extractChatGptTurnEnvironment, extractChatGptTurnIdentity, extractChatGptTurnUserRevision } from "../src/adapters/chatgpt-web/environment";
+import { chatGptTurnUserRevisionHistory, extractChatGptCalendarEnvironmentDelta, extractChatGptCompactionSourceRevision, extractChatGptTurnEnvironment, extractChatGptTurnIdentity, extractChatGptTurnUserRevision } from "../src/adapters/chatgpt-web/environment";
 import { chatGptTurnExecutionKey } from "../src/adapters/chatgpt-web/turn-execution";
 import { rememberCompactionContinuation } from "../src/adapters/chatgpt-web/compaction-continuation";
 import { encodeCompactionSummary, SUMMARY_PREFIX } from "../src/responses/compaction";
@@ -1177,6 +1177,18 @@ describe("trusted Codex task environment continuity", () => {
       expect(new ChatGptThreadEnvironmentStore(undefined, Date.now, codexHome).resolve(request).cwd).toBe(root);
     });
   }
+
+  test("calendar root parsing remains bounded with repeated roots and rejects malformed tails", () => {
+    const { request, body, delta } = midnightRolloutFixture();
+    body.input.splice(1, body.input.length - 2);
+    const original = delta.content[0]!.text;
+    const roots = `\n${`  <root>${root}</root>\n`.repeat(18)}`;
+    delta.content[0]!.text = original.replace("<filesystem>",
+      `<filesystem><workspace_roots>${roots}</workspace_roots>`);
+    expect(extractChatGptCalendarEnvironmentDelta(request)?.workspaceRoots).toEqual([[process.platform === "win32" ? root.toLowerCase() : root]]);
+    delta.content[0]!.text += "!";
+    expect(extractChatGptCalendarEnvironmentDelta(request)).toBeUndefined();
+  });
 
   test("calendar updates cannot introduce roots or malformed permission fields", () => {
     const { codexHome, request, body, delta, rolloutPath } = midnightRolloutFixture();
