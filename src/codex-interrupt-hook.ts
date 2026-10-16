@@ -59,6 +59,27 @@ export function codexInterruptHookCommand(
   return args.map(platform === "win32" ? cmdShellArgument : posixShellArgument).join(" ");
 }
 
+// Count complete CRLF/LF/CR sequences without constructing regexes from config-derived counts.
+function leadingLineEndingLength(text: string, maxCount: number): number {
+  let offset = 0;
+  for (let count = 0; count < maxCount; count += 1) {
+    if (text.startsWith("\r\n", offset)) offset += 2;
+    else if (text[offset] === "\r" || text[offset] === "\n") offset += 1;
+    else break;
+  }
+  return offset;
+}
+
+function trailingLineEndingLength(text: string, maxCount: number): number {
+  let offset = text.length;
+  for (let count = 0; count < maxCount; count += 1) {
+    if (text.slice(offset - 2, offset) === "\r\n") offset -= 2;
+    else if (text[offset - 1] === "\r" || text[offset - 1] === "\n") offset -= 1;
+    else break;
+  }
+  return text.length - offset;
+}
+
 function lineEnding(text: string): "\n" | "\r\n" | "\r" {
   return text.includes("\r\n") ? "\r\n" : text.includes("\n") ? "\n" : text.includes("\r") ? "\r" : "\n";
 }
@@ -275,8 +296,7 @@ function locateCodexInterruptHook(text: string, installed: InstalledCodexInterru
       let start = comment.range[0];
       if (marker === MANAGED_INTERRUPT_HOOK_START) {
         const separatorCount = installed.fragment.match(/^(?:\r\n|\n|\r)*/)?.[0].match(/\r\n|\n|\r/g)?.length ?? 0;
-        const prefix = new RegExp(`(?:\\r\\n|\\n|\\r){0,${separatorCount}}$`).exec(text.slice(0, start));
-        start -= prefix?.[0].length ?? 0;
+        start -= trailingLineEndingLength(text.slice(0, start), separatorCount);
       }
       ranges.push({ start, end: comment.range[1] });
     }
@@ -300,7 +320,7 @@ function locateCodexInterruptHook(text: string, installed: InstalledCodexInterru
       const original = journalAst.body[0].body.find(item => item.type === "TOMLTable" && equal(item.resolvedKey, path));
       if (original) {
         const count = installed.fragment.slice(original.range[1]).match(/^(?:\r\n|\n|\r)*/)?.[0].match(/\r\n|\n|\r/g)?.length ?? 0;
-        end += new RegExp(`^(?:\\r\\n|\\n|\\r){0,${count}}`).exec(text.slice(end))?.[0].length ?? 0;
+        end += leadingLineEndingLength(text.slice(end), count);
       }
     }
     ranges.push({ start: node.range[0], end });
