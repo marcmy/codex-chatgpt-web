@@ -95,17 +95,6 @@ export const CHATGPT_WEB_LUNA_BIGGER_CONTEXT_WINDOW =
 export const CHATGPT_WEB_LUNA_BIGGER_AUTO_COMPACT_TOKEN_LIMIT =
   (CHATGPT_LUNA_BROWSER_INPUT_TOKEN_BUDGET - CHATGPT_WEB_PLATFORM_RESERVE_TOKENS)
   * CHATGPT_WEB_BIGGER_CONTEXT_MULTIPLIER;
-// Rechecked 2026-10-08 on Pro: GPT-6 Medium/High/Extra High retained all 12
-// markers at 253k input tokens but lost the oldest markers at 283k. Keep room
-// below the passing boundary and compact before reaching this context ceiling.
-export const CHATGPT_WEB_GPT6_SOL_BIGGER_CONTEXT_WINDOW = 240_000;
-export const CHATGPT_WEB_GPT6_SOL_BIGGER_AUTO_COMPACT_TOKEN_LIMIT = 220_000;
-// Rechecked 2026-10-10 on Plus: Medium and High recovered all 12 distributed
-// codes at 127k estimated input tokens. At 144k both lost the entire first part.
-// Keep headroom below the passing result, with compaction before the ceiling.
-export const CHATGPT_WEB_GPT6_PLUS_BIGGER_CONTEXT_WINDOW = 120_000;
-export const CHATGPT_WEB_GPT6_PLUS_BIGGER_AUTO_COMPACT_TOKEN_LIMIT = 110_000;
-
 export interface ChatGptWebContextLimits {
   contextWindow: number;
   effectiveContextWindowPercent: number;
@@ -204,12 +193,6 @@ export function resolveChatGptWebContextLimits(
   }
   if (!capabilities.experimentalBiggerContext
     || !supportsChatGptWebBiggerContext(backendModel, effort, modelFamily)) return limits;
-  if (modelFamily === "6" && effort !== "max") {
-    return contextLimits(
-      capabilities.proAvailable ? CHATGPT_WEB_GPT6_SOL_BIGGER_CONTEXT_WINDOW : CHATGPT_WEB_GPT6_PLUS_BIGGER_CONTEXT_WINDOW,
-      capabilities.proAvailable ? CHATGPT_WEB_GPT6_SOL_BIGGER_AUTO_COMPACT_TOKEN_LIMIT : CHATGPT_WEB_GPT6_PLUS_BIGGER_AUTO_COMPACT_TOKEN_LIMIT,
-    );
-  }
   return contextLimits(
     limits.contextWindow * CHATGPT_WEB_BIGGER_CONTEXT_MULTIPLIER,
     limits.autoCompactTokenLimit * CHATGPT_WEB_BIGGER_CONTEXT_MULTIPLIER,
@@ -478,7 +461,7 @@ export const CHATGPT_WEB_MODEL_ROUTES: readonly ChatGptWebAutomaticModelRoute[] 
   {
     slug: "chatgpt-web/gpt-6-sol",
     displayName: "GPT-6 Sol (Web)",
-    description: "GPT-6 Sol with Medium, High, or account-supported Extra High. Experimental Bigger Context is available on Plus and Pro, with a context window sized for the account.",
+    description: "GPT-6 Sol with Medium, High, or account-supported Extra High. Experimental Bigger Context uses the same 3× context scaling as GPT-5.6; Instant remains excluded.",
     interactionMode: "automatic",
     backendModel: CHATGPT_WEB_BACKEND_MODEL,
     modelFamily: "6",
