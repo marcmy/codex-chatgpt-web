@@ -104,9 +104,13 @@ try {
   }
 
   const unauthenticatedModels = await fetch(`http://127.0.0.1:${port}/v1/models`);
-  const unauthenticatedModelsBody = await unauthenticatedModels.json() as { error?: { message?: string } };
+  const unauthenticatedModelsBody = await unauthenticatedModels.json() as {
+    error?: { message?: string; type?: string; code?: string };
+  };
   if (unauthenticatedModels.status !== 502
-    || !unauthenticatedModelsBody.error?.message?.includes("incoming Bearer authorization")) {
+    || unauthenticatedModelsBody.error?.type !== "server_error"
+    || unauthenticatedModelsBody.error?.code !== "upstream_server_error"
+    || unauthenticatedModelsBody.error?.message !== "An upstream request failed") {
     throw new Error(`native model passthrough did not fail closed without Codex auth: ${JSON.stringify(unauthenticatedModelsBody)}`);
   }
   const websocketNegotiation = await fetch(`http://127.0.0.1:${port}/v1/responses`);
