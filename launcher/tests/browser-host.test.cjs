@@ -611,6 +611,7 @@ test("only the exact HTTPS ChatGPT origin can establish browser ownership", () =
     "https://chatgpt.com.evil.example/backend-api/",
     "https://chatgpt.com:444/",
     "http://chatgpt.com/",
+    "blob:https://chatgpt.com/fake-document",
     "https://attacker.example/chatgpt.com",
     "not a URL",
   ]) assert.equal(isChatGptPageUrl(url), false, url);
