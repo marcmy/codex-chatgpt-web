@@ -67,7 +67,7 @@ test("HTTP errors preserve Codex classification without exposing internal stack 
     const response = formatErrorResponse(status, "upstream_error", stack);
     const body = await response.json() as { error: { message: string; code: string | null } };
     expect(response.status).toBe(status);
-    expect(body.error.message).toBe("An upstream request failed");
+    expect(body.error.message).toBe(status === 503 ? "The server is temporarily unavailable" : "An upstream request failed");
     expect(JSON.stringify(body)).not.toContain("private");
     expect(JSON.stringify(body)).not.toContain("server.ts");
     expect(JSON.stringify(body)).not.toContain("node:internal");
@@ -77,5 +77,5 @@ test("HTTP errors preserve Codex classification without exposing internal stack 
   expect(overloaded.error.message).toBe("The server is temporarily unavailable");
 
   const invalid = await formatErrorResponse(400, "invalid_request_error", "Missing required model\n    at parseRequest (/secret/server.ts:32)").json() as { error: { message: string } };
-  expect(invalid.error.message).toBe("Missing required model");
+  expect(invalid.error.message).toBe("Request failed");\n  expect(JSON.stringify(invalid)).not.toContain("/secret/server.ts");
 });
