@@ -184,7 +184,9 @@ function isAbortedNavigationError(error) {
 
 function isChatGptPageUrl(value) {
   try {
-    return new URL(value).origin === CHATGPT_ORIGIN;
+    const parsed = new URL(value);
+    // Blob URLs can inherit an HTTPS origin without being HTTPS documents.
+    return parsed.protocol === "https:" && parsed.origin === CHATGPT_ORIGIN;
   } catch {
     return false;
   }
