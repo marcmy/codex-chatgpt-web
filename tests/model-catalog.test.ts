@@ -128,7 +128,7 @@ describe("native /models augmentation", () => {
         const expandedCompact = compact * 3;
         expect(six).toMatchObject({ context_window: expanded ? expandedWindow : window,
           max_context_window: expanded ? expandedWindow : window, auto_compact_token_limit: expanded ? expandedCompact : compact });
-        expect(six.description).toContain(expanded ? "Plus and Pro" : "standard context");
+        expect(six.description).toContain(expanded ? "same 3× context scaling" : "standard context");
         expect(models.find(model => model.slug === `chatgpt-web/gpt-5.6-${suffix}`)).toMatchObject({
           context_window: window * 3, auto_compact_token_limit: compact * 3,
         });
