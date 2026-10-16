@@ -1103,10 +1103,10 @@ export function formatErrorResponse(status: number, type: string, message: strin
     publicMessage = "Browser-originated requests are not accepted by the local Codex route";
   } else if (status === 400 && message.includes("encrypted cross-backend subagent payload")) {
     publicMessage = "ChatGPT Web cannot read this encrypted cross-backend subagent payload. Start a compatible task.";
-  } else if (status === 400 && message.includes("Next-message prediction skipped")) {
-    publicMessage = "Next-message prediction skipped: context exceeds the supported budget";
   } else if (status === 400 && message.includes("more images")) {
     publicMessage = "Next-message prediction skipped: the input contains more images than supported";
+  } else if (status === 400 && message.includes("Next-message prediction skipped")) {
+    publicMessage = "Next-message prediction skipped: context exceeds the supported budget";
   }
   return new Response(JSON.stringify({
     error: { message: publicMessage, type: classified.type, code: classified.code },
