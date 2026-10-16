@@ -17,6 +17,7 @@ const {
   BrowserHost,
   IDLE_BROWSER_URL,
   isChatGptCloudflareChallengeResponse,
+  isChatGptPageUrl,
   isTemporaryChatUrl,
   loadCommittedBrowserSurface,
   MANUAL_COMPACTION_SUBMIT_TIMEOUT_MS,
@@ -594,6 +595,25 @@ test("descriptor-owned home surface stays attached offscreen while another launc
     ["bounds", hiddenBounds],
     ["visible", true],
   ]);
+});
+
+test("only the exact HTTPS ChatGPT origin can establish browser ownership", () => {
+  for (const url of [
+    "https://chatgpt.com",
+    "https://chatgpt.com/",
+    "https://CHATGPT.COM/c/abc?temporary-chat=true",
+    "https://chatgpt.com:443/backend-api/conversation",
+  ]) assert.equal(isChatGptPageUrl(url), true, url);
+
+  for (const url of [
+    "https://chatgpt.com.attacker.example/",
+    "https://chatgpt.com@attacker.example/",
+    "https://chatgpt.com.evil.example/backend-api/",
+    "https://chatgpt.com:444/",
+    "http://chatgpt.com/",
+    "https://attacker.example/chatgpt.com",
+    "not a URL",
+  ]) assert.equal(isChatGptPageUrl(url), false, url);
 });
 
 test("smoke preserves an already-hydrated Temporary Chat page", () => {

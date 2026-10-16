@@ -81,6 +81,20 @@ function currentWire(
   };
 }
 
+test("XML-decoded workspace paths preserve doubly encoded entity names", () => {
+  for (const [encoded, literal] of [
+    ["literal&amp;quot;name", "literal&quot;name"],
+    ["literal&amp;lt;name", "literal&lt;name"],
+    ["literal&amp;gt;name", "literal&gt;name"],
+    ["literal&amp;#39;name", "literal&#39;name"],
+  ]) {
+    const request = currentWire({ environmentXml: environmentXml.replace(
+      `<cwd>${root}</cwd>`, `<cwd>${root}/${encoded}</cwd>`,
+    ) });
+    expect(extractChatGptTurnEnvironment(request).cwd).toBe(resolve(root, literal));
+  }
+});
+
 describe("trusted current Codex environment envelope", () => {
   describe("native open-page context", () => {
     let originalCodexHome: string | undefined;
