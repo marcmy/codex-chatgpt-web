@@ -1171,7 +1171,7 @@ describe("trusted Codex task environment continuity", () => {
     const roots = `\n${`  <root>${root}</root>\n`.repeat(18)}`;
     delta.content[0]!.text = original.replace("<filesystem>",
       `<filesystem><workspace_roots>${roots}</workspace_roots>`);
-    expect(extractChatGptCalendarEnvironmentDelta(request)?.workspaceRoots).toEqual([[root]]);
+    expect(extractChatGptCalendarEnvironmentDelta(request)?.workspaceRoots).toEqual([[process.platform === "win32" ? root.toLowerCase() : root]]);
     delta.content[0]!.text += "!";
     expect(extractChatGptCalendarEnvironmentDelta(request)).toBeUndefined();
   });
