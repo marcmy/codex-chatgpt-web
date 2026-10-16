@@ -64,6 +64,18 @@ jobs:
         if: runner.os == 'Linux'
         run: command -v xvfb-run || (sudo apt-get update && sudo apt-get install -y xvfb)
       - run: bun run app:smoke
+      - name: Upload CI build artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-${{ matrix.os }}
+          path: |
+            launcher/artifacts/*.dmg
+            launcher/artifacts/*.zip
+            launcher/artifacts/*.exe
+            launcher/artifacts/*.AppImage
+          if-no-files-found: warn
+          retention-days: 7
 
   actionlint:
     runs-on: ubuntu-latest
