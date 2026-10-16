@@ -3574,27 +3574,27 @@ test("browser preflight separates model context from one-message transport limit
   }
 });
 
-test("GPT-6 staged input enforces its measured account and effort ceiling before submission", () => {
+test("GPT-6 staged input uses GPT-5.6 Bigger Context ceilings while excluding Instant", () => {
   const pro = { localToolsEnabled: false, solAvailable: true, extraHighAvailable: true, proAvailable: true };
   for (const effort of ["medium", "high", "xhigh"] as const) {
     expect(() => assertChatGptWebMultipartInputWithinLimits(
-      239_999, 40_000, "gpt-5.6-sol", effort, pro, 200_000, 6, undefined, "6",
+      333_578, 40_000, "gpt-5.6-sol", effort, pro, 200_000, 6, undefined, "6",
     )).not.toThrow();
     expect(() => assertChatGptWebMultipartInputWithinLimits(
-      240_000, 40_000, "gpt-5.6-sol", effort, pro, 200_000, 6, undefined, "6",
-    )).toThrow("240,000-token six-part ceiling");
+      333_579, 40_000, "gpt-5.6-sol", effort, pro, 200_000, 6, undefined, "6",
+    )).toThrow("333,579-token six-part ceiling");
     expect(() => assertChatGptWebMultipartInputWithinLimits(
       222_386, 40_000, "gpt-5.6-sol", effort, pro, 200_000, 2, undefined, "6",
     )).toThrow("222,386-token two-part ceiling");
     expect(() => assertChatGptWebMultipartInputWithinLimits(
-      119_999, 40_000, "gpt-5.6-sol", effort, { ...pro, proAvailable: false }, 200_000, 6, undefined, "6",
+      269_999, 40_000, "gpt-5.6-sol", effort, { ...pro, proAvailable: false }, 200_000, 6, undefined, "6",
     )).not.toThrow();
     expect(() => assertChatGptWebMultipartInputWithinLimits(
-      120_000, 40_000, "gpt-5.6-sol", effort, { ...pro, proAvailable: false }, 200_000, 6, undefined, "6",
-    )).toThrow("120,000-token six-part ceiling");
+      270_000, 40_000, "gpt-5.6-sol", effort, { ...pro, proAvailable: false }, 200_000, 6, undefined, "6",
+    )).toThrow("270,000-token six-part ceiling");
     expect(() => assertChatGptWebMultipartInputWithinLimits(
-      120_000, 40_000, "gpt-5.6-sol", effort, { ...pro, proAvailable: false }, 200_000, 2, undefined, "6",
-    )).toThrow("120,000-token two-part ceiling");
+      180_000, 40_000, "gpt-5.6-sol", effort, { ...pro, proAvailable: false }, 200_000, 2, undefined, "6",
+    )).toThrow("180,000-token two-part ceiling");
   }
   expect(() => assertChatGptWebMultipartInputWithinLimits(
     100_000, 40_000, "gpt-5.6-sol", "low", pro, 200_000, 6, undefined, "6",
