@@ -213,17 +213,22 @@ describe("fixed ChatGPT Web model routes", () => {
       expect(resolveChatGptWebContextLimits(CHATGPT_WEB_BACKEND_MODEL, effort, plus, "6"))
         .toMatchObject({ contextWindow: 90_000, autoCompactTokenLimit: 80_000 });
       expect(resolveChatGptWebContextLimits(CHATGPT_WEB_BACKEND_MODEL, effort, enabled, "6"))
-        .toMatchObject({ contextWindow: 120_000, autoCompactTokenLimit: 110_000 });
+        .toMatchObject({ contextWindow: 270_000, autoCompactTokenLimit: 240_000 });
       expect(resolveChatGptWebTransportLimits(CHATGPT_WEB_BACKEND_MODEL, effort, enabled))
         .toEqual(resolveChatGptWebTransportLimits(CHATGPT_WEB_BACKEND_MODEL, effort, plus));
     }
     expect(resolveChatGptWebContextLimits(CHATGPT_WEB_BACKEND_MODEL, "low", enabled, "6"))
       .toEqual(resolveChatGptWebContextLimits(CHATGPT_WEB_BACKEND_MODEL, "low", plus, "6"));
+    for (const effort of ["medium", "high", "xhigh"] as const) {
+      const proEnabled = { ...pro, extraHighAvailable: true, experimentalBiggerContext: true };
+      expect(resolveChatGptWebContextLimits(CHATGPT_WEB_BACKEND_MODEL, effort, proEnabled, "6"))
+        .toEqual(resolveChatGptWebContextLimits(CHATGPT_WEB_BACKEND_MODEL, effort, proEnabled, "5.6"));
+    }
     expect(() => resolveChatGptWebContextLimits(CHATGPT_WEB_BACKEND_MODEL, "xhigh", enabled, "6"))
       .toThrow("unavailable effort");
     expect(resolveChatGptWebContextLimits(CHATGPT_WEB_BACKEND_MODEL, "xhigh", {
       ...enabled, extraHighAvailable: true,
-    }, "6")).toMatchObject({ contextWindow: 120_000, autoCompactTokenLimit: 110_000 });
+    }, "6")).toMatchObject({ contextWindow: 270_000, autoCompactTokenLimit: 240_000 });
   });
 
   test("publishes Luna's real model window without early native compaction", () => {

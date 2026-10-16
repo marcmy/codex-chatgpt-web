@@ -195,10 +195,12 @@ printf '#!/bin/sh\\nexit 0\\n' > squashfs-root/resources/app.asar.unpacked/asset
   }
 });
 
-test("CI packages and smoke-launches on macOS, Windows, and Linux", () => {
+test("CI packages and smoke-launches on Windows while releases cover all platforms", () => {
   const ci = fs.readFileSync(path.join(repositoryRoot, ".github", "workflows", "ci.yml"), "utf8");
   const release = fs.readFileSync(path.join(repositoryRoot, ".github", "workflows", "release.yml"), "utf8");
-  assert.match(ci, /macos-15, ubuntu-latest, windows-latest/);
+  assert.match(ci, /os: \[windows-latest\]/);
+  assert.doesNotMatch(ci, /os: \[[^\]]*(?:macos|ubuntu)/);
+  assert.match(ci, /actions\/upload-artifact@v6/);
   assert.match(ci, /bun run app:package/);
   assert.match(ci, /bun run app:smoke/);
   assert.match(ci, /prepare-linux-libnotify\.sh/);

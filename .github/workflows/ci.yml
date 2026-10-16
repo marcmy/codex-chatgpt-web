@@ -13,7 +13,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-15, ubuntu-latest, windows-latest]
+        os: [windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v6
@@ -53,6 +53,15 @@ jobs:
         run: bun run launcher/scripts/prepare-linux-appimage-tools.cjs
       - run: bun run verify
       - run: bun run app:package
+      - name: Upload Windows CI build artifacts
+        uses: actions/upload-artifact@v6
+        with:
+          name: ci-${{ matrix.os }}
+          path: |
+            launcher/artifacts/*.zip
+            launcher/artifacts/*.exe
+          if-no-files-found: error
+          retention-days: 7
       - name: Verify Linux AppImage ABI on current Arch
         if: runner.os == 'Linux'
         run: |
@@ -66,7 +75,7 @@ jobs:
       - run: bun run app:smoke
 
   actionlint:
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-go@v6
@@ -74,4 +83,4 @@ jobs:
           go-version: "1.26.x"
           cache: false
       - name: Lint GitHub Actions
-        run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.7 -config-file .github/actionlint.yaml .github/workflows/*.yml
+        run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.7 -config-file .github/actionlint.yaml
