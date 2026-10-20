@@ -341,7 +341,7 @@ class BrowserHost {
     showWindow = () => {},
     clipboardApi = clipboard,
     getBrowserInteractionMode = () => "automatic",
-    getUseSavedChats = () => false,
+    getUseSavedChats = () => true,
   }) {
     if (typeof getConnectorName !== "function") {
       throw new Error("Browser host connector-name resolver is unavailable");
@@ -826,6 +826,7 @@ class BrowserHost {
 
   bindTurnContents(tab) {
     const contents = tab.view.webContents;
+    this.bindTurnContentsDestruction(tab, contents);
     contents.setWindowOpenHandler(({ url }) => {
       if (allowedAuthUrl(url)) {
         this.markTurnAuthenticationRequired(tab);
@@ -975,6 +976,7 @@ class BrowserHost {
 
   bindManualTurnContents(tab) {
     const contents = tab.view.webContents;
+    this.bindTurnContentsDestruction(tab, contents);
     const invalidateConversation = (url, inPlace) => {
       // History state updates and anchor scrolling keep the same document/context.
       if (inPlace && url.split("#", 1)[0] === tab.url?.split("#", 1)[0]) return;
@@ -1059,6 +1061,18 @@ class BrowserHost {
         exitCode: details.exitCode,
       });
       this.signalManualTerminal(tab, "failed");
+      this.removeTurnTab(tab, true);
+    });
+  }
+
+  bindTurnContentsDestruction(tab, contents) {
+    contents.once("destroyed", () => {
+      // CDP or native window teardown can close the page without closeTab().
+      // Electron then clears WebContentsView.webContents; retire this exact owner
+      // before lease expiry, view synchronization or reuse can touch the dead page.
+      if (this.destroyed || this.turnTabs.get(tab.id) !== tab) return;
+      this.logger.warn("browser.tab_closed_externally", { tabId: tab.id, traceId: tab.traceId });
+      if (tab.interactionMode === "manual") this.signalManualTerminal(tab, "failed");
       this.removeTurnTab(tab, true);
     });
   }
@@ -1311,13 +1325,14 @@ class BrowserHost {
     });
   }
 
-  async refreshChatGptHomeDocument() {
+  async refreshChatGptHomeDocument(useSavedChats = false) {
     // A navigation from the idle host already creates a fresh ChatGPT document. Reload only an
-    // existing Temporary Chat document so the helper observes one authoritative SPA bootstrap.
-    if (isTemporaryChatUrl(this.view.webContents.getURL())) {
+    // existing new-chat document in the selected mode so the helper sees one fresh catalog.
+    const targetUrl = useSavedChats ? `${CHATGPT_ORIGIN}/` : TEMPORARY_CHAT_URL;
+    if (this.view.webContents.getURL() === targetUrl) {
       await this.hardRefreshHome();
     } else {
-      await this.view.webContents.loadURL(TEMPORARY_CHAT_URL);
+      await this.view.webContents.loadURL(targetUrl);
     }
     await this.waitForAuthenticated(60_000);
   }
@@ -1810,7 +1825,7 @@ class BrowserHost {
   }
 
   removeTurnTab(tab, abortRunning) {
-    if (!this.turnTabs.has(tab.id)) return;
+    if (this.turnTabs.get(tab.id) !== tab) return;
     this.turnTabs.delete(tab.id);
     if (tab.interactionMode === "manual") {
       if (tab.manualDeadlineTimer) clearTimeout(tab.manualDeadlineTimer);
@@ -1831,7 +1846,8 @@ class BrowserHost {
       tab.status = "aborted";
     }
     try { this.window.contentView.removeChildView(tab.view); } catch {}
-    if (!tab.view.webContents.isDestroyed()) tab.view.webContents.close();
+    const contents = tab.view.webContents;
+    if (contents && !contents.isDestroyed()) contents.close();
     if (this.selectedTabId === tab.id) {
       this.selectedTabId = [...this.turnTabs.keys()].at(-1) || "home";
       const homeContents = this.view?.webContents;
@@ -2558,13 +2574,12 @@ class BrowserHost {
         if (processRunning(existing.helperPid)) {
           throw new Error(`ChatGPT browser turn ${traceId} is owned by another helper process`);
         }
-        this.logger.warn("browser.stale_turn_owner_replaced", {
-          tabId: existing.id,
-          traceId,
-          previousHelperPid: existing.helperPid,
-          helperPid,
-          evidence: "previous helper exited",
-        });
+        // The old helper may already have submitted this message. Its process
+        // exit supplies no proof of the current response or submission boundary.
+        // Never hand its running document to the fresh-prompt path.
+        const error = new Error("The browser helper exited while this ChatGPT turn was running. Check the existing ChatGPT tab before retrying; the message may already have been submitted.");
+        error.code = "turn_owner_lost";
+        throw error;
       }
       existing.helperPid = helperPid;
       existing.traceId = traceId;
@@ -3133,12 +3148,14 @@ class BrowserHost {
     requireAutomaticBrowserInspection(this, "ChatGPT connector verification");
     const connectorName = validateConnectorName(appName);
     this.setState({ status: "testing", message: "Checking ChatGPT connector" });
-    await this.refreshChatGptHomeDocument();
+    const useSavedChats = this.getUseSavedChats();
+    await this.refreshChatGptHomeDocument(useSavedChats);
     try {
       const result = await this.verifyConnectorWithBrowserHelper({
         helper: this.helper,
         descriptorPath: this.descriptorPath,
         appName: connectorName,
+        useSavedChats,
         logger: this.logger,
       });
       this.logger.info("connector.verified", { appName: connectorName });
@@ -3311,7 +3328,8 @@ class BrowserHost {
         tab.manualTerminalWaiters?.clear();
       }
       try { this.window.contentView.removeChildView(tab.view); } catch {}
-      if (!tab.view.webContents.isDestroyed()) tab.view.webContents.close();
+      const contents = tab.view.webContents;
+      if (contents && !contents.isDestroyed()) contents.close();
     }
     this.turnTabs.clear();
     if (this.view && !this.view.webContents.isDestroyed()) this.view.webContents.close();
