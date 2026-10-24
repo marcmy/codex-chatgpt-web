@@ -1,0 +1,1 @@
+Recheck security remediation CI after GitHub Actions bot lockfile regeneration.
