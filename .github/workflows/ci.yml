@@ -54,7 +54,7 @@ jobs:
       - run: bun run verify
       - run: bun run app:package
       - name: Upload CI build artifacts
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: ci-${{ matrix.os }}
           path: |
