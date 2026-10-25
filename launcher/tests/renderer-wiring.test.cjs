@@ -279,7 +279,7 @@ test("macOS passkey sign-in is additive to the unchanged embedded login action",
 });
 
 test("passkey buttons show launch progress, wait for Chrome, and preserve import progress after remount", async () => {
-  const ts = require("typescript");
+  const ts = require("typescript-compiler-api");
   const vm = require("node:vm");
   const surface = appSource.slice(appSource.indexOf("function BrowserSurface("), appSource.indexOf("function ManualTurnGuide("));
   const transpile = (source, fileName) => ts.transpileModule(source, { fileName, compilerOptions: {
@@ -647,7 +647,7 @@ test("changing Bigger Context retires ready automatic chats before a previous mo
 });
 
 test("browser preference controls are translated, disabled in Zero Risk, and invoke their settings", async () => {
-  const ts = require("typescript");
+  const ts = require("typescript-compiler-api");
   const vm = require("node:vm");
   const settings = appSource.slice(appSource.indexOf("function SettingsSurface("), appSource.indexOf("function ContentSurface("));
   const transpile = (source, fileName) => ts.transpileModule(source, {
@@ -709,7 +709,7 @@ test("browser preference controls are translated, disabled in Zero Risk, and inv
 });
 
 test("approval notices are visible outside Browser and open the exact waiting tab", async () => {
-  const ts = require("typescript");
+  const ts = require("typescript-compiler-api");
   const vm = require("node:vm");
   const shell = appSource.slice(appSource.indexOf("function LauncherShell("), appSource.indexOf("function TitleBar("));
   const calls = [];
@@ -797,7 +797,7 @@ test("plugin rename invalidates verification only after success and rejects acti
 });
 
 test("plugin name editor fixes Codex and edits Native2 before asking to reconfigure", async () => {
-  const ts = require("typescript");
+  const ts = require("typescript-compiler-api");
   const vm = require("node:vm");
   const transpile = (source, fileName) => ts.transpileModule(source, {
     fileName, compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS,
