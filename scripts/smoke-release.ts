@@ -6,6 +6,7 @@ import { defaultBrokerEndpoint } from "../src/config";
 import { VERSION } from "../src/version";
 
 const require = createRequire(import.meta.url);
+const { version: playwrightVersion } = require("playwright-core/package.json") as { version: string };
 const { validateRuntimeBundle } = require("../launcher/electron/runtime-install.cjs") as {
   validateRuntimeBundle: (
     runtimeRoot: string,
@@ -29,7 +30,7 @@ validateRuntimeBundle(runtimeRoot, {
 const manifest = JSON.parse(readFileSync(join(runtimeRoot, "manifest.json"), "utf8")) as Record<string, unknown>;
 if (manifest.schemaVersion !== 2
   || manifest.appVersion !== VERSION
-  || manifest.playwright !== "1.62.0"
+  || manifest.playwright !== playwrightVersion
   || !Array.isArray(manifest.files)
   || manifest.files.length === 0
   || !/^[a-f0-9]{64}$/.test(String(manifest.bundleId ?? ""))) {
