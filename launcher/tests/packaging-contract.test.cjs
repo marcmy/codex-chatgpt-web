@@ -200,7 +200,7 @@ test("CI packages and smoke-launches on Windows and Linux while releases cover a
   const release = fs.readFileSync(path.join(repositoryRoot, ".github", "workflows", "release.yml"), "utf8");
   assert.match(ci, /os: \[windows-latest, ubuntu-latest\]/);
   assert.doesNotMatch(ci, /os: \[[^\]]*macos/);
-  assert.match(ci, /actions\/upload-artifact@v6/);
+  assert.match(ci, /actions\/upload-artifact@v7/);
   assert.match(ci, /launcher\/artifacts\/\*\.AppImage/);
   assert.match(ci, /retention-days: 7/);
   assert.match(ci, /bun run app:package/);
