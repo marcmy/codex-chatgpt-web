@@ -198,6 +198,7 @@ printf '#!/bin/sh\\nexit 0\\n' > squashfs-root/resources/app.asar.unpacked/asset
 test("CI packages and smoke-launches on Windows and Linux while releases cover all platforms", () => {
   const ci = fs.readFileSync(path.join(repositoryRoot, ".github", "workflows", "ci.yml"), "utf8");
   const release = fs.readFileSync(path.join(repositoryRoot, ".github", "workflows", "release.yml"), "utf8");
+  const baselinePreparation = `prepare-windows-baseline-bun.ps1 -Version ${repositoryManifest.packageManager.slice("bun@".length)} `;
   assert.match(ci, /os: \[windows-latest, ubuntu-latest\]/);
   assert.doesNotMatch(ci, /os: \[[^\]]*macos/);
   assert.match(ci, /actions\/upload-artifact@v7/);
@@ -208,7 +209,7 @@ test("CI packages and smoke-launches on Windows and Linux while releases cover a
   assert.match(ci, /prepare-linux-libnotify\.sh/);
   assert.match(ci, /prepare-linux-appimage-tools\.cjs/);
   assert.match(ci, /archlinux:base/);
-  assert.match(ci, /prepare-windows-baseline-bun\.ps1 -Version 1\.4\.3/);
+  assert.ok(ci.includes(baselinePreparation), "CI must prepare the manifest's Bun baseline");
   for (const runner of ["macos-15", "macos-15-intel", "ubuntu-latest", "ubuntu-24.04-arm", "windows-latest"]) {
     assert.match(release, new RegExp(runner));
   }
@@ -219,7 +220,7 @@ test("CI packages and smoke-launches on Windows and Linux while releases cover a
   assert.match(release, /archlinux:base/);
   assert.match(release, /runner: ubuntu-24\.04-arm\s+runtime_asset: codex-chatgpt-web-linux-arm64\.tar\.gz/);
   assert.match(release, /Verify Linux AppImage ABI on current Arch\s+if: runner\.os == 'Linux' && runner\.arch == 'X64'/);
-  assert.match(release, /prepare-windows-baseline-bun\.ps1 -Version 1\.4\.3/);
+  assert.ok(release.includes(baselinePreparation), "Releases must prepare the manifest's Bun baseline");
   assert.match(release, /codesign --verify --deep --strict --verbose=2/);
   assert.match(release, /Codex Web GPT\.app/);
   assert.doesNotMatch(release, /gh release create[\s\S]*?--draft/);

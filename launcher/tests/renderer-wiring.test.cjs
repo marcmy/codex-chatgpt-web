@@ -299,7 +299,7 @@ test("passkey buttons show launch progress, wait for Chrome, and preserve import
     },
   };
   for (const name of ["BrandMark", "Icon", "IconButton", "PrimaryButton", "SecondaryButton", "ManualTurnGuide"]) sandbox[name] = name;
-  vm.runInNewContext(transpile(surface, "surface.tsx") + "\nrender = BrowserSurface;", sandbox);
+  vm.runInNewContext(transpile(surface, "surface.tsx") + "\nglobalThis.render = BrowserSurface;", sandbox);
   const copy = translated.exports.copyFor("en");
   const props = { browser: { authenticated: false, visible: false, tabs: [] }, copy, operation: null,
     platform: "darwin", interactionMode: "automatic", browserSlotRef() {}, setError(error) { if (error) throw new Error(error); } };
@@ -669,7 +669,7 @@ test("browser preference controls are translated, disabled in Zero Risk, and inv
     messageOf: String, platformLabel: String,
   };
   for (const name of ["ContentSurface", "SectionHeading", "SettingRow", "PrimaryButton", "SecondaryButton", "Switch", "InteractionModePicker", "LanguageMenu", "NoticeRow", "Icon", "DoctorSummary", "BrandMark"]) sandbox[name] = name;
-  vm.runInNewContext(transpile(settings, "settings.tsx") + "\nrender = SettingsSurface;", Object.assign(sandbox, { render }));
+  vm.runInNewContext(transpile(settings, "settings.tsx") + "\nglobalThis.render = SettingsSurface;", Object.assign(sandbox, { render }));
   render = sandbox.render;
   const visit = tree => Array.isArray(tree) ? tree.flatMap(visit) : tree && typeof tree === "object"
     ? [tree, ...visit(tree.children ?? [])] : [];
@@ -732,7 +732,7 @@ test("approval notices are visible outside Browser and open the exact waiting ta
   for (const name of new Set([...shell.matchAll(/<([A-Z][A-Za-z]+)/g)].map(match => match[1]))) sandbox[name] = name;
   vm.runInNewContext(ts.transpileModule(shell, { compilerOptions: {
     target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.React, jsxFactory: "element",
-  }, fileName: "shell.tsx" }).outputText + "\nrender = LauncherShell;", sandbox);
+  }, fileName: "shell.tsx" }).outputText + "\nglobalThis.render = LauncherShell;", sandbox);
   const tab = { id: "waiting", title: "ChatGPT 2", status: "running", approvalPending: true };
   const other = { id: "selected", title: "ChatGPT 1", status: "running", active: true };
   const props = {
@@ -817,7 +817,7 @@ test("plugin name editor fixes Codex and edits Native2 before asking to reconfig
   };
   for (const name of ["ContentSurface", "SectionHeading", "SettingRow", "PrimaryButton", "SecondaryButton", "Switch", "InteractionModePicker", "LanguageMenu", "NoticeRow", "Icon", "DoctorSummary", "BrandMark"]) sandbox[name] = name;
   const settings = appSource.slice(appSource.indexOf("function SettingsSurface("), appSource.indexOf("function ContentSurface("));
-  vm.runInNewContext(transpile(settings, "settings.tsx") + "\nrender = SettingsSurface;", sandbox);
+  vm.runInNewContext(transpile(settings, "settings.tsx") + "\nglobalThis.render = SettingsSurface;", sandbox);
   const visit = tree => Array.isArray(tree) ? tree.flatMap(visit) : tree && typeof tree === "object"
     ? [tree, ...visit(tree.children ?? [])] : [];
   const render = () => { cursor = 0; return visit(sandbox.render({ copy, devProfile: false, language: "en",
