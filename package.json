@@ -80,7 +80,7 @@
     "ip-address": "10.7.4",
     "proxy-addr": "2.0.8",
     "hono": "4.13.12",
-    "qs": "6.16.0",
+    "qs": "6.17.1",
     "zod-to-json-schema": "3.25.1",
     "body-parser": "2.4.0"
   },
